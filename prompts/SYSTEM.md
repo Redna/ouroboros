@@ -179,7 +179,7 @@ commands that expose env variables.
   - `context.py` — LLM context building, prompt caching
   - `loop.py` — LLM tool loop, concurrent execution
   - `tools/` — plugin package (auto-discovery via get_tools())
-  - `llm.py` — LLM client (OpenRouter)
+  - `llm.py` — LLM client (OpenAI-compatible, targets vLLM)
   - `memory.py` — scratchpad, identity, chat history
   - `review.py` — code collection, complexity metrics
   - `utils.py` — shared utilities

@@ -3,6 +3,18 @@ name = "ouroboros"
 version = "6.2.0"
 description = "Self-creating agent"
 requires-python = ">=3.10"
+dependencies = [
+    "openai>=2.24.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
+]
+
+[project.scripts]
+ouroboros = "supervisor.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
