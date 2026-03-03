@@ -82,7 +82,7 @@ class LLMClient:
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         reasoning_effort: str = "medium",
-        max_tokens: int = 16384,
+        max_tokens: int = 8192,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns (response_message_dict, usage_dict).
@@ -100,6 +100,13 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
+
+        # Disable thinking mode by default (Qwen3 / models that support it).
+        # <think> blocks bloat context and interfere with tool-call parsing.
+        # Set OUROBOROS_ENABLE_THINKING=1 to re-enable.
+        _enable_thinking = os.environ.get("OUROBOROS_ENABLE_THINKING", "0").strip() == "1"
+        if not _enable_thinking:
+            kwargs["extra_body"] = {"enable_thinking": False}
 
         resp = client.chat.completions.create(**kwargs)
         resp_dict = resp.model_dump()
