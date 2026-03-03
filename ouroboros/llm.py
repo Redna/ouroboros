@@ -97,7 +97,8 @@ class LLMClient:
             "messages": messages,
             "max_tokens": max_tokens,
         }
-        if tools:
+        _disable_tools = os.environ.get("OUROBOROS_DISABLE_TOOLS", "0").strip() == "1"
+        if tools and not _disable_tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
