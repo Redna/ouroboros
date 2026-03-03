@@ -17,13 +17,15 @@ from ouroboros.utils import safe_relpath
 
 
 def _current_git_branch() -> str:
-    """Return current git branch name, fallback to 'main'."""
+    """Return current git branch name, using the repo this module lives in."""
     import subprocess
+    _cwd = str(pathlib.Path(__file__).parent)
     try:
-        return subprocess.run(
+        out = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip() or "main"
+            cwd=_cwd, capture_output=True, text=True,
+        ).stdout.strip()
+        return out or "main"
     except Exception:
         return "main"
 

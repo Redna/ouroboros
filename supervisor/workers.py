@@ -280,6 +280,25 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str)
     import pathlib as _pathlib
     _sys.path.insert(0, repo_dir)
     _drive = _pathlib.Path(drive_root)
+
+    # Load .env so spawned workers get OUROBOROS_BRANCH_DEV and other settings.
+    # (Spawned processes on macOS don't inherit in-process os.environ changes.)
+    try:
+        from dotenv import load_dotenv
+        _env_path = _pathlib.Path(repo_dir) / ".env"
+        if _env_path.exists():
+            load_dotenv(dotenv_path=_env_path, override=False)
+    except ImportError:
+        pass
+
+    # Clean stale git lock if left over from a previous crash.
+    _lock = _pathlib.Path(repo_dir) / ".git" / "index.lock"
+    if _lock.exists():
+        try:
+            _lock.unlink()
+        except Exception:
+            pass
+
     try:
         from ouroboros.agent import make_agent
         agent = make_agent(repo_dir=repo_dir, drive_root=drive_root, event_queue=out_q)

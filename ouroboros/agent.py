@@ -46,13 +46,17 @@ _worker_boot_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def _current_git_branch() -> str:
-    """Return current git branch name, fallback to 'main'."""
+    """Return current git branch name, using the repo this module lives in."""
     import subprocess
+    # Use the directory of this file as cwd — always inside the repo,
+    # regardless of which directory the (worker) process was started from.
+    _cwd = str(pathlib.Path(__file__).parent)
     try:
-        return subprocess.run(
+        out = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True,
-        ).stdout.strip() or "main"
+            cwd=_cwd, capture_output=True, text=True,
+        ).stdout.strip()
+        return out or "main"
     except Exception:
         return "main"
 
