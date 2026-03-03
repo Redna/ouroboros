@@ -106,7 +106,7 @@ class LLMClient:
         # Set OUROBOROS_ENABLE_THINKING=1 to re-enable.
         _enable_thinking = os.environ.get("OUROBOROS_ENABLE_THINKING", "0").strip() == "1"
         if not _enable_thinking:
-            kwargs["extra_body"] = {"enable_thinking": False}
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
         resp = client.chat.completions.create(**kwargs)
         resp_dict = resp.model_dump()
