@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,22 @@ _worker_boot_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _current_git_branch() -> str:
+    """Return current git branch name, fallback to 'main'."""
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True,
+        ).stdout.strip() or "main"
+    except Exception:
+        return "main"
+
+
+# ---------------------------------------------------------------------------
 # Environment + Paths
 # ---------------------------------------------------------------------------
 
@@ -49,7 +65,10 @@ _worker_boot_lock = threading.Lock()
 class Env:
     repo_dir: pathlib.Path
     drive_root: pathlib.Path
-    branch_dev: str = "ouroboros"
+    branch_dev: str = field(default_factory=lambda: (
+        os.environ.get("OUROBOROS_BRANCH_DEV", "").strip()
+        or _current_git_branch()
+    ))
 
     def repo_path(self, rel: str) -> pathlib.Path:
         return (self.repo_dir / safe_relpath(rel)).resolve()
