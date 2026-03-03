@@ -8,11 +8,26 @@ ToolRegistry collects all tools, provides schemas() and execute().
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.utils import safe_relpath
+
+
+def _current_git_branch() -> str:
+    """Return current git branch name, using the repo this module lives in."""
+    import subprocess
+    _cwd = str(pathlib.Path(__file__).parent)
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_cwd, capture_output=True, text=True,
+        ).stdout.strip()
+        return out or "main"
+    except Exception:
+        return "main"
 
 
 @dataclass
@@ -31,7 +46,10 @@ class ToolContext:
 
     repo_dir: pathlib.Path
     drive_root: pathlib.Path
-    branch_dev: str = "ouroboros"
+    branch_dev: str = field(default_factory=lambda: (
+        os.environ.get("OUROBOROS_BRANCH_DEV", "").strip()
+        or _current_git_branch()
+    ))
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
     current_chat_id: Optional[int] = None
     current_task_type: Optional[str] = None
@@ -79,7 +97,7 @@ class ToolEntry:
 CORE_TOOL_NAMES = {
     "repo_read", "repo_list", "repo_write_commit", "repo_commit_push",
     "drive_read", "drive_list", "drive_write",
-    "run_shell", "claude_code_edit",
+    "run_shell",
     "git_status", "git_diff",
     "schedule_task", "wait_for_task", "get_task_result",
     "update_scratchpad", "update_identity",
@@ -88,6 +106,7 @@ CORE_TOOL_NAMES = {
     "request_restart", "promote_to_stable",
     "knowledge_read", "knowledge_write",
     "browse_page", "browser_action", "analyze_screenshot",
+    # Note: codebase_health removed (use codebase_digest instead)
 }
 
 

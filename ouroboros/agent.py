@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,26 @@ _worker_boot_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _current_git_branch() -> str:
+    """Return current git branch name, using the repo this module lives in."""
+    import subprocess
+    # Use the directory of this file as cwd — always inside the repo,
+    # regardless of which directory the (worker) process was started from.
+    _cwd = str(pathlib.Path(__file__).parent)
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_cwd, capture_output=True, text=True,
+        ).stdout.strip()
+        return out or "main"
+    except Exception:
+        return "main"
+
+
+# ---------------------------------------------------------------------------
 # Environment + Paths
 # ---------------------------------------------------------------------------
 
@@ -49,7 +69,10 @@ _worker_boot_lock = threading.Lock()
 class Env:
     repo_dir: pathlib.Path
     drive_root: pathlib.Path
-    branch_dev: str = "ouroboros"
+    branch_dev: str = field(default_factory=lambda: (
+        os.environ.get("OUROBOROS_BRANCH_DEV", "").strip()
+        or _current_git_branch()
+    ))
 
     def repo_path(self, rel: str) -> pathlib.Path:
         return (self.repo_dir / safe_relpath(rel)).resolve()
