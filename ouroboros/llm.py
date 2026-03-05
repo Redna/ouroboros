@@ -10,11 +10,26 @@ Contract: chat(), vision_query(), default_model(), available_models(), add_usage
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+# --- Observability Setup ---
+# Set up a dedicated file logger for the LLM client
 log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG) # Set to DEBUG to capture detailed payloads
+
+# Create a file handler
+log_file = os.environ.get("OUROBOROS_LOG_FILE", "ouroboros_llm.log")
+file_handler = logging.FileHandler(log_file, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+
+# Create a formatter and add it to the handler
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+log.addHandler(file_handler)
+# ---------------------------
 
 # Default light model — override with OUROBOROS_MODEL_LIGHT env var.
 # Set to a small/fast model available on your vLLM server.
@@ -109,7 +124,19 @@ class LLMClient:
         if not _enable_thinking:
             kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
-        resp = client.chat.completions.create(**kwargs)
+        # --- Logging the Request ---
+        log.info(f"LLM Request | Model: {model} | Tools provided: {bool(tools and not _disable_tools)}")
+        log.debug(f"Request Messages:\n{json.dumps(messages, indent=2)}")
+        if tools and not _disable_tools:
+            log.debug(f"Request Tools:\n{json.dumps(tools, indent=2)}")
+        # ---------------------------
+
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as e:
+            log.error(f"LLM Call Failed: {str(e)}")
+            raise
+
         resp_dict = resp.model_dump()
         usage = resp_dict.get("usage") or {}
         choices = resp_dict.get("choices") or [{}]
@@ -124,6 +151,11 @@ class LLMClient:
         # Cost is N/A for local vLLM — always 0
         usage.setdefault("cost", 0.0)
 
+        # --- Logging the Response ---
+        log.info(f"LLM Response | Usage: {usage}")
+        log.debug(f"Response Message:\n{json.dumps(msg, indent=2)}")
+        # ----------------------------
+
         return msg, usage
 
     def vision_query(
@@ -134,22 +166,14 @@ class LLMClient:
         max_tokens: int = 1024,
         reasoning_effort: str = "low",
     ) -> Tuple[str, Dict[str, Any]]:
-        """Send a vision query to an LLM. Lightweight — no tools, no loop.
-
-        Args:
-            prompt: Text instruction for the model
-            images: List of image dicts. Each dict must have either:
-                - {"url": "https://..."}
-                - {"base64": "<b64>", "mime": "image/png"}
-            model: VLM-capable model ID (defaults to OUROBOROS_MODEL)
-            max_tokens: Max response tokens
-            reasoning_effort: Effort level (unused for vLLM, kept for API compat)
-
-        Returns:
-            (text_response, usage_dict)
-        """
+        """Send a vision query to an LLM. Lightweight — no tools, no loop."""
         if not model:
             model = self.default_model()
+
+        # --- Logging Vision Request ---
+        log.info(f"Vision Request | Model: {model} | Images: {len(images)}")
+        log.debug(f"Vision Prompt: {prompt}")
+        # ------------------------------
 
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
         for img in images:

@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 
-def _web_search(ctx: ToolContext, query: str) -> str:
+def _web_search(ctx: ToolContext | None, query: str) -> str:
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
     except ImportError:
         return json.dumps(
-            {"error": "duckduckgo_search package not installed. Run `pip install duckduckgo-search`."},
+            {"error": "ddgs package not installed. Run `pip install ddgs`."},
             ensure_ascii=False
         )
 
@@ -61,3 +62,22 @@ def get_tools() -> List[ToolEntry]:
             },
         }, _web_search),
     ]
+
+
+if __name__ == "__main__":
+    # To run this manually: python web_search_tool.py "your search query here"
+    
+    # Default query if none is provided via command line
+    search_query = "latest advancements in artificial intelligence"
+    
+    # If a command-line argument is provided, use it as the query
+    if len(sys.argv) > 1:
+        search_query = " ".join(sys.argv[1:])
+        
+    print(f"Executing manual test for query: '{search_query}'\n")
+    print("-" * 50)
+    
+    # We pass None for the ToolContext since it is not utilized in _web_search
+    output_json = _web_search(ctx=None, query=search_query)
+    
+    print(output_json)
