@@ -3,7 +3,7 @@
 .env.*
 *.key
 *.pem
-ouroboros_llm.log
+ouroboros_llm.log 
 # IDE
 .cursor/
 .vscode/
