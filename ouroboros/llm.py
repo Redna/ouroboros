@@ -84,8 +84,8 @@ class LLMClient:
 
     def _get_client(self):
         if self._client is None:
-            from openai import OpenAI
-            self._client = OpenAI(
+            from ouroboros.tracing import openai
+            self._client = openai.OpenAI(
                 base_url=self._base_url,
                 api_key=self._api_key,
             )

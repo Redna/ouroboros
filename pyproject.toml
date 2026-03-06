@@ -5,6 +5,7 @@ description = "Self-creating agent"
 requires-python = ">=3.10"
 dependencies = [
     "ddgs>=9.11.2",
+    "langfuse>=2.0.0",
     "openai>=2.24.0",
     "playwright>=1.58.0",
     "python-dotenv>=1.2.2",

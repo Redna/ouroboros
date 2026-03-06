@@ -17,6 +17,7 @@ from ouroboros.context import build_llm_messages
 from ouroboros.utils import (
     utc_now_iso, read_text, append_jsonl, get_git_info, sanitize_task_for_event
 )
+from ouroboros.tracing import observe, langfuse_context
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +283,7 @@ class OuroborosAgent:
         except Exception as e:
             return {'status': 'error', 'error': str(e)}, 0
 
+    @observe(name="handle_task")
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Worker-compatible entry point: execute one task and return pending events."""
         self._busy = True
@@ -291,6 +293,17 @@ class OuroborosAgent:
         self._current_task_type = task.get("type")
 
         task_id = task.get("id", "unknown")
+
+        # Update Langfuse trace with task metadata
+        if langfuse_context:
+            try:
+                langfuse_context.update_current_trace(
+                    name=f"task-{task.get('type', 'unknown')}",
+                    metadata={"task_id": task_id, "task_type": task.get("type")},
+                    user_id=str(task.get("chat_id", "")),
+                )
+            except Exception:
+                log.debug("Failed to update Langfuse trace metadata", exc_info=True)
 
         try:
             # Prepare context for the task
@@ -361,6 +374,12 @@ class OuroborosAgent:
             self._busy = False
             self._current_chat_id = None
             self._current_task_type = None
+            # Flush Langfuse traces at end of task
+            if langfuse_context:
+                try:
+                    langfuse_context.flush()
+                except Exception:
+                    log.debug("Failed to flush Langfuse traces", exc_info=True)
 
         return self._pending_events
 
