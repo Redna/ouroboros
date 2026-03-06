@@ -1,0 +1,21 @@
+services:
+  ouroboros:
+    build: .
+    container_name: ouroboros_agent
+    restart: unless-stopped
+    # Required for Playwright/Chromium sandboxing in some Linux environments
+    security_opt:
+      - seccomp:unconfined
+    env_file: .env
+    environment:
+      # These overwrite settings from .env to match the container's paths
+      - OUROBOROS_DRIVE_ROOT=/drive
+      - OUROBOROS_REPO_DIR=/app
+    volumes:
+      # Mount a local directory for persistent memory and logs
+      - ./ouroboros_data:/drive
+      # Mount the codebase so the agent can edit it and you can see it
+      - .:/app
+    extra_hosts:
+      # Allows the container to talk to the host machine's localhost (for your local LLM)
+      - "host.docker.internal:host-gateway"

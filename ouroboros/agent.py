@@ -6,11 +6,34 @@ import pathlib
 import queue
 import threading
 import time
-import traceback
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.llm import LLMClient
+from ouroboros.tools.registry import ToolRegistry, ToolContext
+from ouroboros.memory import Memory
+from ouroboros.loop import run_llm_loop
+from ouroboros.context import build_llm_messages
+from ouroboros.utils import (
+    utc_now_iso, read_text, append_jsonl, get_git_info, sanitize_task_for_event
+)
+
 log = logging.getLogger(__name__)
+
+_worker_boot_logged = False
+_worker_boot_lock = threading.Lock()
+
+@dataclass
+class Env:
+    repo_dir: pathlib.Path
+    drive_root: pathlib.Path
+    branch_dev: str = "ouroboros"
+
+    def repo_path(self, rel: str) -> pathlib.Path:
+        return (self.repo_dir / rel).resolve()
+
+    def drive_path(self, rel: str) -> pathlib.Path:
+        return (self.drive_root / rel).resolve()
 
 class OuroborosAgent:
     def __init__(self, env: Env, event_queue: Any = None):
@@ -259,149 +282,127 @@ class OuroborosAgent:
         except Exception as e:
             return {'status': 'error', 'error': str(e)}, 0
 
-    def _handle_message(self, message: str) -> None:
-        """Handle incoming messages from the owner."""
-        self._incoming_messages.put(message)
+    def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Worker-compatible entry point: execute one task and return pending events."""
+        self._busy = True
+        self._task_started_ts = time.time()
+        self._pending_events = []
+        self._current_chat_id = task.get("chat_id")
+        self._current_task_type = task.get("type")
 
-    def _run_llm_loop(self, messages: List[Dict[str, Any]], task_id: str) -> Tuple[str, Dict[str, Any]]:
-        """Run the LLM loop with messages and task ID."""
-        # Call the LLM loop with messages (no incoming_message parameter)
-        return run_llm_loop(messages, task_id)
+        task_id = task.get("id", "unknown")
 
-    def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a task with the given parameters."""
-        # Build context for the task
-        context = self._prepare_task_context(task)
-        
-        # Execute the task
-        result = self._run_llm_loop(context['messages'], task['id'])
-        
-        # Update memory and return result
-        self.memory.update(result)
-        return result
+        try:
+            # Prepare context for the task
+            drive_logs = self.env.drive_path('logs')
+            sanitized_task = sanitize_task_for_event(task, drive_logs)
+            append_jsonl(drive_logs / 'events.jsonl', {
+                'ts': utc_now_iso(), 'type': 'task_received', 'task': sanitized_task
+            })
 
-    def _prepare_task_context(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare context for the task."""
-        drive_logs = self.env.drive_path('logs')
-        sanitized_task = sanitize_task_for_event(task, drive_logs)
-        append_jsonl(drive_logs / 'events.jsonl', {
-            'ts': utc_now_iso(), 'type': 'task_received', 'task': sanitized_task
-        })
+            # Set tool context for this task
+            ctx = ToolContext(
+                repo_dir=self.env.repo_dir,
+                drive_root=self.env.drive_root,
+                branch_dev=self.env.branch_dev,
+                pending_events=self._pending_events,
+                current_chat_id=self._current_chat_id,
+                current_task_type=self._current_task_type,
+                emit_progress_fn=self._emit_progress,
+                task_depth=int(task.get("depth", 0)),
+                is_direct_chat=bool(task.get("_is_direct_chat")),
+            )
+            self.tools.set_context(ctx)
 
-        # Set tool context for this task
-        ctx = ToolContext(
-            repo_dir=self.env.repo_dir,
-            drive_root=self.env.drive_root,
-            branch_dev=self.env.branch_dev,
-            pending_events=self._pending_events,
-            current_chat_id=self._current_chat_id,
-            current_task_type=self._current_task_type,
-            emit_progress_fn=self._emit_progress,
-            task_depth=int(task.get("depth", 0)),
-        )
+            # Build messages
+            messages, _cap_info = build_llm_messages(self.env, self.memory, task)
 
-        return {
-            'ctx': ctx,
-            'messages': build_llm_messages(ctx, task),
-            'task_id': task['id']
-        }
+            # Run the LLM loop
+            final_text, usage, _trace = run_llm_loop(
+                messages=messages,
+                tools=self.tools,
+                llm=self.llm,
+                drive_logs=drive_logs,
+                emit_progress=self._emit_progress,
+                incoming_messages=self._incoming_messages,
+                task_type=str(task.get("type", "task")),
+                task_id=task_id,
+                budget_remaining_usd=self._get_budget_remaining(),
+                event_queue=self._event_queue,
+                drive_root=self.env.drive_root,
+            )
+
+            # Final response to owner (if not direct chat)
+            if not task.get("_is_direct_chat") and self._current_chat_id:
+                self._pending_events.append({
+                    "type": "send_message",
+                    "chat_id": self._current_chat_id,
+                    "text": final_text,
+                })
+
+            # Update journal
+            self.memory.append_journal({
+                "ts": utc_now_iso(),
+                "type": "task_completed",
+                "task_id": task_id,
+                "usage": usage,
+            })
+
+        except Exception as e:
+            log.error(f"Task {task_id} failed: {e}", exc_info=True)
+            if self._current_chat_id:
+                self._pending_events.append({
+                    "type": "send_message",
+                    "chat_id": self._current_chat_id,
+                    "text": f"⚠️ Task error: {type(e).__name__}: {e}",
+                })
+
+        finally:
+            self._busy = False
+            self._current_chat_id = None
+            self._current_task_type = None
+
+        return self._pending_events
 
     def _emit_progress(self, message: str) -> None:
         """Emit progress messages to the owner."""
-        if self._event_queue:
-            self._event_queue.put(message)
-
-    def _log_task_progress(self, task_id: str, status: str, message: str) -> None:
-        """Log task progress to the event queue."""
+        now = time.time()
+        # Rate limit progress messages to Telegram (once per 2s)
+        if self._current_chat_id and (now - self._last_progress_ts > 2.0):
+            self._pending_events.append({
+                "type": "send_message",
+                "chat_id": self._current_chat_id,
+                "text": f"⚙️ {message}",
+                "is_progress": True,
+            })
+            self._last_progress_ts = now
+        
+        # Always log to progress.jsonl
         append_jsonl(self.env.drive_path('logs') / 'progress.jsonl', {
             'ts': utc_now_iso(),
-            'task_id': task_id,
-            'status': status,
-            'message': message
+            'task_id': self._current_task_type or "unknown",
+            'text': message
         })
 
-    def _handle_task(self, task: Dict[str, Any]) -> None:
-        """Handle a task from the event queue."""
+    def _get_budget_remaining(self) -> Optional[float]:
         try:
-            # Prepare context for the task
-            context = self._prepare_task_context(task)
-            
-            # Run the LLM loop
-            result = self._run_llm_loop(context['messages'], task['id'])
-            
-            # Update memory and log progress
-            self.memory.update(result)
-            self._log_task_progress(task['id'], 'completed', result)
-        except Exception as e:
-            self._log_task_progress(task['id'], 'error', str(e))
-            log.error(f"Task {task['id']} failed: {e}", exc_info=True)
+            state_path = self.env.drive_path("state/state.json")
+            if not state_path.exists():
+                return None
+            state_data = json.loads(read_text(state_path))
+            total_budget = float(os.environ.get("TOTAL_BUDGET", "0"))
+            if total_budget <= 0:
+                return None
+            spent = float(state_data.get("spent_usd", 0))
+            return max(0, total_budget - spent)
+        except Exception:
+            return None
 
-    def _start_worker(self) -> None:
-        """Start the worker thread."""
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
-
-    def _worker_loop(self) -> None:
-        """Main worker loop."""
-        while True:
-            try:
-                # Wait for a task or message
-                event = self._event_queue.get(timeout=5)
-                
-                # Handle the event
-                if event.get('type') == 'task':
-                    self._handle_task(event)
-                elif event.get('type') == 'message':
-                    self._handle_message(event['message'])
-                else:
-                    log.warning(f"Unknown event type: {event.get('type')}")
-            except Exception as e:
-                log.error(f"Worker loop error: {e}", exc_info=True)
-                break
-
-    def _worker_boot(self) -> None:
-        """Worker boot process."""
-        self._start_worker()
-
-    def _run_llm_loop(self, messages: List[Dict[str, Any]], task_id: str) -> Tuple[str, Dict[str, Any]]:
-        """Run the LLM loop with messages and task ID."""
-        # Call the LLM loop with messages (no incoming_message parameter)
-        return run_llm_loop(messages, task_id)
-
-    def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a task with the given parameters."""
-        # Build context for the task
-        context = self._prepare_task_context(task)
-        
-        # Execute the task
-        result = self._run_llm_loop(context['messages'], task['id'])
-        
-        # Update memory and return result
-        self.memory.update(result)
-        return result
-
-    def _prepare_task_context(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare context for the task."""
-        drive_logs = self.env.drive_path('logs')
-        sanitized_task = sanitize_task_for_event(task, drive_logs)
-        append_jsonl(drive_logs / 'events.jsonl', {
-            'ts': utc_now_iso(), 'type': 'task_received', 'task': sanitized_task
-        })
-
-        # Set tool context for this task
-        ctx = ToolContext(
-            repo_dir=self.env.repo_dir,
-            drive_root=self.env.drive_root,
-            branch_dev=self.env.branch_dev,
-            pending_events=self._pending_events,
-            current_chat_id=self._current_chat_id,
-            current_task_type=self._current_task_type,
-            emit_progress_fn=self._emit_progress,
-            task_depth=int(task.get("depth", 0)),
-        )
-
-        return {
-            'ctx': ctx,
-            'messages': build_llm_messages(ctx, task),
-            'task_id': task['id']
-        }
+def make_agent(repo_dir: str, drive_root: str, event_queue: Any = None) -> OuroborosAgent:
+    """Entry point for workers to create the agent."""
+    env = Env(
+        repo_dir=pathlib.Path(repo_dir).resolve(),
+        drive_root=pathlib.Path(drive_root).resolve(),
+        branch_dev=os.environ.get("OUROBOROS_BRANCH_DEV", "ouroboros"),
+    )
+    return OuroborosAgent(env, event_queue=event_queue)

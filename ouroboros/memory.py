@@ -3,17 +3,21 @@ Ouroboros — Memory.
 
 Scratchpad, identity, chat history.
 Contract: load scratchpad/identity, chat_history().
+Uses file locks and atomic writes to prevent concurrency issues (Constitution P1).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import pathlib
+import time
+import uuid
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from ouroboros.utils import utc_now_iso, read_text, write_text, append_jsonl, short
+from ouroboros.utils import utc_now_iso, read_text, append_jsonl, short
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +28,7 @@ class Memory:
     def __init__(self, drive_root: pathlib.Path, repo_dir: Optional[pathlib.Path] = None):
         self.drive_root = drive_root
         self.repo_dir = repo_dir
+        self._lock_dir = drive_root / "locks"
 
     # --- Paths ---
 
@@ -42,35 +47,99 @@ class Memory:
     def logs_path(self, name: str) -> pathlib.Path:
         return (self.drive_root / "logs" / name).resolve()
 
+    # --- Locking & Atomic Writes ---
+
+    def _acquire_lock(self, name: str, timeout_sec: float = 5.0) -> Optional[int]:
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = self._lock_dir / f"{name}.lock"
+        stale_sec = 60.0
+        started = time.time()
+        while (time.time() - started) < timeout_sec:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                return fd
+            except FileExistsError:
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                    if age > stale_sec:
+                        lock_path.unlink()
+                        continue
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        return None
+
+    def _release_lock(self, name: str, fd: Optional[int]) -> None:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                (self._lock_dir / f"{name}.lock").unlink()
+            except Exception:
+                pass
+
+    def _atomic_write(self, path: pathlib.Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex}")
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(str(tmp), str(path))
+        except Exception as e:
+            if tmp.exists():
+                tmp.unlink()
+            raise e
+
     # --- Load / save ---
 
     def load_scratchpad(self) -> str:
-        p = self.scratchpad_path()
-        if p.exists():
-            return read_text(p)
-        default = self._default_scratchpad()
-        write_text(p, default)
-        return default
+        fd = self._acquire_lock("scratchpad")
+        try:
+            p = self.scratchpad_path()
+            if p.exists():
+                return read_text(p)
+            default = self._default_scratchpad()
+            self._atomic_write(p, default)
+            return default
+        finally:
+            self._release_lock("scratchpad", fd)
 
     def save_scratchpad(self, content: str) -> None:
-        write_text(self.scratchpad_path(), content)
+        fd = self._acquire_lock("scratchpad")
+        try:
+            self._atomic_write(self.scratchpad_path(), content)
+        finally:
+            self._release_lock("scratchpad", fd)
 
     def load_identity(self) -> str:
-        p = self.identity_path()
-        if p.exists():
-            return read_text(p)
-        default = self._default_identity()
-        write_text(p, default)
-        return default
+        fd = self._acquire_lock("identity")
+        try:
+            p = self.identity_path()
+            if p.exists():
+                return read_text(p)
+            default = self._default_identity()
+            self._atomic_write(p, default)
+            return default
+        finally:
+            self._release_lock("identity", fd)
+
+    def save_identity(self, content: str) -> None:
+        fd = self._acquire_lock("identity")
+        try:
+            self._atomic_write(self.identity_path(), content)
+        finally:
+            self._release_lock("identity", fd)
 
     def ensure_files(self) -> None:
         """Create memory files if they don't exist."""
         if not self.scratchpad_path().exists():
-            write_text(self.scratchpad_path(), self._default_scratchpad())
+            self.save_scratchpad(self._default_scratchpad())
         if not self.identity_path().exists():
-            write_text(self.identity_path(), self._default_identity())
+            self.save_identity(self._default_identity())
         if not self.journal_path().exists():
-            write_text(self.journal_path(), "")
+            from ouroboros.utils import write_text as utils_write
+            utils_write(self.journal_path(), "")
 
     # --- Chat history ---
 
@@ -157,8 +226,6 @@ class Memory:
             direction = "→" if dir_raw in ("out", "outgoing") else "←"
             ts_full = e.get("ts", "")
             ts_hhmm = ts_full[11:16] if len(ts_full) >= 16 else ""
-            # Creator messages: no truncation (most valuable context)
-            # Outgoing messages: truncate to 800 chars
             raw_text = str(e.get("text", ""))
             if dir_raw in ("out", "outgoing"):
                 text = short(raw_text, 800)
