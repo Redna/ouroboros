@@ -202,7 +202,7 @@ class OuroborosAgent:
             # Check pyproject.toml version
             pyproject_path = self.env.repo_path("pyproject.toml")
             pyproject_content = read_text(pyproject_path)
-            match = re.search(r'^version\s*=\s*\["\']([^\"']+)\["\']', pyproject_content, re.MULTILINE)
+            match = re.search(r'''^version\s*=\s*["']([^"']+)["']''', pyproject_content, re.MULTILINE)
             if match:
                 pyproject_version = match.group(1)
                 result_data["pyproject_version"] = pyproject_version

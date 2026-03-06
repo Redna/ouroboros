@@ -12,10 +12,13 @@ services:
       - OUROBOROS_DRIVE_ROOT=/drive
       - OUROBOROS_REPO_DIR=/app
     volumes:
-      # Mount a local directory for persistent memory and logs
-      - ./ouroboros_data:/drive
+      # Mount a volume for persistent memory and logs outside the repo
+      - ouroboros_data:/drive
       # Mount the codebase so the agent can edit it and you can see it
       - .:/app
     extra_hosts:
       # Allows the container to talk to the host machine's localhost (for your local LLM)
       - "host.docker.internal:host-gateway"
+
+volumes:
+  ouroboros_data:
