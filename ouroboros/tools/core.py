@@ -267,7 +267,7 @@ Now write a comprehensive summary:"""
         response, usage = llm.chat(
             messages=messages,
             model=model,
-            max_tokens=4096,
+            max_tokens=None,
         )
 
         # Track cost in budget system

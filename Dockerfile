@@ -13,7 +13,7 @@ WORKDIR /app
 
 # Install git and other basic utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl && \
+    git curl gosu sudo && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast package management
@@ -28,11 +28,10 @@ RUN uv pip install --system -e .
 # Copy the rest of the application
 COPY . .
 
-# Set up git config for the agent (prevents git commit errors)
-RUN git config --global user.name "Ouroboros" && \
-    git config --global user.email "ouroboros@agent.local" && \
-    git config --global init.defaultBranch ouroboros && \
-    git config --global --add safe.directory /app
+# Add the entrypoint script
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # The entrypoint launches the supervisor
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["python", "-m", "supervisor.main"]

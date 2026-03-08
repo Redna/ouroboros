@@ -197,7 +197,7 @@ class BackgroundConsciousness:
                     model=model,
                     tools=tools,
                     reasoning_effort="low",
-                    max_tokens=2048,
+                    # Uses global default (configurable via OUROBOROS_MAX_TOKENS)
                 )
                 cost = float(usage.get("cost") or 0)
                 total_cost += cost

@@ -11,6 +11,9 @@ services:
       # These overwrite settings from .env to match the container's paths
       - OUROBOROS_DRIVE_ROOT=/drive
       - OUROBOROS_REPO_DIR=/app
+      # Optional: User ID and Group ID to run the container as (prevents ownership issues on host)
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
     volumes:
       # Mount a volume for persistent memory and logs outside the repo
       - ouroboros_data:/drive

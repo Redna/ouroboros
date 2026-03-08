@@ -35,6 +35,9 @@ log.addHandler(file_handler)
 # Set to a small/fast model available on your vLLM server.
 DEFAULT_LIGHT_MODEL = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
 
+# Default max tokens for completions — override with OUROBOROS_MAX_TOKENS.
+DEFAULT_MAX_TOKENS = int(os.environ.get("OUROBOROS_MAX_TOKENS", "16384"))
+
 
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
     allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
@@ -97,7 +100,7 @@ class LLMClient:
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         reasoning_effort: str = "medium",
-        max_tokens: int = 8192,
+        max_tokens: Optional[int] = None,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns (response_message_dict, usage_dict).
@@ -107,10 +110,13 @@ class LLMClient:
         """
         client = self._get_client()
 
+        # Use explicitly provided max_tokens or fallback to global default
+        _max_tokens = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+
         kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": _max_tokens,
         }
         _disable_tools = os.environ.get("OUROBOROS_DISABLE_TOOLS", "0").strip() == "1"
         if tools and not _disable_tools:
@@ -163,12 +169,15 @@ class LLMClient:
         prompt: str,
         images: List[Dict[str, Any]],
         model: str = "",
-        max_tokens: int = 1024,
+        max_tokens: Optional[int] = None,
         reasoning_effort: str = "low",
     ) -> Tuple[str, Dict[str, Any]]:
         """Send a vision query to an LLM. Lightweight — no tools, no loop."""
         if not model:
             model = self.default_model()
+
+        # Use explicitly provided max_tokens or fallback to global default (lower for vision usually, but user wants more)
+        _max_tokens = max_tokens if max_tokens is not None else min(4096, DEFAULT_MAX_TOKENS)
 
         # --- Logging Vision Request ---
         log.info(f"Vision Request | Model: {model} | Images: {len(images)}")
@@ -197,7 +206,7 @@ class LLMClient:
             model=model,
             tools=None,
             reasoning_effort=reasoning_effort,
-            max_tokens=max_tokens,
+            max_tokens=_max_tokens,
         )
         text = response_msg.get("content") or ""
         return text, usage
