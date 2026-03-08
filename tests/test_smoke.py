@@ -302,7 +302,8 @@ def test_bible_exists_and_has_principles():
     """BIBLE.md exists and contains all 9 principles (0-8)."""
     bible = (REPO / "BIBLE.md").read_text()
     for i in range(9):
-        assert f"Principle {i}" in bible, f"Principle {i} missing from BIBLE.md"
+        # Support both 'Principle i' and 'Pi:' (e.g. 'P0:')
+        assert f"Principle {i}" in bible or f"P{i}:" in bible, f"Principle {i} missing from BIBLE.md"
 
 
 # ── Code quality invariants ──────────────────────────────────────

@@ -364,27 +364,31 @@ def build_llm_messages(
 
     dynamic_text = "\n\n".join(dynamic_parts)
 
-    # System message with 3 content blocks for optimal caching
+    # --- System message construction ---
+    # Default to single string for maximum compatibility with OpenAI-style endpoints (vLLM, etc).
+    # Multi-part content with cache_control is an Anthropic-specific extension.
+    system_content: str | List[Dict[str, Any]] = f"{static_text}\n\n{semi_stable_text}\n\n{dynamic_text}"
+
+    if os.environ.get("OUROBOROS_PROMPT_CACHE", "").lower() == "anthropic":
+        system_content = [
+            {
+                "type": "text",
+                "text": static_text,
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            },
+            {
+                "type": "text",
+                "text": semi_stable_text,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": dynamic_text,
+            },
+        ]
+
     messages: List[Dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": static_text,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                },
-                {
-                    "type": "text",
-                    "text": semi_stable_text,
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": dynamic_text,
-                },
-            ],
-        },
+        {"role": "system", "content": system_content},
         {"role": "user", "content": _build_user_content(task)},
     ]
 
@@ -392,6 +396,26 @@ def build_llm_messages(
     messages, cap_info = apply_message_token_soft_cap(messages, 200000)
 
     return messages, cap_info
+
+
+def _prune_text_section(text: str, prefix: str, info: Dict[str, Any]) -> str:
+    """Helper to surgically remove a section starting with prefix until next ##."""
+    if prefix not in text:
+        return text
+
+    lines = text.split("\n")
+    new_lines = []
+    skip_section = False
+    for line in lines:
+        if line.startswith(prefix):
+            skip_section = True
+            info["trimmed_sections"].append(prefix)
+            continue
+        if skip_section and line.startswith("## "):
+            skip_section = False
+        if not skip_section:
+            new_lines.append(line)
+    return "\n".join(new_lines).strip()
 
 
 def apply_message_token_soft_cap(
@@ -426,7 +450,7 @@ def apply_message_token_soft_cap(
     if soft_cap_tokens <= 0 or estimated <= soft_cap_tokens:
         return messages, info
 
-    # Prune log summaries from the dynamic text block in multipart system messages
+    # Prune log summaries from the dynamic sections
     prunable = ["## Recent chat", "## Recent progress", "## Recent tools", "## Recent events", "## Supervisor"]
     pruned = copy.deepcopy(messages)
     for prefix in prunable:
@@ -435,35 +459,23 @@ def apply_message_token_soft_cap(
         for i, msg in enumerate(pruned):
             content = msg.get("content")
 
-            # Handle multipart content (trim from dynamic text block)
-            if isinstance(content, list) and msg.get("role") == "system":
-                # Find the dynamic text block (the block without cache_control)
-                for j, block in enumerate(content):
-                    if (isinstance(block, dict) and
-                        block.get("type") == "text" and
-                        "cache_control" not in block):
-                        text = block.get("text", "")
-                        if prefix in text:
-                            # Remove this section from the dynamic text
-                            lines = text.split("\n\n")
-                            new_lines = []
-                            skip_section = False
-                            for line in lines:
-                                if line.startswith(prefix):
-                                    skip_section = True
-                                    info["trimmed_sections"].append(prefix)
-                                    continue
-                                if line.startswith("##"):
-                                    skip_section = False
-                                if not skip_section:
-                                    new_lines.append(line)
-
-                            block["text"] = "\n\n".join(new_lines)
+            # Handle system message pruning
+            if msg.get("role") == "system":
+                if isinstance(content, list):
+                    # Multi-part: Find the dynamic text block (the block without cache_control or the last one)
+                    for j, block in enumerate(content):
+                        if (isinstance(block, dict) and
+                            block.get("type") == "text" and
+                            "cache_control" not in block):
+                            block["text"] = _prune_text_section(block.get("text", ""), prefix, info)
                             estimated = sum(_estimate_message_tokens(m) for m in pruned)
                             break
-                break
+                elif isinstance(content, str):
+                    # Single string: Prune directly
+                    pruned[i]["content"] = _prune_text_section(content, prefix, info)
+                    estimated = sum(_estimate_message_tokens(m) for m in pruned)
 
-            # Handle legacy string content (for backwards compatibility)
+            # Handle legacy string content in other messages
             elif isinstance(content, str) and content.startswith(prefix):
                 pruned.pop(i)
                 info["trimmed_sections"].append(prefix)
