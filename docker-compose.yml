@@ -1,167 +1,102 @@
 services:
+  nginx-proxy:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - ./nginx_data:/data
+      - ./nginx_letsencrypt:/etc/letsencrypt
+
+  dashboard:
+    image: linuxserver/heimdall:latest
+    container_name: heimdall
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Berlin
+    volumes:
+      - ./heimdall_data:/config
+    ports:
+      - "8080:80"
+
+  vllm:
+    image: vllm/vllm-openai-rocm:latest
+    container_name: vllm_server_v2
+    restart: unless-stopped
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    ipc: host
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
+      - HIP_FORCE_DEV_KERNARG=1
+      - TORCH_BLAS_PREFER_HIPBLASLT=1
+      - VLLM_USE_TRITON_FLASH_ATTN=0
+    command:
+      - "--model"
+      - "Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4"
+      - "--quantization"
+      - "gptq"
+      - "--kv-cache-dtype"
+      - "fp8"
+      - "--max-model-len"
+      - "32768"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--dtype"
+      - "float16"
+      - "--enforce-eager"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen"
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    environment:
+      - OPENAI_API_BASE_URL=http://vllm:8000/v1
+      - OPENAI_API_KEY=local-vllm-key
+    volumes:
+      - ./webui_data:/app/backend/data
+    depends_on:
+      - vllm
+
   ouroboros:
     build: .
     container_name: ouroboros_agent
     restart: unless-stopped
-    # Required for Playwright/Chromium sandboxing in some Linux environments
     security_opt:
       - seccomp:unconfined
     env_file: .env
     environment:
-      # These overwrite settings from .env to match the container's paths
       - OUROBOROS_DRIVE_ROOT=/drive
       - OUROBOROS_REPO_DIR=/app
-      # Optional: User ID and Group ID to run the container as (prevents ownership issues on host)
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      - VLLM_BASE_URL=http://vllm:8000/v1
     volumes:
-      # Mount a volume for persistent memory and logs outside the repo
       - ouroboros_data:/drive
-      # Mount the codebase so the agent can edit it and you can see it
       - .:/app
-    extra_hosts:
-      # Allows the container to talk to the host machine's localhost (for your local LLM)
-      - "host.docker.internal:host-gateway"
-
-  # ─── Langfuse Tracing Stack (opt-in) ─────────────────────────────────────
-  # Start with: docker compose --profile langfuse up
-  # Then open http://localhost:3030 to access the Langfuse UI.
-
-  # Worker is defined first so we can anchor (&) the shared env block here,
-  # then merge (<<: *) into langfuse-web below.
-  langfuse-worker:
-    image: langfuse/langfuse-worker:3
-    profiles: [langfuse]
-    container_name: langfuse_worker
-    restart: unless-stopped
-    depends_on: &langfuse-depends-on
-      langfuse-db:
-        condition: service_healthy
-      langfuse-clickhouse:
-        condition: service_healthy
-      langfuse-redis:
-        condition: service_healthy
-      langfuse-minio:
-        condition: service_healthy
-    environment: &langfuse-worker-env
-      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
-      SALT: mysalt-change-me-in-production
-      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
-      # ClickHouse
-      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
-      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
-      CLICKHOUSE_CLUSTER_ENABLED: "false"
-      # S3 / MinIO — events
-      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
-      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
-      # S3 / MinIO — media
-      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
-      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
-      # Redis
-      REDIS_HOST: langfuse-redis
-      REDIS_PORT: "6379"
-      REDIS_AUTH: myredissecret
-
-  langfuse-web:
-    image: langfuse/langfuse:3
-    profiles: [langfuse]
-    container_name: langfuse_web
-    restart: unless-stopped
-    depends_on: *langfuse-depends-on
-    ports:
-      - "3030:3000"
-    environment:
-      <<: *langfuse-worker-env
-      NEXTAUTH_URL: http://localhost:3030
-      NEXTAUTH_SECRET: mysecretkey-change-me-in-production
-
-  langfuse-db:
-    image: postgres:17-alpine
-    profiles: [langfuse]
-    container_name: langfuse_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: langfuse
-      POSTGRES_PASSWORD: langfuse
-      POSTGRES_DB: langfuse
-    volumes:
-      - langfuse_pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U langfuse"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
-  langfuse-clickhouse:
-    image: clickhouse/clickhouse-server
-    profiles: [langfuse]
-    container_name: langfuse_clickhouse
-    restart: unless-stopped
-    user: "101:101"
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
-    volumes:
-      - langfuse_ch_data:/var/lib/clickhouse
-      - langfuse_ch_logs:/var/log/clickhouse-server
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 1s
-
-  langfuse-redis:
-    image: redis:7
-    profiles: [langfuse]
-    container_name: langfuse_redis
-    restart: unless-stopped
-    command: >
-      --requirepass myredissecret
-      --maxmemory-policy noeviction
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
-      interval: 3s
-      timeout: 10s
-      retries: 10
-
-  langfuse-minio:
-    image: minio/minio
-    profiles: [langfuse]
-    container_name: langfuse_minio
-    restart: unless-stopped
-    entrypoint: sh
-    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: miniosecret
-    ports:
-      - "9090:9000"
-    volumes:
-      - langfuse_minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 1s
-      timeout: 5s
-      retries: 5
-      start_period: 1s
+    depends_on:
+      - vllm
 
 volumes:
   ouroboros_data:
-  langfuse_pg_data:
-  langfuse_ch_data:
-  langfuse_ch_logs:
-  langfuse_minio_data:
