@@ -1,84 +1,4 @@
 services:
-  nginx-proxy:
-    image: 'jc21/nginx-proxy-manager:latest'
-    container_name: nginx-proxy
-    restart: unless-stopped
-    ports:
-      - '80:80'
-      - '81:81'
-      - '443:443'
-    volumes:
-      - ./nginx_data:/data
-      - ./nginx_letsencrypt:/etc/letsencrypt
-
-  dashboard:
-    image: linuxserver/heimdall:latest
-    container_name: heimdall
-    restart: unless-stopped
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Europe/Berlin
-    volumes:
-      - ./heimdall_data:/config
-    ports:
-      - "8080:80"
-
-  vllm:
-    image: vllm/vllm-openai-rocm:latest
-    container_name: vllm_server_v2
-    restart: unless-stopped
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    group_add:
-      - video
-    cap_add:
-      - SYS_PTRACE
-    security_opt:
-      - seccomp=unconfined
-    ipc: host
-    volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
-    ports:
-      - "8000:8000"
-    environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.0.0
-      - HIP_FORCE_DEV_KERNARG=1
-      - TORCH_BLAS_PREFER_HIPBLASLT=1
-      - VLLM_USE_TRITON_FLASH_ATTN=0
-    command:
-      - "--model"
-      - "Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4"
-      - "--quantization"
-      - "gptq"
-      - "--kv-cache-dtype"
-      - "fp8"
-      - "--max-model-len"
-      - "32768"
-      - "--gpu-memory-utilization"
-      - "0.9"
-      - "--dtype"
-      - "float16"
-      - "--enforce-eager"
-      - "--enable-auto-tool-choice"
-      - "--tool-call-parser"
-      - "qwen"
-
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    restart: unless-stopped
-    ports:
-      - "3000:8080"
-    environment:
-      - OPENAI_API_BASE_URL=http://vllm:8000/v1
-      - OPENAI_API_KEY=local-vllm-key
-    volumes:
-      - ./webui_data:/app/backend/data
-    depends_on:
-      - vllm
-
   ouroboros:
     build: .
     container_name: ouroboros_agent
@@ -91,12 +11,16 @@ services:
       - OUROBOROS_REPO_DIR=/app
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
-      - VLLM_BASE_URL=http://vllm:8000/v1
+      - VLLM_BASE_URL=http://vllm_server_v2:8000/v1
     volumes:
       - ouroboros_data:/drive
       - .:/app
-    depends_on:
-      - vllm
+    networks:
+      - ouroboros_net
+
+networks:
+  ouroboros_net:
+    external: true
 
 volumes:
   ouroboros_data:
