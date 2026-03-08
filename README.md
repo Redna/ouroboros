@@ -1,8 +1,5 @@
 # Ouroboros
 
-> **New version available:** [Ouroboros Desktop](https://github.com/joi-lab/ouroboros-desktop) — native macOS app with web UI and local model support. This repo is the original Colab/Telegram version.
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/joi-lab/ouroboros/blob/main/notebooks/quickstart.ipynb)
 [![Telegram](https://img.shields.io/badge/Telegram-blue?logo=telegram)](https://t.me/abstractDL)
 [![X (Twitter)](https://img.shields.io/badge/X-updates-black?logo=x)](https://x.com/abstractdl)
 [![GitHub stars](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fjoi-lab%2Fouroboros&query=%24.stargazers_count&label=stars&logo=github)](https://github.com/joi-lab/ouroboros/stargazers)
@@ -24,7 +21,7 @@ Most AI agents execute tasks. Ouroboros **creates itself.**
 - **Constitution** -- Governed by [BIBLE.md](BIBLE.md) (9 philosophical principles). Philosophy first, code second.
 - **Background Consciousness** -- Thinks between tasks. Has an inner life. Not reactive -- proactive.
 - **Identity Persistence** -- One continuous being across restarts. Remembers who it is, what it has done, and what it is becoming.
-- **Multi-Model Review** -- Uses other LLMs (o3, Gemini, Claude) to review its own changes before committing.
+- **Multi-Model Review** -- Uses multiple models from your local vLLM to review its own changes before committing.
 - **Task Decomposition** -- Breaks complex work into focused subtasks with parent/child tracking.
 - **30+ Evolution Cycles** -- From v4.1 to v4.25 in 24 hours, autonomously.
 
@@ -33,7 +30,7 @@ Most AI agents execute tasks. Ouroboros **creates itself.**
 ## Architecture
 
 ```
-Telegram --> colab_launcher.py
+Telegram --> entrypoint.sh (Docker)
                 |
             supervisor/              (process management)
               state.py              -- state, budget tracking
@@ -57,7 +54,7 @@ Telegram --> colab_launcher.py
                 control.py          -- restart, evolve, review
                 browser.py          -- Playwright (stealth)
                 review.py           -- multi-model review
-              llm.py                -- OpenRouter client
+              llm.py                -- vLLM client (OpenAI-compatible)
               memory.py             -- scratchpad, identity, chat
               review.py             -- code metrics
               utils.py              -- utilities
@@ -65,39 +62,33 @@ Telegram --> colab_launcher.py
 
 ---
 
-## Quick Start (Google Colab)
+## Quick Start (Docker)
 
 ### Step 1: Create a Telegram Bot
 
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
 2. Send `/newbot` and follow the prompts to choose a name and username.
 3. Copy the **bot token**.
-4. You will use this token as `TELEGRAM_BOT_TOKEN` in the next step.
+4. You will use this token as `TELEGRAM_BOT_TOKEN`.
 
-### Step 2: Get API Keys
+### Step 2: Set Up Environment
 
-| Key | Required | Where to get it |
-|-----|----------|-----------------|
-| `OPENROUTER_API_KEY` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
+| Key | Required | Description |
+|-----|----------|-------------|
+| `VLLM_BASE_URL` | Yes | Your local OpenAI-compatible API endpoint (e.g. `http://localhost:8000/v1`) |
 | `TELEGRAM_BOT_TOKEN` | Yes | [@BotFather](https://t.me/BotFather) on Telegram (see Step 1) |
-| `TOTAL_BUDGET` | Yes | Your spending limit in USD (e.g. `50`) |
 | `GITHUB_TOKEN` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
-| `OPENAI_API_KEY` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
-| `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
+| `OUROBOROS_MODEL` | Yes | The name of the model to use (as registered in your vLLM) |
+| `OUROBOROS_DRIVE_ROOT`| Yes | Path to the persistent volume for state and logs (e.g. `/drive`) |
 
-### Step 3: Set Up Google Colab
+### Step 3: Run with Docker
 
-1. Open a new notebook at [colab.research.google.com](https://colab.research.google.com/).
-2. Go to the menu: **Runtime > Change runtime type** and select a **GPU** (optional, but recommended for browser automation).
-3. Click the **key icon** in the left sidebar (Secrets) and add each API key from the table above. Make sure "Notebook access" is toggled on for each secret.
+1. **Fork** this repository on GitHub.
+2. Clone your fork and run with Docker Compose:
 
-### Step 4: Fork and Run
-
-1. **Fork** this repository on GitHub: click the **Fork** button at the top of the page.
-2. Paste the following into a Google Colab cell and press **Shift+Enter** to run:
-
-```python
-import os
+```bash
+docker-compose up -d
+```
 
 # ⚠️ CHANGE THESE to your GitHub username and forked repo name
 CFG = {

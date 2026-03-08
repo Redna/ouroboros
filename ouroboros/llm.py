@@ -131,10 +131,21 @@ class LLMClient:
             kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
         # --- Logging the Request ---
-        log.info(f"LLM Request | Model: {model} | Tools provided: {bool(tools and not _disable_tools)}")
-        log.debug(f"Request Messages:\n{json.dumps(messages, indent=2)}")
-        if tools and not _disable_tools:
-            log.debug(f"Request Tools:\n{json.dumps(tools, indent=2)}")
+        _tool_names = [t.get("function", {}).get("name") for t in (tools or [])]
+        log.info(f"LLM Request | Model: {model} | Tools ({len(_tool_names)}): {', '.join(_tool_names) if _tool_names else 'none'}")
+
+        if os.environ.get("OUROBOROS_DEBUG_LLM") == "1":
+            log.debug(f"Request Messages:\n{json.dumps(messages, indent=2)}")
+            if tools and not _disable_tools:
+                log.debug(f"Request Tools:\n{json.dumps(tools, indent=2)}")
+        else:
+            from ouroboros.utils import short
+            last_msg = messages[-1] if messages else {}
+            log.debug(
+                f"Request Messages: count={len(messages)}, "
+                f"last_role={last_msg.get('role')}, "
+                f"last_content='{short(last_msg.get('content',''), 80)}'"
+            )
         # ---------------------------
 
         try:
@@ -159,7 +170,13 @@ class LLMClient:
 
         # --- Logging the Response ---
         log.info(f"LLM Response | Usage: {usage}")
-        log.debug(f"Response Message:\n{json.dumps(msg, indent=2)}")
+        if os.environ.get("OUROBOROS_DEBUG_LLM") == "1":
+            log.debug(f"Response Message:\n{json.dumps(msg, indent=2)}")
+        else:
+            from ouroboros.utils import short
+            content = msg.get("content") or ""
+            tcalls = msg.get("tool_calls") or []
+            log.debug(f"Response Message: content='{short(content, 80)}', tool_calls={len(tcalls)}")
         # ----------------------------
 
         return msg, usage
