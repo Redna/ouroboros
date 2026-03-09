@@ -1,92 +1,84 @@
 services:
   nginx-proxy:
-    image: 'jc21/nginx-proxy-manager:latest'
+    image: jc21/nginx-proxy-manager:latest
     container_name: nginx-proxy
     restart: unless-stopped
     ports:
-      - '80:80'
-      - '81:81'
-      - '443:443'
+    - 80:80
+    - 81:81
+    - 443:443
     volumes:
-      - ./nginx_data:/data
-      - ./nginx_letsencrypt:/etc/letsencrypt
+    - ./nginx_data:/data
+    - ./nginx_letsencrypt:/etc/letsencrypt
     networks:
-      - ouroboros_net
-
+    - ouroboros_net
   dashboard:
     image: linuxserver/heimdall:latest
     container_name: heimdall
     restart: unless-stopped
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Europe/Berlin
+    - PUID=1000
+    - PGID=1000
+    - TZ=Europe/Berlin
     volumes:
-      - ./heimdall_data:/config
+    - ./heimdall_data:/config
     ports:
-      - "8080:80"
+    - 8080:80
     networks:
-      - ouroboros_net
-
-  vllm:
-    image: vllm/vllm-openai-rocm:latest
-    container_name: vllm_server_v2
+    - ouroboros_net
+  llamacpp:
+    image: ghcr.io/ggerganov/llama.cpp:server-rocm
+    container_name: llamacpp
     restart: unless-stopped
     devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
+    - /dev/kfd:/dev/kfd
+    - /dev/dri:/dev/dri
     group_add:
-      - video
+    - video
+    - render
     cap_add:
-      - SYS_PTRACE
+    - SYS_PTRACE
     security_opt:
-      - seccomp=unconfined
+    - seccomp=unconfined
     ipc: host
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+    - ./models:/models
     ports:
-      - "8000:8000"
+    - 8000:8080
     environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.0.0
-      - HIP_FORCE_DEV_KERNARG=1
-      - TORCH_BLAS_PREFER_HIPBLASLT=1
-      - VLLM_USE_TRITON_FLASH_ATTN=0
+    - HSA_OVERRIDE_GFX_VERSION=11.0.0
+    - HIP_FORCE_DEV_KERNARG=1
     command:
-      - "--model"
-      - "Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4"
-      - "--quantization"
-      - "gptq"
-      - "--kv-cache-dtype"
-      - "fp8"
-      - "--max-model-len"
-      - "32768"
-      - "--gpu-memory-utilization"
-      - "0.9"
-      - "--dtype"
-      - "float16"
-      - "--enforce-eager"
-      - "--enable-auto-tool-choice"
-      - "--tool-call-parser"
-      - "mistral"
+    - -m
+    - /models/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8080"
+    - -ngl
+    - "100"
+    - -fa
+    - --slots
+    - --jinja
+    - --chat-template-file
+    - /models/Mistral-Small-3.2-24B-Instruct-2506.jinja
     networks:
-      - ouroboros_net
-
+    - ouroboros_net
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     restart: unless-stopped
     ports:
-      - "3000:8080"
+    - 3000:8080
     environment:
-      - OPENAI_API_BASE_URL=http://vllm_server_v2:8000/v1
-      - OPENAI_API_KEY=local-vllm-key
+    - OPENAI_API_BASE_URL=http://llamacpp:8080/v1
+    - OPENAI_API_KEY=local-vllm-key
     volumes:
-      - ./webui_data:/app/backend/data
+    - ./webui_data:/app/backend/data
     depends_on:
-      - vllm
+    - llamacpp
     networks:
-      - ouroboros_net
-
+    - ouroboros_net
 networks:
   ouroboros_net:
     external: true

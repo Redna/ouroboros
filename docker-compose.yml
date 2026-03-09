@@ -11,7 +11,7 @@ services:
       - OUROBOROS_REPO_DIR=/app
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
-      - VLLM_BASE_URL=http://vllm_server_v2:8000/v1
+      - VLLM_BASE_URL=http://llamacpp:8080/v1
     volumes:
       - ouroboros_data:/drive
       - .:/app
