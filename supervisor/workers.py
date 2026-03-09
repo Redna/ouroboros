@@ -251,7 +251,7 @@ def auto_resume_after_restart() -> None:
             threading.Thread(
                 target=handle_chat_direct,
                 args=(int(chat_id),
-                      "[auto-resume after restart] Continue your work. Read scratchpad and identity — they contain context of what you were doing.",
+                      "I have been restarted. My internal state is stable. I am ready for your instructions.",
                       None),
                 daemon=True,
             ).start()
