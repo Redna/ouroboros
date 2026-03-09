@@ -345,8 +345,8 @@ class OuroborosAgent:
                 drive_root=self.env.drive_root,
             )
 
-            # Final response to owner (if not direct chat)
-            if not task.get("_is_direct_chat") and self._current_chat_id:
+            # Final response to owner
+            if self._current_chat_id and final_text and final_text.strip():
                 self._pending_events.append({
                     "type": "send_message",
                     "chat_id": self._current_chat_id,
