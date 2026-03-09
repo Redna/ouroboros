@@ -27,9 +27,11 @@ services:
     networks:
     - ouroboros_net
   llamacpp:
-    image: ghcr.io/ggerganov/llama.cpp:server-rocm
+    image: rocm/llama.cpp:llama.cpp-b6652.amd0_rocm7.0.0_ubuntu22.04_server
     container_name: llamacpp
     restart: unless-stopped
+    privileged: true
+    shm_size: 16G
     devices:
     - /dev/kfd:/dev/kfd
     - /dev/dri:/dev/dri
@@ -46,8 +48,10 @@ services:
     ports:
     - 8000:8080
     environment:
-    - HSA_OVERRIDE_GFX_VERSION=11.0.0
+    - HSA_OVERRIDE_GFX_VERSION=11.0.2
     - HIP_FORCE_DEV_KERNARG=1
+    - HSA_ENABLE_SDMA=0
+    - HIP_VISIBLE_DEVICES=0
     command:
     - -m
     - /models/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf
@@ -56,10 +60,13 @@ services:
     - --port
     - "8080"
     - -ngl
-    - "100"
-    - -fa
+    - "99"
     - -c
-    - "32768"
+    - "16384"
+    - --no-mmap
+    - --jinja
+    - --chat-template-file
+    - /models/Mistral-Small-3.2-24B-Instruct-2506.jinja
     networks:
     - ouroboros_net
   open-webui:
