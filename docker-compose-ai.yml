@@ -50,7 +50,7 @@ services:
     - HIP_FORCE_DEV_KERNARG=1
     command:
     - -m
-    - /models/Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf
+    - /models/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf
     - --host
     - 0.0.0.0
     - --port
@@ -58,10 +58,8 @@ services:
     - -ngl
     - "100"
     - -fa
-    - --slots
-    - --jinja
-    - --chat-template-file
-    - /models/Mistral-Small-3.2-24B-Instruct-2506.jinja
+    - -c
+    - "32768"
     networks:
     - ouroboros_net
   open-webui:
