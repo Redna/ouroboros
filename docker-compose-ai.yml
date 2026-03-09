@@ -62,7 +62,11 @@ services:
     - -ngl
     - "99"
     - -c
-    - "16384"
+    - "65536"
+    - -ctk
+    - q4_0
+    - -ctv
+    - q4_0
     - --no-mmap
     - --jinja
     - --chat-template-file
