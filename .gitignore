@@ -3,7 +3,11 @@
 .env.*
 *.key
 *.pem
-ouroboros_llm.log 
+*.log 
+
+# Models (not tracked)
+models/
+
 # IDE
 .cursor/
 .vscode/
