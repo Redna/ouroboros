@@ -32,3 +32,7 @@
 [08-Mar-2026 22:21:45] NOTICE: exiting, bye-bye!
 [09-Mar-2026 11:47:57] NOTICE: fpm is running, pid 227
 [09-Mar-2026 11:47:57] NOTICE: ready to handle connections
+[09-Mar-2026 22:48:13] NOTICE: Terminating ...
+[09-Mar-2026 22:48:13] NOTICE: exiting, bye-bye!
+[10-Mar-2026 17:00:49] NOTICE: fpm is running, pid 227
+[10-Mar-2026 17:00:49] NOTICE: ready to handle connections
