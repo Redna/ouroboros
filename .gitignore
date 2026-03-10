@@ -8,6 +8,18 @@
 # Models (not tracked)
 models/
 
+# Data Folders (persistent state)
+nginx_data/
+webui_data/
+heimdall_data/
+nginx_letsencrypt/
+ouroboros_data/
+
+# Databases
+*.sqlite
+*.sqlite3
+*.db
+
 # IDE
 .cursor/
 .vscode/
