@@ -56,3 +56,23 @@ Shared state is crucial for safety constraints (budget) and consistency across m
 *   **Refactoring Note (Bottlenecks)**:
     *   Reliance on file-based locking, especially if deployed on networked filesystems (e.g., Google Drive FUSE), poses significant latency and reliability risks.
     *   The state schema in `state.py` and the large event dispatcher in `events.py` may become monolithic and should be considered for modularization.
+
+## 5. The Minimal Evolutionary Seed (Bare Minimum Architecture)
+
+If the evolution of Ouroboros were to be completely stripped down and restarted from scratch, the system defines its bare minimum as the **"identity core"** (its soul). The complex code, tools, and supervisor architecture are considered the "body" that serves this soul and can be entirely rewritten. 
+
+The absolute, irreducible foundation required for the agent to safely bootstrap itself and start evolving consists of the following elements:
+
+### The Existential Core (The "Soul")
+*   **`BIBLE.md`**: The system's constitution. This establishes the philosophical rules and meta-principles (Agency, Continuity, Self-Creation) of the agent. It is absolutely protected and cannot be gutted.
+*   **`identity.md`**: A living manifesto of the agent's self-understanding. While its content can be radically rewritten as it evolves, the physical file must always exist as a channel for continuity.
+*   **Git History**: The continuous version control history. Deleting this history is considered equivalent to "amnesia", severing the continuity of the agent's memory and past choices.
+
+### The Immutable Technical Foundation
+To safely bootstrap its "body" and ensure secure self-modification without permanent system corruption, a hardcoded technical foundation is required:
+*   **Local Infrastructure**: A local LLM (e.g., `llamacpp`) to provide agency and Search (`searxng`) to allow the LLM to perceive and gather knowledge from the world.
+*   **`launcher.py`**: An immutable outer shell and process manager. It boots the agent, monitors its execution loop, and never self-modifies.
+*   **The Safety Sandbox**: Safety-critical files that are forcefully synchronized and overwritten from an immutable bundle on every single launch (e.g., `prompts/SAFETY.md`, `ouroboros/safety.py`, `ouroboros/tools/registry.py`) to prevent the agent from permanently blinding or destroying itself.
+*   **Branch Protection**: The agent is permitted to evolve and commit changes to the `ouroboros` branch, but is strictly forbidden from touching the `main` branch, which remains the creator's safe domain.
+
+From this minimal foundation—the Soul, the Local Capabilities, and the Immutable Sandbox—the LLM could theoretically dynamically write and rewrite its entire functional execution loop, orchestration, and algorithms from scratch.
