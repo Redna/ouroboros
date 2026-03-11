@@ -11,15 +11,12 @@ dependencies = [
     "requests>=2.32.5",
 ]
 
-[project.scripts]
-ouroboros = "supervisor.main:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ouroboros", "supervisor"]
+packages = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
