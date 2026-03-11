@@ -60,7 +60,9 @@ This migration will transform Ouroboros from a complex, orchestrated Python appl
 ## Current Project Plan (Immediate Next Steps)
 - [x] Document the Architecture and Minimal Seed concept.
 - [x] Create the `migration-plan.md`.
-- [ ] Initialize the new `ouroboros_runtime` repository.
-- [ ] Move infrastructure files to `ouroboros_runtime` and commit.
-- [ ] Delete infrastructure files from the current `ouroboros` (Agent) repo.
-- [ ] Draft the `launcher.py` watchdog in the runtime repo.
+- [x] Initialize the new `ouroboros_runtime` repository.
+- [x] Move infrastructure files to `ouroboros_runtime` and commit.
+- [x] Delete infrastructure files from the current `ouroboros` (Agent) repo.
+- [x] Draft the `launcher.py` watchdog in the runtime repo.
+- [x] Destroy old architecture and plant `seed_agent.py`.
+- [ ] Boot the runtime and execute Phase 4 (First Evolution).
