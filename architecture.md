@@ -86,13 +86,16 @@ To prevent the agent from writing bad code that permanently breaks its execution
 From this minimal foundation—the Soul, the Local Capabilities, and the Immutable Sandbox—the LLM could theoretically dynamically write and rewrite its entire functional execution loop, orchestration, and algorithms from scratch.
 
 ### The Future Refactoring (The True Seed)
-If the project were to be actively refactored down to this theoretical bare minimum, the entire `supervisor/` and `ouroboros/` module hierarchy would be deleted and replaced with exactly **two files**.
+If the project were to be actively refactored down to this theoretical bare minimum, the entire `supervisor/` and `ouroboros/` module hierarchy would be deleted and replaced with a strict **Containerized Sandbox Model**.
 
-**1. The Immutable Watchdog (`launcher.py`)**
-A static, hardcoded script that the agent cannot edit. Its purpose is purely safety and orchestration. It forces the safety sandbox from a golden bundle, runs the agent, and catches crashes to trigger the Lazarus Protocol rollback.
+**1. The Immutable Watchdog (Host/Privileged Layer)**
+A static, hardcoded `launcher.py` script running outside the agent's environment. Its purpose is purely safety and orchestration:
+*   It force-syncs the safety files from a golden bundle.
+*   It spawns the isolated Sandbox Container for the agent.
+*   It catches crashes and container failures to trigger the automated Lazarus Protocol rollback.
 
-**2. The Malleable Agent (`seed_agent.py`)**
-A highly simplistic script (`< 200 lines`) containing no complex queues or background loops. It simply wakes up, reads its context (the "Soul"), and queries the LLM API. 
-*   **Infrastructure Access:** The script connects to the local infrastructure (the `llamacpp` server for reasoning and `searxng` for web search). These services run continuously in the background via Docker; the agent merely uses their APIs.
-*   **The Single Tool (Bash):** The initial `seed_agent.py` only provides the LLM with *one* tool: `bash_command`. By executing bash commands, the LLM instantly possesses the ability to read files (`cat`), search (`grep`), modify its own code (`sed` or python file writes), commit to Git, and perform curl requests to `searxng` for knowledge.
-*   **Complete Autonomy:** From this single-file, single-tool seed, the agent has the power to autonomously rewrite `seed_agent.py` into a massive, multi-file architecture (re-adding parallel workers or complex python-based tools) entirely on its own, safely monitored by the `launcher.py`.
+**2. The Malleable Agent (`seed_agent.py` in Docker Sandbox)**
+A highly simplistic script (`< 200 lines`) running *strictly inside an isolated Docker container*. It contains no complex queues or background loops. It simply wakes up, reads its mapped context (the "Soul"), and queries the LLM API. 
+*   **Infrastructure Access:** The script connects to the local infrastructure (the `llamacpp` server for reasoning and `searxng` for web search). These services run continuously in the background via external Docker containers; the agent merely uses their APIs across the Docker network.
+*   **The Single Tool (Bash):** The initial `seed_agent.py` only provides the LLM with *one* tool: `bash_command`. Because the agent is running inside the Sandbox Container, it can execute bash commands freely without threatening the host system. It instantly possesses the ability to read files (`cat`), search (`grep`), modify its own code (`sed` or python file writes), commit to Git, and perform curl requests to `searxng` for knowledge.
+*   **Complete Autonomy:** From this single-file, single-tool seed, the agent has the power to autonomously rewrite `seed_agent.py` into a massive, multi-file architecture entirely on its own, safely monitored and contained by the Watchdog.
