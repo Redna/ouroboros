@@ -4,11 +4,8 @@ version = "6.3.0"
 description = "Self-creating agent"
 requires-python = ">=3.10"
 dependencies = [
-    "langfuse>=2.0.0",
     "openai>=2.24.0",
-    "playwright>=1.58.0",
     "python-dotenv>=1.2.2",
-    "requests>=2.32.5",
 ]
 
 [build-system]
