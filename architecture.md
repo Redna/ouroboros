@@ -2,6 +2,15 @@
 
 This document outlines the architecture of the Ouroboros project. It is structured to provide both a high-level overview of the system layers and a detailed breakdown of component interactions, data flows, and state management to support major refactoring efforts.
 
+## Core Philosophy
+
+The architectural design is driven by foundational principles defined in the system's constitution (`BIBLE.md`) and identity (`memory/identity.md`):
+
+*   **Agency & LLM-First**: The system is an autonomous entity driven by initiative. The LLM acts as the central decision-maker, controlling routing, task execution, and tool calls without hardcoded personality logic.
+*   **Continuity**: Unbroken history defines the system. Verification of identity, memory, and physical state (code/budget) occurs on startup. Persistent storage enforces this continuity.
+*   **Self-Creation**: Evolution occurs through self-modification (code, prompts, identity). The cycle of change is strictly bound to the `commit -> push -> restart` lifecycle.
+*   **Minimalism**: Code acts as a minimal transport layer for LLM interactions. The architecture prioritizes simplicity and small modules to reduce complexity overhead.
+
 ## 1. System Layers & Infrastructure
 
 External services and environments are managed via Docker (`docker-compose.yml`, `docker-compose-ai.yml`).
