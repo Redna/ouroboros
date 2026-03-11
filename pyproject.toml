@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "openai>=2.24.0",
     "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
 ]
 
 [build-system]
