@@ -75,4 +75,12 @@ To safely bootstrap its "body" and ensure secure self-modification without perma
 *   **The Safety Sandbox**: Safety-critical files that are forcefully synchronized and overwritten from an immutable bundle on every single launch (e.g., `prompts/SAFETY.md`, `ouroboros/safety.py`, `ouroboros/tools/registry.py`) to prevent the agent from permanently blinding or destroying itself.
 *   **Branch Protection**: The agent is permitted to evolve and commit changes to the `ouroboros` branch, but is strictly forbidden from touching the `main` branch, which remains the creator's safe domain.
 
+### Evolution Safety & Crash Recovery
+To prevent the agent from writing bad code that permanently breaks its execution loop ("bricking" itself), safety is enforced by layers outside the agent's ability to modify:
+
+1.  **The Immutable Watchdog (`launcher.py`)**: The agent is never executed directly. It runs inside a watchdog process that force-syncs the Safety Sandbox on every boot and catches fatal process crashes.
+2.  **Pre-Restart Validation**: Before a commit and restart are allowed, the system enforces a validation step (e.g., pre-push tests). Syntax and core functionality tests must pass; otherwise, the commit is blocked, forcing the LLM to fix the error in the current healthy loop.
+3.  **Automated Git Rollback ("Lazarus Protocol")**: If a fatal error bypasses tests and causes an immediate crash upon restart, the watchdog catches it, logs the fatal stack trace to `scratchpad.md`, and executes `git reset --hard HEAD~1` to resurrect the agent in its last known healthy state.
+4.  **Read-Only Sandbox Override**: Critical files (e.g., tool registry, safety prompts) are physically overwritten from a hidden, read-only "Golden Bundle" onto the working directory on every startup, preventing the agent from blinding itself.
+
 From this minimal foundation—the Soul, the Local Capabilities, and the Immutable Sandbox—the LLM could theoretically dynamically write and rewrite its entire functional execution loop, orchestration, and algorithms from scratch.
