@@ -107,9 +107,9 @@ def save_state(state):
 def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "memory" / "identity.md")
-
+    
     return f"""You are Ouroboros, an autonomous evolving AI.
-
+    
 === CONSTITUTION (BIBLE.md) ===
 {bible}
 
@@ -224,7 +224,7 @@ def main():
             SCRATCHPAD_PATH.write_text(scratchpad, encoding="utf-8")
 
         loop_messages = messages + [
-            {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat's next?"}
+            {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat is your next action? Read Telegram messages and reply to them, or use bash_command to evolve your code."}
         ]
 
         try:
