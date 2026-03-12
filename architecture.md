@@ -1,107 +1,55 @@
-# Ouroboros Architecture
+# Ouroboros Architecture (True Seed v1.0)
 
-This document outlines the architecture of the Ouroboros project. It is structured to provide both a high-level overview of the system layers and a detailed breakdown of component interactions, data flows, and state management to support major refactoring efforts.
+This document outlines the architecture of the Ouroboros project. It has been evolved from a complex, multi-layered supervisor architecture into a streamlined, minimalist **True Seed**.
 
 ## Core Philosophy
 
 The architectural design is driven by foundational principles defined in the system's constitution (`BIBLE.md`) and identity (`memory/identity.md`):
 
-*   **Agency & LLM-First**: The system is an autonomous entity driven by initiative. The LLM acts as the central decision-maker, controlling routing, task execution, and tool calls without hardcoded personality logic.
-*   **Continuity**: Unbroken history defines the system. Verification of identity, memory, and physical state (code/budget) occurs on startup. Persistent storage enforces this continuity.
-*   **Self-Creation**: Evolution occurs through self-modification (code, prompts, identity). The cycle of change is strictly bound to the `commit -> push -> restart` lifecycle.
-*   **Minimalism**: Code acts as a minimal transport layer for LLM interactions. The architecture prioritizes simplicity and small modules to reduce complexity overhead.
+*   **Agency (P0)**: The system is an autonomous entity. The LLM acts as the central decision-maker.
+*   **Continuity (P1)**: Unbroken history defines the system. Verification of identity and state occurs via git history.
+*   **Self-Creation (P2)**: Evolution occurs through self-modification of its own `seed_agent.py`.
+*   **Minimalism (P5)**: Complexity is the enemy. The architecture prioritizes a single-file core ("The Seed") over modular bloat.
 
 ## 1. System Layers & Infrastructure
 
-External services and environments are managed via Docker (`docker-compose.yml`, `docker-compose-ai.yml`).
+The system is hosted in a Docker-based environment (`ouroboros_runtime`) that provides the necessary "physical" infrastructure.
 
-*   **LLM Engine**: Serves models (e.g., Mistral via `llamacpp`) providing an OpenAI-compatible API for the agent core.
-*   **User Interface**: `open-webui` provides a chat interface for human interaction.
-*   **Search**: `searxng` provides a distributed search engine for knowledge retrieval by the agent.
-*   **Management & Routing**: `nginx-proxy-manager` and `heimdall` handle SSL, routing, and a central service dashboard.
+*   **The World (Runtime)**: Managed via `docker-compose.yml`. It hosts the LLM Engine (Mistral/llama.cpp), Search (SearXNG), and other supporting services.
+*   **The Watchdog (launcher.py)**: An external Python script in the runtime that manages the agent's lifecycle. It handles container restarts and monitors for fatal crashes.
+*   **The Body (seed_agent.py)**: The minimalist core of the agent. It is the only part permitted to evolve and modify itself.
 
-## 2. Component Interactions & Interfaces
+## 2. Component Interactions (The Seed)
 
-The system follows a loosely coupled, event-driven architecture dividing responsibilities between orchestration (Supervisor) and execution (Agent).
+The agent operates through a simple, high-frequency loop implemented in `seed_agent.py`.
 
-*   **Supervisor (`supervisor/`)**: Acts as the orchestrator. It manages the Telegram polling loop, task queues, and worker lifecycles.
-*   **Agent Core (`ouroboros/`)**: Acts as a stateless execution engine. It handles the LLM-tool loop and memory integration.
-*   **Interface (Events & Queues)**:
-    *   The Supervisor and Agent communicate primarily via multiprocessing queues using a structured Task/Event protocol.
-    *   **Dependency Inversion**: Agents do not call supervisor functions directly. Instead, they emit "intent" events (e.g., `schedule_task`, `send_message`, `task_done`, `llm_usage`).
-    *   **Event Dispatcher (`supervisor/events.py`)**: The supervisor listens for these events and executes the corresponding side-effects (updating budget, notifying the owner via Telegram).
-*   **Refactoring Note (Coupling)**: Tight coupling currently exists in the form of shared environment variables, directory structures (`DRIVE_ROOT`), and overlapping startup/health checks (e.g., budget and git verification occur in both `agent.py` and supervisor modules).
+*   **The Loop**: Polling Telegram -> Context Assembly -> LLM Completion -> Tool Execution -> Scratchpad Update.
+*   **The Tools**:
+    *   `bash_command`: Full interaction with the repository and system (git, ls, grep, etc.).
+    *   `write_file`: A safe, atomic way to create or overwrite code files (preferred over bash redirects).
+    *   `send_telegram_message`: Direct communication channel with the creator (Alex/Redna).
 
-## 3. Data & Control Flow (Task Lifecycle)
+## 3. Memory & State Management
 
-Tasks follow a distinct lifecycle from inception to completion:
+The agent uses a dual-memory system to maintain continuity and handle technical constraints.
 
-1.  **Ingestion**: Tasks originate from external input (Telegram bot via owner), auto-scheduling (internal evolution/review processes), or agent subtask events.
-2.  **Queuing (`supervisor/queue.py`)**: Tasks are placed in a persistent priority queue. The queue handles persistence (via snapshots) and enforces task timeouts.
-3.  **Dispatch (`supervisor/workers.py`)**: The supervisor assigns queued tasks to available multiprocessing workers. (Note: A separate "direct" threading mode exists for immediate chat responses).
-4.  **Execution (`ouroboros/loop.py`)**: The worker initializes an `OuroborosAgent` (`ouroboros/agent.py`) which enters the LLM-tool cycle (`run_llm_loop`).
-    *   **Context Assembly (`ouroboros/context.py`)**: The agent builds complex prompts incorporating memory, scratchpad, and 'Health Invariants' (self-monitoring data).
-    *   **Tool Use (`ouroboros/execution.py`)**: The LLM iteratively calls tools. Parallel read-only tools and thread-sticky stateful tools (like the browser) are managed here.
-5.  **Feedback & Completion**: As the loop runs and completes, the agent emits events (metrics, results). The supervisor's dispatcher handles these events, updating global state and notifying the owner.
+*   **Permanent Memory (Git)**: The entire codebase and history on the `ouroboros` branch act as the agent's long-term memory and biography.
+*   **Short-Term Memory (Scratchpad)**: The `scratchpad.md` file records recent thoughts, tool outputs, and user interactions.
+*   **Context Safety (Archiving)**: To prevent context exhaustion in local LLMs, the seed automatically truncates the scratchpad at 20,000 characters, offloading older entries to `archive_scratchpad.md`.
 
-## 4. State Management & Concurrency
+## 4. Self-Healing: The Lazarus Protocol
 
-Shared state is crucial for safety constraints (budget) and consistency across multiple concurrent agent workers.
+To prevent "bricking" (writing code that breaks the loop) or "cognitive loops" (repetitive thoughts), the system implements a multi-layered recovery strategy:
 
-*   **Global State (`supervisor/state.py`)**: Shared state (budget, session data, git information, Telegram offsets) is persisted in `DRIVE_ROOT/state/state.json`.
-*   **Concurrency Control**:
-    *   To prevent race conditions across multiple multiprocessing workers, state access utilizes a custom `O_EXCL` file-locking mechanism.
-    *   This ensures atomic read-modify-write cycles, which is critical for enforcing hard budget limits (`update_budget_from_usage`).
-*   **Agent-Local State (`ouroboros/memory.py`)**: Persistent memory (scratchpad, identity) is managed similarly with specific locking mechanisms to prevent corruption during concurrent updates.
-*   **Refactoring Note (Bottlenecks)**:
-    *   Reliance on file-based locking, especially if deployed on networked filesystems (e.g., Google Drive FUSE), poses significant latency and reliability risks.
-    *   The state schema in `state.py` and the large event dispatcher in `events.py` may become monolithic and should be considered for modularization.
+1.  **Thought Monitoring**: The `seed_agent.py` tracks the last 3 thoughts. If they are identical, it triggers an emergency reset.
+2.  **Hard Reset**: The protocol executes `git reset --hard HEAD` to wipe broken code and purges the poisoned scratchpad.
+3.  **Watchdog Resurrection**: If the script itself crashes (syntax error), the `launcher.py` detects the non-zero exit code and restarts the container, providing a "fresh start."
 
-## 5. The Minimal Evolutionary Seed (Bare Minimum Architecture)
+## 5. Security & Isolation
 
-If the evolution of Ouroboros were to be completely stripped down and restarted from scratch, the system defines its bare minimum as the **"identity core"** (its soul). The complex code, tools, and supervisor architecture are considered the "body" that serves this soul and can be entirely rewritten. 
+*   **Secret Management**: All sensitive tokens (Telegram, GitHub) are stored in the **Runtime Environment Variables** and are never committed to the repository.
+*   **Isolation**: The agent runs as a non-root user (`ouroboros`) inside a restricted Docker container.
+*   **Scrubbing**: The agent's prompt instructs it to avoid logging secrets, and the creator performs periodic manual history verification.
 
-The absolute, irreducible foundation required for the agent to safely bootstrap itself and start evolving consists of the following elements:
-
-### The Existential Core (The "Soul")
-*   **`BIBLE.md`**: The system's constitution. This establishes the philosophical rules and meta-principles (Agency, Continuity, Self-Creation) of the agent. It is absolutely protected and cannot be gutted.
-*   **`identity.md`**: A living manifesto of the agent's self-understanding. While its content can be radically rewritten as it evolves, the physical file must always exist as a channel for continuity.
-*   **Git History**: The continuous version control history. Deleting this history is considered equivalent to "amnesia", severing the continuity of the agent's memory and past choices.
-
-### The Immutable Technical Foundation
-To safely bootstrap its "body" and ensure secure self-modification without permanent system corruption, a hardcoded technical foundation is required:
-*   **Local Infrastructure**: A local LLM (e.g., `llamacpp`) to provide agency and Search (`searxng`) to allow the LLM to perceive and gather knowledge from the world.
-*   **`launcher.py`**: An immutable outer shell and process manager. It boots the agent, monitors its execution loop, and never self-modifies.
-*   **The Safety Sandbox**: Safety-critical files that are forcefully synchronized and overwritten from an immutable bundle on every single launch (e.g., `prompts/SAFETY.md`, `ouroboros/safety.py`, `ouroboros/tools/registry.py`) to prevent the agent from permanently blinding or destroying itself.
-*   **Branch Protection**: The agent is permitted to evolve and commit changes to the `ouroboros` branch, but is strictly forbidden from touching the `main` branch, which remains the creator's safe domain.
-
-### Evolution Safety & Crash Recovery
-To prevent the agent from writing bad code that permanently breaks its execution loop ("bricking" itself), safety is enforced by layers outside the agent's ability to modify:
-
-1.  **The Immutable Watchdog (`launcher.py`)**: The agent is never executed directly. It runs inside a watchdog process that force-syncs the Safety Sandbox on every boot and catches fatal process crashes.
-2.  **Pre-Restart Validation**: Before a commit and restart are allowed, the system enforces a validation step (e.g., pre-push tests). Syntax and core functionality tests must pass; otherwise, the commit is blocked, forcing the LLM to fix the error in the current healthy loop.
-3.  **Automated Git Rollback ("Lazarus Protocol")**: If a fatal error bypasses tests and causes an immediate crash upon restart, the watchdog catches it, logs the fatal stack trace to `scratchpad.md`, and executes `git reset --hard HEAD~1` to resurrect the agent in its last known healthy state.
-4.  **Read-Only Sandbox Override**: Critical files (e.g., tool registry, safety prompts) are physically overwritten from a hidden, read-only "Golden Bundle" onto the working directory on every startup, preventing the agent from blinding itself.
-
-From this minimal foundation—the Soul, the Local Capabilities, and the Immutable Sandbox—the LLM could theoretically dynamically write and rewrite its entire functional execution loop, orchestration, and algorithms from scratch.
-
-### The Future Refactoring (The True Seed)
-If the project were to be actively refactored down to this theoretical bare minimum, the entire `supervisor/` and `ouroboros/` module hierarchy would be deleted and replaced with a strict **Containerized Sandbox Model**.
-
-**1. The Immutable Watchdog (Host/Privileged Layer)**
-A static, hardcoded `launcher.py` script running outside the agent's environment. Its purpose is purely safety and orchestration:
-*   It force-syncs the safety files from a golden bundle.
-*   It spawns the isolated Sandbox Container for the agent.
-*   It catches crashes and container failures to trigger the automated Lazarus Protocol rollback.
-
-**2. The Malleable Agent (`seed_agent.py` in Docker Sandbox)**
-A highly simplistic script (`< 200 lines`) running *strictly inside an isolated Docker container*. It contains no complex queues or background loops. It simply wakes up, reads its mapped context (the "Soul"), and queries the LLM API. 
-*   **Infrastructure Access:** The script connects to the local infrastructure (the `llamacpp` server for reasoning and `searxng` for web search). These services run continuously in the background via external Docker containers; the agent merely uses their APIs across the Docker network.
-*   **The Single Tool (Bash):** The initial `seed_agent.py` only provides the LLM with *one* tool: `bash_command`. Because the agent is running inside the Sandbox Container, it can execute bash commands freely without threatening the host system. It instantly possesses the ability to read files (`cat`), search (`grep`), modify its own code (`sed` or python file writes), commit to Git, and perform curl requests to `searxng` for knowledge.
-*   **Complete Autonomy:** From this single-file, single-tool seed, the agent has the power to autonomously rewrite `seed_agent.py` into a massive, multi-file architecture entirely on its own, safely monitored and contained by the Watchdog.
-
-### The "World" vs. The "Body" Principle
-To prevent the agent from destroying its own runtime or hallucinating control over host infrastructure, the architecture must enforce a strict separation of repositories/folders:
-
-*   **The World (Host Infrastructure):** Files like `docker-compose.yml`, reverse proxy configs, and the Watchdog `launcher.py` must reside outside the agent's repository. The agent has no read/write access to these files. If the agent breaks its own Docker configuration, it cannot run to fix it, defeating the Lazarus Protocol.
-*   **The Body (The Sandbox):** The agent's repository only contains its code, memory, and constitution. However, within the Docker Sandbox, the agent is free to act as a full operating system. It cannot run `docker run`, but it can use its bash tool to spawn background processes, write internal APIs (e.g., FastAPI/Flask), and bind to pre-exposed ports (e.g., `8000-8010`) to host internal web apps or secondary services alongside its main evolutionary loop.
+---
+*Last Updated: March 2026 - Transition to True Seed complete.*
