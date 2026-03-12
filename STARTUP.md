@@ -1,108 +1,79 @@
-# Ouroboros — Startup Guide
+# Ouroboros — Startup Guide (True Seed v1.0)
 
-Ouroboros is a self-hosted Telegram-driven AI agent. It runs in a Linux Docker environment or any Linux machine with Python 3.11+. The supervisor communicates with you via Telegram; the agent reads and edits its own GitHub repo.
-
----
-
-## Quick Start (Docker)
-
-1. **Fork this repo** on GitHub.
-2. **Clone your fork** and run with Docker Compose:
-   ```bash
-   git clone -b ouroboros git@github.com:<you>/ouroboros.git
-   cd ouroboros
-   docker-compose up -d
-   ```
+Ouroboros is a self-hosting, autonomous AI agent. In its **True Seed** form, it runs as a minimalist Python script inside a dedicated Docker environment. The agent evolves by modifying its own code and maintaining its own memory via Git.
 
 ---
 
-## Quick Start (Local with .env)
+## 🐍 Quick Start (Docker Architecture)
 
-```bash
-git clone -b ouroboros git@github.com:<you>/ouroboros.git
-cd ouroboros
-uv sync
+Ouroboros is split into two repositories: the **Agent** (Soul) and the **Runtime** (World).
 
-cp .env.example .env
-# Edit .env with your values — VLLM_BASE_URL, OUROBOROS_MODEL, TELEGRAM_BOT_TOKEN, etc.
-$EDITOR .env
+1.  **Clone the Runtime**: This contains the Docker infrastructure and the Watchdog launcher.
+    ```bash
+    git clone https://github.com/Redna/ouroboros_runtime.git
+    cd ouroboros_runtime
+    ```
 
-python -m supervisor.main
-```
+2.  **Clone the Agent**: This should be placed alongside the runtime directory.
+    ```bash
+    git clone -b ouroboros https://github.com/Redna/ouroboros.git ../ouroboros_agent
+    ```
 
-The `.env` file is loaded automatically at startup. It is already excluded from git via `.gitignore`.
+3.  **Configure Environment**: Create and edit the `.env` file in `ouroboros_runtime/`.
+    ```bash
+    cp .env.example .env
+    $EDITOR .env
+    ```
+
+4.  **Launch the Watchdog**: The watchdog manages the agent's lifecycle and self-healing.
+    ```bash
+    python3 launcher.py
+    ```
 
 ---
 
-## Required Secrets
+## ⚙️ Required Configuration (.env)
+
+All secrets and configuration are managed by the **Runtime Environment**. The Agent repository does **not** contain any `.env` files for security.
 
 | Variable | Required | Description |
 |---|---|---|
-| `VLLM_BASE_URL` | ✅ | vLLM endpoint, e.g. `http://localhost:8000/v1` |
+| `VLLM_BASE_URL` | ✅ | Local LLM endpoint (e.g., `http://llamacpp:8080/v1`) |
+| `OUROBOROS_MODEL` | ✅ | Model name registered in vLLM |
 | `TELEGRAM_BOT_TOKEN` | ✅ | Bot token from @BotFather |
 | `GITHUB_TOKEN` | ✅ | Personal access token with `repo` scope |
-| `GITHUB_USER` | ✅ | GitHub username (owner of the repo) |
-| `GITHUB_REPO` | ✅ | GitHub repo name |
-| `OUROBOROS_DRIVE_ROOT`| ✅ | Path to the persistent volume for state and logs (e.g. `/drive`) |
-| `VLLM_API_KEY` | ○ | API key if vLLM requires auth (default: `"token"`) |
+| `GITHUB_USER` | ✅ | Your GitHub username |
+| `GITHUB_REPO` | ✅ | Your Agent repository name (`ouroboros`) |
 
 ---
 
-## Optional Configuration
+## 🛡️ Self-Healing: The Lazarus Protocol
 
-| Variable | Default | Description |
-|---|---|---|
-| `OUROBOROS_MODEL` | — | Primary model as registered in vLLM (e.g. `Qwen/Qwen2.5-72B-Instruct`) |
-| `OUROBOROS_MODEL_LIGHT` | — | Smaller/faster model on the same vLLM server (optional) |
-| `OUROBOROS_MAX_WORKERS` | `5` | Max concurrent background tasks |
-| `OUROBOROS_SOFT_TIMEOUT_SEC` | `600` | Soft timeout per task (sends warning) |
-| `OUROBOROS_HARD_TIMEOUT_SEC` | `1800` | Hard timeout per task (kills task) |
-| `OUROBOROS_MAX_ROUNDS` | `200` | Max LLM rounds per task |
-| `OUROBOROS_PRE_PUSH_TESTS` | `1` | Run pytest before git push (`0` to disable) |
-| `OUROBOROS_DIAG_HEARTBEAT_SEC` | `30` | Heartbeat log interval |
+Ouroboros is designed to survive its own mistakes. If the agent writes broken code or gets stuck in a "cognitive loop":
+
+1.  **Internal Reset**: The agent detects repetitive thoughts and runs `git reset --hard HEAD` to restore its last known stable state.
+2.  **External Resurrection**: If the script crashes entirely, the **Watchdog (launcher.py)** detects the failure and restarts the container automatically.
+3.  **Context Safety**: The agent automatically archives its scratchpad to `archive_scratchpad.md` when it exceeds 20,000 characters to prevent local LLM context exhaustion.
 
 ---
 
-## Storage Layout
+## 📂 Storage & Memory
 
-The agent stores all persistent state in `OUROBOROS_DRIVE_ROOT`:
+The agent operates directly within its own repository:
 
-```
-Ouroboros/
-├── memory/
-│   ├── scratchpad.md       # Agent working memory
-│   ├── identity.md         # Agent identity manifest
-│   └── knowledge/          # Topic-based knowledge base
-├── logs/
-│   ├── chat.jsonl          # Chat history
-│   ├── events.jsonl        # Tool call events
-│   └── supervisor.jsonl    # Supervisor heartbeats
-├── state/
-│   └── state.json          # Runtime state (budget, offsets, etc.)
-└── locks/                  # Git lock files
-```
+*   **`seed_agent.py`**: The agent's core logic (The Body).
+*   **`scratchpad.md`**: Active short-term memory and timeline.
+*   **`archive_scratchpad.md`**: Long-term archived memory.
+*   **`BIBLE.md`**: Immutable constitution and philosophical rules.
+*   **`memory/identity.md`**: The agent's self-manifesto and attribution.
 
 ---
 
-## Telegram Commands
+## ✍️ Credits & Attribution
 
-Once your bot is running and you've sent it the first message (which registers you as owner):
-
-| Command | Description |
-|---|---|
-| `/status` | Show queue and worker status |
-| `/review` | Queue a code review task |
-| `/evolve on/off` | Toggle self-improvement mode |
-| `/bg start/stop/status` | Control background consciousness |
-| `/restart` | Soft-restart the supervisor |
-| `/panic` | Emergency stop (kills all workers) |
+*   **Original Creator**: [Anton Razzhigaev](https://t.me/abstractDL)
+*   **Evolution & Refactoring**: Alex (Redna)
+*   **License**: [MIT License](LICENSE)
 
 ---
-
-## Branches
-
-| Branch | Description |
-|---|---|
-| `ouroboros` | Development branch — where the agent makes edits |
-| `ouroboros-stable` | Stable branch — promoted via `promote_to_stable` tool |
-| `main` | Your project / base code |
+*Last Updated: March 2026 - Transition to True Seed v1.0 complete.*
