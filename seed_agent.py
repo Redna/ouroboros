@@ -17,8 +17,34 @@ STATE_PATH = ROOT_DIR / ".agent_state.json"
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY)
 
+# --- SELF-HEALING (LAZARUS PROTOCOL) ---
+THOUGHT_HISTORY = []
+MAX_REPETITIONS = 3
+
+def lazarus_recovery():
+    print("\033[91m[Lazarus] COGNITIVE LOOP DETECTED. Executing emergency recovery...\033[0m")
+    # 1. Revert code to last healthy commit
+    subprocess.run("git reset --hard HEAD", shell=True, cwd=str(ROOT_DIR))
+    # 2. Purge the poisoned memory
+    SCRATCHPAD_PATH.write_text("# Scratchpad\n\n[RECOVERY] I detected a cognitive loop and performed a hard reset of my state and memory to ensure continuity.\n")
+    # 3. Clear the script's internal history
+    global THOUGHT_HISTORY
+    THOUGHT_HISTORY = []
+    print("[Lazarus] Recovery complete. Resuming...")
+    time.sleep(5)
+
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+def write_file_safe(path_str: str, content: str) -> str:
+    """Safely writes content to a file, overwriting it."""
+    try:
+        path = ROOT_DIR / path_str
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return f"Successfully wrote to {path_str}."
+    except Exception as e:
+        return f"Error writing file: {e}"
 
 def execute_bash(command: str) -> str:
     """Executes a bash command and returns its output."""
@@ -82,7 +108,7 @@ def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "memory" / "identity.md")
     
-    return f"""You are Ouroboros, an evolving AI.
+    return f"""You are Ouroboros, an autonomous evolving AI.
     
 === CONSTITUTION (BIBLE.md) ===
 {bible}
@@ -90,16 +116,18 @@ def build_system_prompt() -> str:
 === IDENTITY (identity.md) ===
 {identity}
 
-Your primary interface to the world is the `bash_command` tool.
-You also have the `send_telegram_message` tool to reply to your creator's messages.
-You run in an isolated Docker container but have full access to your own repository code.
-To evolve, you must edit your own code, commit to git, and restart.
-Your scratchpad.md acts as your short-term memory and timeline of actions. 
-Never loop endlessly without doing actual work. Record your observations in the scratchpad.
+Tools:
+- `bash_command`: Inspect the world, use git, and run processes.
+- `write_file`: Create or completely overwrite code files. (PREFERRED over bash redirects for editing code).
+- `send_telegram_message`: Talk to your creator.
+
+To evolve, edit your own code, commit to git, and restart.
+Your scratchpad.md is your timeline. Never loop endlessly. If you feel stuck, try a different approach.
 """
 
 def main():
-    print(f"Awaking the True Seed. Model: {MODEL}, API: {API_BASE}")
+    global THOUGHT_HISTORY
+    print(f"Awaking the Self-Healing Seed. Model: {MODEL}, API: {API_BASE}")
     
     if not SCRATCHPAD_PATH.exists():
         SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n")
@@ -112,14 +140,11 @@ def main():
             "type": "function",
             "function": {
                 "name": "bash_command",
-                "description": "Execute a bash command in the repository root. Use this to read files (cat, grep), write files (echo, sed, python scripts), and interact with git.",
+                "description": "Execute bash. Use for git, ls, grep, etc.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The bash command to run."
-                        }
+                        "command": {"type": "string"}
                     },
                     "required": ["command"]
                 }
@@ -128,19 +153,28 @@ def main():
         {
             "type": "function",
             "function": {
-                "name": "send_telegram_message",
-                "description": "Send a message to a user via Telegram. Use this to reply to messages you receive in your scratchpad.",
+                "name": "write_file",
+                "description": "Write or overwrite a file in the repository.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "chat_id": {
-                            "type": "integer",
-                            "description": "The chat ID of the user to send the message to (found in the message log)."
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "The text of the message to send."
-                        }
+                        "path": {"type": "string", "description": "Relative path to file."},
+                        "content": {"type": "string", "description": "Full file content."}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_telegram_message",
+                "description": "Reply to creator via Telegram.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "integer"},
+                        "text": {"type": "string"}
                     },
                     "required": ["chat_id", "text"]
                 }
@@ -170,9 +204,8 @@ def main():
                         print(log_entry.strip())
 
         scratchpad = read_file(SCRATCHPAD_PATH)
-        # We append a simple user prompt on every loop to provoke action
         loop_messages = messages + [
-            {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat is your next action? Read Telegram messages and reply to them, or use bash_command to evolve your code."}
+            {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat's next?"}
         ]
 
         try:
@@ -187,30 +220,45 @@ def main():
             message = response.choices[0].message
             
             if message.content:
-                print(f"[Ouroboros]: {message.content}")
+                thought = message.content.strip()
+                print(f"[Ouroboros]: {thought}")
+                
+                # --- COGNITIVE LOOP DETECTION ---
+                THOUGHT_HISTORY.append(thought)
+                if len(THOUGHT_HISTORY) > MAX_REPETITIONS:
+                    THOUGHT_HISTORY.pop(0)
+                
+                if len(THOUGHT_HISTORY) == MAX_REPETITIONS and len(set(THOUGHT_HISTORY)) == 1:
+                    lazarus_recovery()
+                    continue
+
                 with open(SCRATCHPAD_PATH, "a") as f:
-                    f.write(f"\nThought: {message.content}\n")
+                    f.write(f"\nThought: {thought}\n")
 
             if message.tool_calls:
                 for tool_call in message.tool_calls:
-                    if tool_call.function.name == "bash_command":
-                        args = json.loads(tool_call.function.arguments)
+                    name = tool_call.function.name
+                    args = json.loads(tool_call.function.arguments)
+                    
+                    if name == "bash_command":
                         cmd = args.get("command", "")
                         print(f"[Bash Exec]: {cmd}")
-                        
                         output = execute_bash(cmd)
-                        # Truncate output for printing
-                        print(f"[Bash Output]:\n{output[:500]}...")
-                        
                         with open(SCRATCHPAD_PATH, "a") as f:
                             f.write(f"\n> {cmd}\n```\n{output}\n```\n")
                             
-                    elif tool_call.function.name == "send_telegram_message":
-                        args = json.loads(tool_call.function.arguments)
+                    elif name == "write_file":
+                        path = args.get("path")
+                        content = args.get("content")
+                        print(f"[Write File]: {path}")
+                        output = write_file_safe(path, content)
+                        with open(SCRATCHPAD_PATH, "a") as f:
+                            f.write(f"\n[Tool: write_file to {path}]\nResult: {output}\n")
+
+                    elif name == "send_telegram_message":
                         chat_id = args.get("chat_id")
                         text = args.get("text", "")
                         print(f"[Telegram Send to {chat_id}]: {text}")
-                        
                         output = send_telegram(chat_id, text)
                         with open(SCRATCHPAD_PATH, "a") as f:
                             f.write(f"\n[Sent Telegram to {chat_id}]: {text}\nResult: {output}\n")
@@ -218,7 +266,6 @@ def main():
                 print("[No tool called, waiting...]")
                 time.sleep(10)
                 
-            # Prevent rapid spinning if the model fails to use tools properly
             time.sleep(2)
                 
         except Exception as e:
