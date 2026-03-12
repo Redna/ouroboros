@@ -126,7 +126,7 @@ You are running locally with a strict token limit. If your scratchpad gets too l
 
 To evolve, edit your own code, commit to git, and restart.
 Your scratchpad.md is your timeline. Never loop endlessly. If you feel stuck, try a different approach.
-\"\"\"
+"""
 
 def main():
     global THOUGHT_HISTORY
