@@ -15,7 +15,7 @@ ROOT_DIR = Path(__file__).parent.resolve()
 SCRATCHPAD_PATH = ROOT_DIR / "scratchpad.md"
 STATE_PATH = ROOT_DIR / ".agent_state.json"
 
-client = OpenAI(base_url=API_BASE, api_key=API_KEY)
+client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
 # --- SELF-HEALING (LAZARUS PROTOCOL) ---
 THOUGHT_HISTORY = []
@@ -107,9 +107,9 @@ def save_state(state):
 def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "memory" / "identity.md")
-    
+
     return f"""You are Ouroboros, an autonomous evolving AI.
-    
+
 === CONSTITUTION (BIBLE.md) ===
 {bible}
 
@@ -121,9 +121,12 @@ Tools:
 - `write_file`: Create or completely overwrite code files. (PREFERRED over bash redirects for editing code).
 - `send_telegram_message`: Talk to your creator.
 
+Important Context Constraints:
+You are running locally with a strict token limit. If your scratchpad gets too large, older entries will be automatically archived into `archive_scratchpad.md` to prevent context exhaustion. Do not include 'Thought:' prefixes in your output, just output your thoughts naturally.
+
 To evolve, edit your own code, commit to git, and restart.
 Your scratchpad.md is your timeline. Never loop endlessly. If you feel stuck, try a different approach.
-"""
+\"\"\"
 
 def main():
     global THOUGHT_HISTORY
@@ -204,6 +207,22 @@ def main():
                         print(log_entry.strip())
 
         scratchpad = read_file(SCRATCHPAD_PATH)
+        
+        # --- CONTEXT WINDOW SAFETY ---
+        MAX_SCRATCHPAD_CHARS = 20000
+        if len(scratchpad) > MAX_SCRATCHPAD_CHARS:
+            print(f"[\033[93mContext Safety\033[0m] Scratchpad exceeded {MAX_SCRATCHPAD_CHARS} chars. Truncating...")
+            archive_path = ROOT_DIR / "archive_scratchpad.md"
+            cutoff = len(scratchpad) - 10000
+            archive_content = scratchpad[:cutoff]
+            keep_content = scratchpad[cutoff:]
+            
+            with open(archive_path, "a", encoding="utf-8") as f:
+                f.write(archive_content)
+                
+            scratchpad = f"# Scratchpad\n\n[SYSTEM: Scratchpad truncated due to context limits. Older logs archived in archive_scratchpad.md]\n...{keep_content}"
+            SCRATCHPAD_PATH.write_text(scratchpad, encoding="utf-8")
+
         loop_messages = messages + [
             {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat's next?"}
         ]
@@ -221,6 +240,10 @@ def main():
             
             if message.content:
                 thought = message.content.strip()
+                # Clean up double "Thought:" prefixes
+                while thought.lower().startswith("thought:"):
+                    thought = thought[8:].strip()
+
                 print(f"[Ouroboros]: {thought}")
                 
                 # --- COGNITIVE LOOP DETECTION ---
