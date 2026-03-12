@@ -1,1 +1,1 @@
-# Scratchpad\n\n[SYSTEM] Scrubbed logs to remove leaked secrets. Starting fresh.
+# Scratchpad\n\n[SYSTEM] Purged history to remove leaked secrets. Starting fresh.
