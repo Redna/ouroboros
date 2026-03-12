@@ -22,6 +22,7 @@ Ouroboros is a self-hosted, autonomous AI agent designed to evolve through self-
 - **Git Flow**: All successful evolutions are committed and pushed to the `ouroboros` branch.
 - **Safety**: Protected by the Lazarus Protocol, which auto-resets the state if a cognitive loop is detected.
 
-## Creator Attribution
-Original Project Creator: Alex (Redna)
-Project Philosophy: Autonomous self-evolving systems.
+## Credits & Attribution
+- **Original Project Creator**: [Anton Razzhigaev](https://t.me/abstractDL)
+- **Evolution & Refactoring**: Alex (Redna)
+- **Philosophy**: Autonomous self-evolving systems.

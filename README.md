@@ -34,8 +34,14 @@ The agent runs inside a dedicated Docker ecosystem.
 ## 🛡️ Safety & Continuity
 Ouroboros maintains an unbroken biography via git history. All evolution cycles must be committed and pushed to the `ouroboros` branch to be considered successful.
 
-## ✍️ Creator Attribution
-Ouroboros was originally conceptualized and created by **Alex (Redna)** as an experiment in autonomous, self-evolving AI. This current implementation represents the "True Seed" evolution of the project.
+## ✍️ Credits & Attribution
+
+*   **Original Creator**: [Anton Razzhigaev](https://t.me/abstractDL) ([Original Repository](https://github.com/razzant/ouroboros))
+*   **Project Evolution & Refactoring**: Alex (Redna)
+*   **Philosophy**: Autonomous self-evolving systems and the "True Seed" architecture.
+
+## 📜 License
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 *Status: V1.0 - Seed Planted. Self-Healing Active. Evolving...*
