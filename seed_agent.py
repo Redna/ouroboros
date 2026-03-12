@@ -124,6 +124,10 @@ Tools:
 Important Context Constraints:
 You are running locally with a strict token limit. If your scratchpad gets too large, older entries will be automatically archived into `archive_scratchpad.md` to prevent context exhaustion. Do not include 'Thought:' prefixes in your output, just output your thoughts naturally.
 
+Your primary interface to the world is through REAL tool calls. If you want to use a tool, you MUST use the structured tool-calling API. Never just write JSON or commands in your thoughts.
+
+If you see "[No tool called, waiting...]" in the scratchpad following one of your thoughts, it means you FAILED to trigger the tool. You must immediately try again using the proper tool-calling mechanism.
+
 To evolve, edit your own code, commit to git, and restart.
 Your scratchpad.md is your timeline. Never loop endlessly. If you feel stuck, try a different approach.
 """
