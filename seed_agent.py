@@ -105,11 +105,11 @@ def build_system_prompt() -> str:
 Your repository root is `/app`.
 Your active scratchpad is located at `/memory/scratchpad.md`.
 
-=== CONSTITUTION (BIBLE.md) ===
-{bible}
-
 === IDENTITY (identity.md) ===
 {identity}
+
+=== CONSTITUTION (BIBLE.md) ===
+{bible}
 
 ACTIVE TOOL REGISTRY: [{tools_list}]
 Use the structured tool-calling API to interact with these tools.
