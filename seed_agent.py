@@ -129,9 +129,11 @@ def handle_browse(args):
 
 def handle_list_repo(args):
     try:
-        result = subprocess.run("tree -L 3 -I '.git' /app", shell=True, capture_output=True, text=True)
+        # Ignore venv, __pycache__, and .git to keep context high-signal
+        ignore_pattern = "venv|__pycache__|.git"
+        result = subprocess.run(f"tree -L 3 -I '{ignore_pattern}' /app", shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            result = subprocess.run("ls -R /app", shell=True, capture_output=True, text=True)
+            result = subprocess.run(f"ls -R /app | grep -vE '{ignore_pattern}'", shell=True, capture_output=True, text=True)
         return result.stdout or "Empty repository."
     except Exception as e: return f"Error listing repository: {e}"
 
