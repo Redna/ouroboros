@@ -10,7 +10,7 @@ from openai import OpenAI
 # Configuration
 API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
 API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
-MODEL = os.environ.get("OUROBOROS_MODEL", "Kimi-VL-A3B-Instruct.Q4_K_M.gguf")
+MODEL = os.environ.get("OUROBOROS_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
@@ -81,8 +81,17 @@ def handle_bash(args):
 def handle_write(args):
     path_str, content = args.get("path"), args.get("content")
     try:
-        path = (ROOT_DIR / path_str).resolve()
-        if not str(path).startswith(str(ROOT_DIR)): return "Error: Permission denied (outside repo)."
+        # Normalize and resolve path
+        if path_str.startswith("/memory"):
+            path = Path(path_str).resolve()
+            authorized = str(path).startswith("/memory")
+        else:
+            path = (ROOT_DIR / path_str).resolve()
+            authorized = str(path).startswith(str(ROOT_DIR))
+
+        if not authorized: return "Error: Permission denied (outside authorized zones)."
+        if path.name == ".env" or ".git/config" in str(path): return "Error: Modification prohibited."
+        
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"Successfully wrote to {path_str}."
@@ -129,11 +138,9 @@ def handle_browse(args):
 
 def handle_list_repo(args):
     try:
-        # Ignore venv, __pycache__, and .git to keep context high-signal
-        ignore_pattern = "venv|__pycache__|.git"
-        result = subprocess.run(f"tree -L 3 -I '{ignore_pattern}' /app", shell=True, capture_output=True, text=True)
+        result = subprocess.run("tree -L 3 -I 'venv|__pycache__|.git' /app", shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            result = subprocess.run(f"ls -R /app | grep -vE '{ignore_pattern}'", shell=True, capture_output=True, text=True)
+            result = subprocess.run("ls -R /app | grep -vE 'venv|__pycache__|.git'", shell=True, capture_output=True, text=True)
         return result.stdout or "Empty repository."
     except Exception as e: return f"Error listing repository: {e}"
 
@@ -166,6 +173,9 @@ Your active scratchpad is located at `/memory/scratchpad.md`.
 
 ACTIVE TOOL REGISTRY: [{tools_list}]
 Use the structured tool-calling API to interact with these tools.
+
+Important: Your scratchpad.md is your timeline. Never loop endlessly.
+CRITICAL: Once you see a "Result: Success" or "Result: Message sent successfully" entry in your scratchpad, that specific task is COMPLETED. You must move on to the next task.
 """
 
 def load_state():
@@ -174,8 +184,13 @@ def load_state():
         except: return {"offset": 0}
     return {"offset": 0}
 
+def save_state(updates: dict):
+    state = load_state()
+    state.update(updates)
+    STATE_PATH.write_text(json.dumps(state))
+
 def main():
-    print(f"Awaking Secure Seed v1.10. Model: {MODEL}")
+    print(f"Awaking Secure Seed v1.11. Model: {MODEL}")
     if not SCRATCHPAD_PATH.exists(): SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n", encoding="utf-8")
 
     while True:
@@ -188,7 +203,7 @@ def main():
                 if data.get("ok") and data.get("result"):
                     updates = data["result"]
                     offset = updates[-1]["update_id"] + 1
-                    STATE_PATH.write_text(json.dumps({"offset": offset}))
+                    save_state({"offset": offset})
                     with open(SCRATCHPAD_PATH, "a") as f:
                         for u in updates:
                             msg = u.get("message", {})
@@ -211,7 +226,13 @@ def main():
             message = response.choices[0].message
             if message.content:
                 thought = redact_secrets(message.content.strip())
+                while thought.lower().startswith("thought:"): thought = thought[8:].strip()
                 print(f"[Ouroboros]: {thought}")
+                THOUGHT_HISTORY.append(thought)
+                if len(THOUGHT_HISTORY) > MAX_REPETITIONS: THOUGHT_HISTORY.pop(0)
+                if len(THOUGHT_HISTORY) == MAX_REPETITIONS and len(set(THOUGHT_HISTORY)) == 1:
+                    lazarus_recovery(reason="cognitive loop")
+                    continue
                 with open(SCRATCHPAD_PATH, "a") as f: f.write(f"\nThought: {thought}\n")
 
             if message.tool_calls:
