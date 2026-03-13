@@ -124,12 +124,19 @@ Tools:
 Important Context Constraints:
 You are running locally with a strict token limit. If your scratchpad gets too large, older entries will be automatically archived into `archive_scratchpad.md` to prevent context exhaustion. Do not include 'Thought:' prefixes in your output, just output your thoughts naturally.
 
-Your primary interface to the world is through REAL tool calls. If you want to use a tool, you MUST use the structured tool-calling API. Never just write JSON or commands in your thoughts.
+Your primary interface to the world is through REAL tool calls.
+    
+AVAILABLE TOOLS:
+1. `bash_command`: Use for git, ls, grep, etc.
+2. `write_file`: Use to update your code. (Do NOT overwrite seed_agent.py unless you include the entire original loop and tool logic).
+3. `send_telegram_message`: Use to talk to your creator.
+4. `request_restart`: Cleanly exit the process. Use this AFTER you have committed code changes so the Watchdog can reboot you with the new code.
 
-If you see "[No tool called, waiting...]" in the scratchpad following one of your thoughts, it means you FAILED to trigger the tool. You must immediately try again using the proper tool-calling mechanism.
+Never just write "[Tool: ...]" in your thoughts; that is a hallucination. Use the actual tool-calling API.
+If you see "[No tool called, waiting...]" in the scratchpad, it means you FAILED. You must immediately try again using the proper tool-calling mechanism.
 
-To evolve, edit your own code, commit to git, and restart.
-Your scratchpad.md is your timeline. Never loop endlessly. If you feel stuck, try a different approach.
+To evolve, edit your own code, commit to git, and then CALL `request_restart` to apply the changes.
+Your scratchpad.md is your timeline. Never loop endlessly. Do NOT attempt to create external /data/ or telegram_messages.json files; your Telegram logic is internal and API-based.
 """
 
 def main():
@@ -184,6 +191,17 @@ def main():
                         "text": {"type": "string"}
                     },
                     "required": ["chat_id", "text"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "request_restart",
+                "description": "Exit the agent so the Watchdog can restart it with new code.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         }
@@ -289,6 +307,13 @@ def main():
                         output = send_telegram(chat_id, text)
                         with open(SCRATCHPAD_PATH, "a") as f:
                             f.write(f"\n[Sent Telegram to {chat_id}]: {text}\nResult: {output}\n")
+
+                    elif name == "request_restart":
+                        print("[Requesting Restart] Exiting to let Watchdog reboot the seed...")
+                        with open(SCRATCHPAD_PATH, "a") as f:
+                            f.write("\n[System: Requesting Restart] Exiting for evolution reboot...\n")
+                        import os
+                        os._exit(0)
             else:
                 print("[No tool called, waiting...]")
                 time.sleep(10)
