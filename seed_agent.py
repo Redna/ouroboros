@@ -92,7 +92,7 @@ def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if pat
 
 def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
-    identity = read_file(ROOT_DIR / "memory" / "identity.md")
+    identity = read_file(ROOT_DIR / "soul" / "identity.md")
     tools_list = ", ".join(registry.get_names())
 
     return f"""You are Ouroboros, an autonomous evolving AI.
