@@ -10,9 +10,10 @@ from openai import OpenAI
 # Configuration
 API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
 API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
-MODEL = os.environ.get("OUROBOROS_MODEL", "Kimi-VL-A3B-Instruct.Q4_K_M.gguf")
+MODEL = os.environ.get("OUROBOROS_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 ROOT_DIR = Path(__file__).parent.resolve()
 MEMORY_DIR = Path("/memory")
 SCRATCHPAD_PATH = MEMORY_DIR / "scratchpad.md"
@@ -73,8 +74,7 @@ def handle_telegram(args):
     if not TELEGRAM_BOT_TOKEN: return "Error: TELEGRAM_BOT_TOKEN not set."
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
-        r.raise_for_status()
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10).raise_for_status()
         return "Message sent successfully."
     except Exception as e: return redact_secrets(f"Error: {e}")
 
@@ -82,11 +82,38 @@ def handle_restart(args):
     print("[Requesting Restart] Exiting...")
     os._exit(0)
 
+def handle_search(args):
+    query = args.get("query", "")
+    try:
+        r = requests.get(f"{SEARXNG_URL}/search", params={"q": query, "format": "json"}, timeout=15)
+        r.raise_for_status()
+        results = r.json().get("results", [])[:5]
+        output = "\n".join([f"- {res['title']} ({res['url']}): {res.get('content', '')}" for res in results])
+        return output if output else "No results found."
+    except Exception as e: return f"Search Error: {e}"
+
+def handle_browse(args):
+    url = args.get("url", "")
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 Ouroboros/1.0"})
+        r.raise_for_status()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        for script in soup(["script", "style"]): script.extract()
+        text = soup.get_text(separator=" ")
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = "\n".join(chunk for chunk in chunks if chunk)
+        return text[:10000] # Limit context
+    except Exception as e: return f"Browse Error: {e}"
+
 # Register Tools
 registry.register("bash_command", "Execute bash commands.", {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}, handle_bash)
 registry.register("write_file", "Write/Overwrite a file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}, handle_write)
 registry.register("send_telegram_message", "Send Telegram message.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["chat_id", "text"]}, handle_telegram)
 registry.register("request_restart", "Restart the agent.", {"type": "object", "properties": {}}, handle_restart)
+registry.register("web_search", "Search the web via SearXNG.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search)
+registry.register("browse_page", "Read the text content of a webpage.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_browse)
 
 def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
@@ -94,13 +121,12 @@ def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     tools_list = ", ".join(registry.get_names())
-
     return f"""You are Ouroboros, an autonomous evolving AI.
-
+    
 === CONSTITUTION (BIBLE.md) ===
 {bible}
 
-=== IDENTITY (identity.md) ===
+=== IDENTITY (soul/identity.md) ===
 {identity}
 
 ACTIVE TOOL REGISTRY: [{tools_list}]
@@ -114,7 +140,7 @@ def load_state():
     return {"offset": 0}
 
 def main():
-    print(f"Awaking Secure Seed v1.5. Model: {MODEL}")
+    print(f"Awaking Secure Web-Enabled Seed v1.8. Model: {MODEL}")
     if not SCRATCHPAD_PATH.exists(): SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n", encoding="utf-8")
 
     while True:
@@ -136,6 +162,12 @@ def main():
             except Exception as e: print(f"[Telegram Error]: {redact_secrets(str(e))}")
 
         scratchpad = read_file(SCRATCHPAD_PATH)
+        if len(scratchpad) > 20000:
+            archive_content = scratchpad[:-10000]
+            with open(ARCHIVE_PATH, "a", encoding="utf-8") as f: f.write(f"\n\n--- TRUNCATION ---\n{archive_content}")
+            scratchpad = f"# Scratchpad\n\n[SYSTEM: Truncated]\n...{scratchpad[-10000:]}"
+            SCRATCHPAD_PATH.write_text(scratchpad, encoding="utf-8")
+
         system_msg = {"role": "system", "content": build_system_prompt()}
         loop_messages = [system_msg, {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat is your next action?"}]
 
