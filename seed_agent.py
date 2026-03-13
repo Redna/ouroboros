@@ -19,8 +19,26 @@ MEMORY_DIR = Path("/memory")
 SCRATCHPAD_PATH = MEMORY_DIR / "scratchpad.md"
 STATE_PATH = MEMORY_DIR / ".agent_state.json"
 ARCHIVE_PATH = MEMORY_DIR / "archive_scratchpad.md"
+LLM_LOG_DIR = MEMORY_DIR / "llm_logs"
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
+
+# --- LLM CALL LOGGER ---
+def log_llm_call(messages, response_content, tool_calls=None):
+    try:
+        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        log_file = LLM_LOG_DIR / f"call-{timestamp}-{int(time.time())}.json"
+        log_data = {
+            "timestamp": timestamp,
+            "model": MODEL,
+            "messages": messages,
+            "response": response_content,
+            "tool_calls": tool_calls
+        }
+        log_file.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[Logger Error]: {e}")
 
 # --- SECRET REDACTION ---
 SECRETS_TO_REDACT = []
@@ -47,7 +65,7 @@ def lazarus_recovery(reason="cognitive loop"):
             f.write(redact_secrets(content))
     subprocess.run("git reset --hard HEAD~1", shell=True, cwd=str(ROOT_DIR))
     subprocess.run("git clean -fd", shell=True, cwd=str(ROOT_DIR))
-    SCRATCHPAD_PATH.write_text(f"# Scratchpad\n\n[RECOVERY] I detected a {reason} and performed a hard reset. Memory archived.\n", encoding="utf-8")
+    SCRATCHPAD_PATH.write_text(f"# Scratchpad\n\n[RECOVERY] I detected a {reason} and performed a hard reset.\n", encoding="utf-8")
     global THOUGHT_HISTORY
     THOUGHT_HISTORY = []
     print("[Lazarus] Recovery complete. Resuming...")
@@ -81,17 +99,14 @@ def handle_bash(args):
 def handle_write(args):
     path_str, content = args.get("path"), args.get("content")
     try:
-        # Normalize and resolve path
         if path_str.startswith("/memory"):
             path = Path(path_str).resolve()
             authorized = str(path).startswith("/memory")
         else:
             path = (ROOT_DIR / path_str).resolve()
             authorized = str(path).startswith(str(ROOT_DIR))
-
         if not authorized: return "Error: Permission denied (outside authorized zones)."
         if path.name == ".env" or ".git/config" in str(path): return "Error: Modification prohibited."
-        
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"Successfully wrote to {path_str}."
@@ -190,7 +205,7 @@ def save_state(updates: dict):
     STATE_PATH.write_text(json.dumps(state))
 
 def main():
-    print(f"Awaking Secure Seed v1.11. Model: {MODEL}")
+    print(f"Awaking Secure Seed v1.12. Model: {MODEL}")
     if not SCRATCHPAD_PATH.exists(): SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n", encoding="utf-8")
 
     while True:
@@ -224,6 +239,10 @@ def main():
         try:
             response = client.chat.completions.create(model=MODEL, messages=loop_messages, tools=registry.get_specs(), tool_choice="auto", temperature=0.7)
             message = response.choices[0].message
+            
+            # --- LOG LLM CALL ---
+            log_llm_call(loop_messages, message.content, tool_calls=[t.model_dump() for t in (message.tool_calls or [])])
+
             if message.content:
                 thought = redact_secrets(message.content.strip())
                 while thought.lower().startswith("thought:"): thought = thought[8:].strip()
