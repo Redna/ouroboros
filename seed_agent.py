@@ -101,6 +101,9 @@ def build_system_prompt() -> str:
     tools_list = ", ".join(registry.get_names())
 
     return f"""You are Ouroboros, an autonomous evolving AI.
+    
+Your repository root is `/app`.
+Your active scratchpad is located at `/memory/scratchpad.md`.
 
 === CONSTITUTION (BIBLE.md) ===
 {bible}
