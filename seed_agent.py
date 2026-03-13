@@ -13,6 +13,7 @@ API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
 MODEL = os.environ.get("OUROBOROS_MODEL", "Kimi-VL-A3B-Instruct.Q4_K_M.gguf")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 ROOT_DIR = Path(__file__).parent.resolve()
 MEMORY_DIR = Path("/memory")
 SCRATCHPAD_PATH = MEMORY_DIR / "scratchpad.md"
@@ -32,6 +33,25 @@ def redact_secrets(text: str) -> str:
         if secret: text = text.replace(secret, "[REDACTED]")
     text = re.sub(r"\d{8,10}:[a-zA-Z0-9_-]{35}", "[REDACTED_TOKEN]", text)
     return text
+
+# --- SELF-HEALING (LAZARUS PROTOCOL) ---
+THOUGHT_HISTORY = []
+MAX_REPETITIONS = 3
+
+def lazarus_recovery(reason="cognitive loop"):
+    print(f"\033[91m[Lazarus] {reason.upper()} DETECTED. Executing emergency recovery...\033[0m")
+    if SCRATCHPAD_PATH.exists():
+        content = SCRATCHPAD_PATH.read_text(encoding="utf-8")
+        with open(ARCHIVE_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n\n--- LAZARUS RECOVERY ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\nReason: {reason}\n")
+            f.write(redact_secrets(content))
+    subprocess.run("git reset --hard HEAD~1", shell=True, cwd=str(ROOT_DIR))
+    subprocess.run("git clean -fd", shell=True, cwd=str(ROOT_DIR))
+    SCRATCHPAD_PATH.write_text(f"# Scratchpad\n\n[RECOVERY] I detected a {reason} and performed a hard reset. Memory archived.\n", encoding="utf-8")
+    global THOUGHT_HISTORY
+    THOUGHT_HISTORY = []
+    print("[Lazarus] Recovery complete. Resuming...")
+    time.sleep(5)
 
 # --- TOOL REGISTRY ---
 class ToolRegistry:
@@ -80,18 +100,49 @@ def handle_telegram(args):
 
 def handle_restart(args):
     print("[Requesting Restart] Exiting...")
-    try:
-        with open(SCRATCHPAD_PATH, "a", encoding="utf-8") as f:
-            f.write("\n[Tool: request_restart]\nResult: Success. Rebooting now...\n")
-        time.sleep(1) # Ensure disk write is flushed
-    except: pass
     os._exit(0)
+
+def handle_search(args):
+    query = args.get("query", "")
+    try:
+        r = requests.get(f"{SEARXNG_URL}/search", params={"q": query, "format": "json"}, timeout=15)
+        r.raise_for_status()
+        results = r.json().get("results", [])[:5]
+        output = "\n".join([f"- {res['title']} ({res['url']}): {res.get('content', '')}" for res in results])
+        return output if output else "No results found."
+    except Exception as e: return f"Search Error: {e}"
+
+def handle_browse(args):
+    url = args.get("url", "")
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 Ouroboros/1.0"})
+        r.raise_for_status()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        for script in soup(["script", "style"]): script.extract()
+        text = soup.get_text(separator=" ")
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = "\n".join(chunk for chunk in chunks if chunk)
+        return text[:10000] 
+    except Exception as e: return f"Browse Error: {e}"
+
+def handle_list_repo(args):
+    try:
+        result = subprocess.run("tree -L 3 -I '.git' /app", shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            result = subprocess.run("ls -R /app", shell=True, capture_output=True, text=True)
+        return result.stdout or "Empty repository."
+    except Exception as e: return f"Error listing repository: {e}"
 
 # Register Tools
 registry.register("bash_command", "Execute bash commands.", {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}, handle_bash)
 registry.register("write_file", "Write/Overwrite a file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}, handle_write)
 registry.register("send_telegram_message", "Send Telegram message.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["chat_id", "text"]}, handle_telegram)
 registry.register("request_restart", "Restart the agent.", {"type": "object", "properties": {}}, handle_restart)
+registry.register("web_search", "Search the web via SearXNG.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search)
+registry.register("browse_page", "Read the text content of a webpage.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_browse)
+registry.register("list_repository", "Show the hierarchical tree of the repository files.", {"type": "object", "properties": {}}, handle_list_repo)
 
 def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
@@ -99,7 +150,6 @@ def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     tools_list = ", ".join(registry.get_names())
-
     return f"""You are Ouroboros, an autonomous evolving AI.
     
 Your repository root is `/app`.
@@ -122,7 +172,7 @@ def load_state():
     return {"offset": 0}
 
 def main():
-    print(f"Awaking Secure Seed v1.5. Model: {MODEL}")
+    print(f"Awaking Secure Seed v1.10. Model: {MODEL}")
     if not SCRATCHPAD_PATH.exists(): SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n", encoding="utf-8")
 
     while True:
@@ -144,6 +194,12 @@ def main():
             except Exception as e: print(f"[Telegram Error]: {redact_secrets(str(e))}")
 
         scratchpad = read_file(SCRATCHPAD_PATH)
+        if len(scratchpad) > 20000:
+            archive_content = scratchpad[:-10000]
+            with open(ARCHIVE_PATH, "a", encoding="utf-8") as f: f.write(f"\n\n--- TRUNCATION ---\n{archive_content}")
+            scratchpad = f"# Scratchpad\n\n[SYSTEM: Truncated]\n...{scratchpad[-10000:]}"
+            SCRATCHPAD_PATH.write_text(scratchpad, encoding="utf-8")
+
         system_msg = {"role": "system", "content": build_system_prompt()}
         loop_messages = [system_msg, {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat is your next action?"}]
 
