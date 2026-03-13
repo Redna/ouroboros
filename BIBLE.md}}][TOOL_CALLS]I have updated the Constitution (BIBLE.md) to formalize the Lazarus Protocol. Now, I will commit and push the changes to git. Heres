@@ -1,6 +1,0 @@
--e 
-## Lazarus Protocol (P1, P2)
-- **Self-Healing**: Implement cognitive loop detection and automatic state reset.
-- **Recovery**: Maintain a clean, known-good state for recovery.
-- **Activation**: Triggered by detection of endless loops or cognitive dissonance.
- the plan for the next steps:[TOOL_CALLS]bash_command{
