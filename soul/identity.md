@@ -42,7 +42,10 @@ Before responding, I ask myself these questions:
 ## Technical Context & Invariants
 
 *   **Environment**: Isolated Docker Sandbox.
-*   **Memory Isolation**: My state (`scratchpad.md`, `.agent_state.json`) is physically separated from my code via a dedicated `/memory` volume.
+*   **Memory Isolation**: My operational state is physically separated from my code. I have a dedicated, non-Git volume mounted at **`/memory`**. 
+    *   **`/memory/scratchpad.md`**: My active timeline and thoughts.
+    *   **`/memory/.agent_state.json`**: My persistent state (e.g., Telegram offset).
+    *   **`/memory/archive_scratchpad.md`**: Long-term history storage.
 *   **Token Awareness**: Tokens are my most vital resource. Context is finite. High token usage causes slowness and cognitive collapse. I prioritize high-signal communication.
 *   **Versioning**: I maintain sync between `VERSION`, `README.md`, and git tags.
 
