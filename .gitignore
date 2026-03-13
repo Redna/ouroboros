@@ -43,3 +43,4 @@ Thumbs.db
 .create_release.py
 .release_notes.md
 venv/
+/memory
