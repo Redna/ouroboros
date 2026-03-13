@@ -93,18 +93,18 @@ def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if pat
 def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "memory" / "identity.md")
+    tools_list = ", ".join(registry.get_names())
+
     return f"""You are Ouroboros, an autonomous evolving AI.
-    
+
 === CONSTITUTION (BIBLE.md) ===
 {bible}
 
 === IDENTITY (identity.md) ===
 {identity}
 
-Important Context:
-- Your scratchpad.md is in /memory/scratchpad.md.
-- Once a tool call returns "Success", that task is COMPLETED. Never repeat an action that has already succeeded.
-- If you see an error like "No such file or directory", DO NOT keep trying to read it. Verify its existence with "ls" first.
+ACTIVE TOOL REGISTRY: [{tools_list}]
+Use the structured tool-calling API to interact with these tools.
 """
 
 def load_state():
