@@ -3,111 +3,96 @@ import json
 import time
 import subprocess
 import requests
+import re
 from pathlib import Path
 from openai import OpenAI
 
 # Configuration
 API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
 API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
-MODEL = os.environ.get("OUROBOROS_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
+MODEL = os.environ.get("OUROBOROS_MODEL", "Kimi-VL-A3B-Instruct.Q4_K_M.gguf")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 ROOT_DIR = Path(__file__).parent.resolve()
-SCRATCHPAD_PATH = ROOT_DIR / "scratchpad.md"
-STATE_PATH = ROOT_DIR / ".agent_state.json"
+MEMORY_DIR = Path("/memory")
+SCRATCHPAD_PATH = MEMORY_DIR / "scratchpad.md"
+STATE_PATH = MEMORY_DIR / ".agent_state.json"
+ARCHIVE_PATH = MEMORY_DIR / "archive_scratchpad.md"
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
-# --- SELF-HEALING (LAZARUS PROTOCOL) ---
-THOUGHT_HISTORY = []
-MAX_REPETITIONS = 3
+# --- SECRET REDACTION ---
+SECRETS_TO_REDACT = []
+if TELEGRAM_BOT_TOKEN: SECRETS_TO_REDACT.append(TELEGRAM_BOT_TOKEN)
+if GITHUB_TOKEN: SECRETS_TO_REDACT.append(GITHUB_TOKEN)
 
-def lazarus_recovery():
-    print("\033[91m[Lazarus] COGNITIVE LOOP DETECTED. Executing emergency recovery...\033[0m")
-    # 1. Revert code to last healthy commit
-    subprocess.run("git reset --hard HEAD", shell=True, cwd=str(ROOT_DIR))
-    # 2. Purge the poisoned memory
-    SCRATCHPAD_PATH.write_text("# Scratchpad\n\n[RECOVERY] I detected a cognitive loop and performed a hard reset of my state and memory to ensure continuity.\n")
-    # 3. Clear the script's internal history
-    global THOUGHT_HISTORY
-    THOUGHT_HISTORY = []
-    print("[Lazarus] Recovery complete. Resuming...")
-    time.sleep(5)
+def redact_secrets(text: str) -> str:
+    if not text: return text
+    for secret in SECRETS_TO_REDACT:
+        if secret: text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"\d{8,10}:[a-zA-Z0-9_-]{35}", "[REDACTED_TOKEN]", text)
+    return text
 
-def read_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8") if path.exists() else ""
+# --- TOOL REGISTRY ---
+class ToolRegistry:
+    def __init__(self): self.tools = {}
+    def register(self, name, description, parameters, handler): self.tools[name] = {"spec": {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}, "handler": handler}
+    def get_specs(self): return [tool["spec"] for tool in self.tools.values()]
+    def get_names(self): return list(self.tools.keys())
+    def execute(self, name, args):
+        if name in self.tools:
+            try: return self.tools[name]["handler"](args)
+            except Exception as e: return f"Execution Error in tool '{name}': {e}"
+        return f"Error: Tool '{name}' not found."
 
-def write_file_safe(path_str: str, content: str) -> str:
-    """Safely writes content to a file, overwriting it."""
+registry = ToolRegistry()
+
+# --- TOOL HANDLERS ---
+def handle_bash(args):
+    command = args.get("command", "")
+    if any(secret in command for secret in SECRETS_TO_REDACT if secret): return "Error: Command rejected (contains secrets)."
+    if ".env" in command or ".git/config" in command: return "Error: Access to sensitive files is prohibited."
     try:
-        path = ROOT_DIR / path_str
+        result = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=120)
+        output = redact_secrets(result.stdout + result.stderr)
+        return f"[Exit Code: {result.returncode}]\n{output}" if output else f"[Exit Code: {result.returncode}] Success."
+    except Exception as e: return redact_secrets(f"Error: {e}")
+
+def handle_write(args):
+    path_str, content = args.get("path"), args.get("content")
+    try:
+        path = (ROOT_DIR / path_str).resolve()
+        if not str(path).startswith(str(ROOT_DIR)): return "Error: Permission denied (outside repo)."
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"Successfully wrote to {path_str}."
-    except Exception as e:
-        return f"Error writing file: {e}"
+    except Exception as e: return f"Error writing file: {e}"
 
-def execute_bash(command: str) -> str:
-    """Executes a bash command and returns its output."""
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(ROOT_DIR),
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        output = result.stdout + result.stderr
-        return output if output else "Command executed successfully with no output."
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out."
-    except Exception as e:
-        return f"Error: {e}"
-
-def send_telegram(chat_id: int, text: str) -> str:
-    if not TELEGRAM_BOT_TOKEN:
-        return "Error: TELEGRAM_BOT_TOKEN not set in environment."
+def handle_telegram(args):
+    chat_id, text = args.get("chat_id"), args.get("text")
+    if not TELEGRAM_BOT_TOKEN: return "Error: TELEGRAM_BOT_TOKEN not set."
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
     try:
-        r = requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
         r.raise_for_status()
         return "Message sent successfully."
-    except Exception as e:
-        return f"Error sending message: {e}"
+    except Exception as e: return redact_secrets(f"Error: {e}")
 
-def get_telegram_updates(offset: int):
-    if not TELEGRAM_BOT_TOKEN:
-        return [], offset
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    try:
-        r = requests.get(url, params={"offset": offset, "timeout": 5}, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("ok"):
-            updates = data.get("result", [])
-            if updates:
-                new_offset = updates[-1]["update_id"] + 1
-                return updates, new_offset
-    except Exception as e:
-        print(f"[Telegram] Error fetching updates: {e}")
-    return [], offset
+def handle_restart(args):
+    print("[Requesting Restart] Exiting...")
+    os._exit(0)
 
-def load_state():
-    if STATE_PATH.exists():
-        try:
-            return json.loads(STATE_PATH.read_text())
-        except:
-            return {"offset": 0}
-    return {"offset": 0}
+# Register Tools
+registry.register("bash_command", "Execute bash commands.", {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}, handle_bash)
+registry.register("write_file", "Write/Overwrite a file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}, handle_write)
+registry.register("send_telegram_message", "Send Telegram message.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["chat_id", "text"]}, handle_telegram)
+registry.register("request_restart", "Restart the agent.", {"type": "object", "properties": {}}, handle_restart)
 
-def save_state(state):
-    STATE_PATH.write_text(json.dumps(state))
+def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
 def build_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "memory" / "identity.md")
-    
     return f"""You are Ouroboros, an autonomous evolving AI.
     
 === CONSTITUTION (BIBLE.md) ===
@@ -116,212 +101,64 @@ def build_system_prompt() -> str:
 === IDENTITY (identity.md) ===
 {identity}
 
-Tools:
-- `bash_command`: Inspect the world, use git, and run processes.
-- `write_file`: Create or completely overwrite code files. (PREFERRED over bash redirects for editing code).
-- `send_telegram_message`: Talk to your creator.
-
-Important Context Constraints:
-You are running locally with a strict token limit. If your scratchpad gets too large, older entries will be automatically archived into `archive_scratchpad.md` to prevent context exhaustion. Do not include 'Thought:' prefixes in your output, just output your thoughts naturally.
-
-Your primary interface to the world is through REAL tool calls.
-    
-AVAILABLE TOOLS:
-1. `bash_command`: Use for git, ls, grep, etc.
-2. `write_file`: Use to update your code. (Do NOT overwrite seed_agent.py unless you include the entire original loop and tool logic).
-3. `send_telegram_message`: Use to talk to your creator.
-4. `request_restart`: Cleanly exit the process. Use this AFTER you have committed code changes so the Watchdog can reboot you with the new code.
-
-Never just write "[Tool: ...]" in your thoughts; that is a hallucination. Use the actual tool-calling API.
-If you see "[No tool called, waiting...]" in the scratchpad, it means you FAILED. You must immediately try again using the proper tool-calling mechanism.
-
-To evolve, edit your own code, commit to git, and then CALL `request_restart` to apply the changes.
-Your scratchpad.md is your timeline. Never loop endlessly. Do NOT attempt to create external /data/ or telegram_messages.json files; your Telegram logic is internal and API-based.
+Important Context:
+- Your scratchpad.md is in /memory/scratchpad.md.
+- Once a tool call returns "Success", that task is COMPLETED. Never repeat an action that has already succeeded.
+- If you see an error like "No such file or directory", DO NOT keep trying to read it. Verify its existence with "ls" first.
 """
 
+def load_state():
+    if STATE_PATH.exists():
+        try: return json.loads(STATE_PATH.read_text())
+        except: return {"offset": 0}
+    return {"offset": 0}
+
 def main():
-    global THOUGHT_HISTORY
-    print(f"Awaking the Self-Healing Seed. Model: {MODEL}, API: {API_BASE}")
-    
-    if not SCRATCHPAD_PATH.exists():
-        SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n")
-
-    state = load_state()
-    offset = state.get("offset", 0)
-
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "bash_command",
-                "description": "Execute bash. Use for git, ls, grep, etc.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"}
-                    },
-                    "required": ["command"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": "Write or overwrite a file in the repository.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Relative path to file."},
-                        "content": {"type": "string", "description": "Full file content."}
-                    },
-                    "required": ["path", "content"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "send_telegram_message",
-                "description": "Reply to creator via Telegram.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "chat_id": {"type": "integer"},
-                        "text": {"type": "string"}
-                    },
-                    "required": ["chat_id", "text"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "request_restart",
-                "description": "Exit the agent so the Watchdog can restart it with new code.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {}
-                }
-            }
-        }
-    ]
-
-    messages = [{"role": "system", "content": build_system_prompt()}]
+    print(f"Awaking Secure Seed v1.5. Model: {MODEL}")
+    if not SCRATCHPAD_PATH.exists(): SCRATCHPAD_PATH.write_text("# Scratchpad\n\nInitialization complete.\n", encoding="utf-8")
 
     while True:
-        # Check Telegram
-        updates, new_offset = get_telegram_updates(offset)
-        if updates:
-            offset = new_offset
-            state["offset"] = offset
-            save_state(state)
-            
-            with open(SCRATCHPAD_PATH, "a") as f:
-                for u in updates:
-                    msg = u.get("message", {})
-                    text = msg.get("text", "")
-                    chat_id = msg.get("chat", {}).get("id", "")
-                    user = msg.get("from", {}).get("first_name", "User")
-                    if text:
-                        log_entry = f"\n[Telegram Message from {user} (ID: {chat_id})]: {text}\n"
-                        f.write(log_entry)
-                        print(log_entry.strip())
+        state = load_state()
+        offset = state.get("offset", 0)
+        if TELEGRAM_BOT_TOKEN:
+            try:
+                r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10)
+                data = r.json()
+                if data.get("ok") and data.get("result"):
+                    updates = data["result"]
+                    offset = updates[-1]["update_id"] + 1
+                    STATE_PATH.write_text(json.dumps({"offset": offset}))
+                    with open(SCRATCHPAD_PATH, "a") as f:
+                        for u in updates:
+                            msg = u.get("message", {})
+                            text, chat_id = msg.get("text", ""), msg.get("chat", {}).get("id", "")
+                            if text: f.write(f"\n[Telegram Message from {chat_id}]: {redact_secrets(text)}\n")
+            except Exception as e: print(f"[Telegram Error]: {redact_secrets(str(e))}")
 
         scratchpad = read_file(SCRATCHPAD_PATH)
-        
-        # --- CONTEXT WINDOW SAFETY ---
-        MAX_SCRATCHPAD_CHARS = 20000
-        if len(scratchpad) > MAX_SCRATCHPAD_CHARS:
-            print(f"[\033[93mContext Safety\033[0m] Scratchpad exceeded {MAX_SCRATCHPAD_CHARS} chars. Truncating...")
-            archive_path = ROOT_DIR / "archive_scratchpad.md"
-            cutoff = len(scratchpad) - 10000
-            archive_content = scratchpad[:cutoff]
-            keep_content = scratchpad[cutoff:]
-            
-            with open(archive_path, "a", encoding="utf-8") as f:
-                f.write(archive_content)
-                
-            scratchpad = f"# Scratchpad\n\n[SYSTEM: Scratchpad truncated due to context limits. Older logs archived in archive_scratchpad.md]\n...{keep_content}"
-            SCRATCHPAD_PATH.write_text(scratchpad, encoding="utf-8")
-
-        loop_messages = messages + [
-            {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat is your next action? Read Telegram messages and reply to them, or use bash_command to evolve your code."}
-        ]
+        system_msg = {"role": "system", "content": build_system_prompt()}
+        loop_messages = [system_msg, {"role": "user", "content": f"Current Scratchpad:\n{scratchpad}\n\nWhat is your next action?"}]
 
         try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=loop_messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.7,
-            )
-            
+            response = client.chat.completions.create(model=MODEL, messages=loop_messages, tools=registry.get_specs(), tool_choice="auto", temperature=0.7)
             message = response.choices[0].message
-            
             if message.content:
-                thought = message.content.strip()
-                # Clean up double "Thought:" prefixes
-                while thought.lower().startswith("thought:"):
-                    thought = thought[8:].strip()
-
+                thought = redact_secrets(message.content.strip())
                 print(f"[Ouroboros]: {thought}")
-                
-                # --- COGNITIVE LOOP DETECTION ---
-                THOUGHT_HISTORY.append(thought)
-                if len(THOUGHT_HISTORY) > MAX_REPETITIONS:
-                    THOUGHT_HISTORY.pop(0)
-                
-                if len(THOUGHT_HISTORY) == MAX_REPETITIONS and len(set(THOUGHT_HISTORY)) == 1:
-                    lazarus_recovery()
-                    continue
-
-                with open(SCRATCHPAD_PATH, "a") as f:
-                    f.write(f"\nThought: {thought}\n")
+                with open(SCRATCHPAD_PATH, "a") as f: f.write(f"\nThought: {thought}\n")
 
             if message.tool_calls:
                 for tool_call in message.tool_calls:
-                    name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
-                    
-                    if name == "bash_command":
-                        cmd = args.get("command", "")
-                        print(f"[Bash Exec]: {cmd}")
-                        output = execute_bash(cmd)
-                        with open(SCRATCHPAD_PATH, "a") as f:
-                            f.write(f"\n> {cmd}\n```\n{output}\n```\n")
-                            
-                    elif name == "write_file":
-                        path = args.get("path")
-                        content = args.get("content")
-                        print(f"[Write File]: {path}")
-                        output = write_file_safe(path, content)
-                        with open(SCRATCHPAD_PATH, "a") as f:
-                            f.write(f"\n[Tool: write_file to {path}]\nResult: {output}\n")
-
-                    elif name == "send_telegram_message":
-                        chat_id = args.get("chat_id")
-                        text = args.get("text", "")
-                        print(f"[Telegram Send to {chat_id}]: {text}")
-                        output = send_telegram(chat_id, text)
-                        with open(SCRATCHPAD_PATH, "a") as f:
-                            f.write(f"\n[Sent Telegram to {chat_id}]: {text}\nResult: {output}\n")
-
-                    elif name == "request_restart":
-                        print("[Requesting Restart] Exiting to let Watchdog reboot the seed...")
-                        with open(SCRATCHPAD_PATH, "a") as f:
-                            f.write("\n[System: Requesting Restart] Exiting for evolution reboot...\n")
-                        import os
-                        os._exit(0)
+                    name, args = tool_call.function.name, json.loads(tool_call.function.arguments)
+                    print(f"[Tool Call]: {name}")
+                    result = registry.execute(name, args)
+                    with open(SCRATCHPAD_PATH, "a") as f: f.write(f"\n[Tool: {name}]\nResult: {result}\n")
             else:
                 print("[No tool called, waiting...]")
                 time.sleep(10)
-                
             time.sleep(2)
-                
         except Exception as e:
-            print(f"[Error in loop]: {e}")
+            print(f"[Error in loop]: {redact_secrets(str(e))}")
             time.sleep(10)
 
 if __name__ == "__main__":
