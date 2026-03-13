@@ -160,7 +160,8 @@ def main():
                     name, args = tool_call.function.name, json.loads(tool_call.function.arguments)
                     print(f"[Tool Call]: {name}")
                     result = registry.execute(name, args)
-                    with open(SCRATCHPAD_PATH, "a") as f: f.write(f"\n[Tool: {name}]\nResult: {result}\n")
+                    with open(SCRATCHPAD_PATH, "a") as f:
+                        f.write(f"\n[Tool Call: {name}]\nArguments: {json.dumps(args, indent=2)}\nResult: {result}\n")
             else:
                 print("[No tool called, waiting...]")
                 time.sleep(10)
