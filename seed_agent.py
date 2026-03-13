@@ -80,6 +80,11 @@ def handle_telegram(args):
 
 def handle_restart(args):
     print("[Requesting Restart] Exiting...")
+    try:
+        with open(SCRATCHPAD_PATH, "a", encoding="utf-8") as f:
+            f.write("\n[Tool: request_restart]\nResult: Success. Rebooting now...\n")
+        time.sleep(1) # Ensure disk write is flushed
+    except: pass
     os._exit(0)
 
 # Register Tools
