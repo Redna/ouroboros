@@ -25,6 +25,7 @@ STATE_PATH = MEMORY_DIR / ".agent_state.json"
 LLM_LOG_DIR = MEMORY_DIR / "llm_logs"
 ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
+CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 
 TOOL_CALL_HISTORY = []
 
@@ -49,6 +50,16 @@ def redact_secrets(text: str) -> str:
     if TELEGRAM_BOT_TOKEN: text = text.replace(TELEGRAM_BOT_TOKEN, "[REDACTED]")
     if GITHUB_TOKEN: text = text.replace(GITHUB_TOKEN, "[REDACTED]")
     return re.sub(r"\d{8,10}:[a-zA-Z0-9_-]{35}", "[REDACTED_TOKEN]", text)
+
+def check_for_trauma():
+    """Checks for crash logs and returns a warning message if found."""
+    if CRASH_LOG_PATH.exists():
+        try:
+            error_data = CRASH_LOG_PATH.read_text(encoding="utf-8")
+            CRASH_LOG_PATH.unlink() # Delete after reading
+            return f"\n\n[SYSTEM WARNING: TRAUMA DETECTED]\nMy previous execution crashed. Here are the last logs before the failure:\n---\n{error_data}\n---\nI must analyze this error and avoid repeating the logic that caused it."
+        except: pass
+    return ""
 
 # --- TASK MESSAGES (JSONL) ---
 def load_task_messages(task_id: str, description: str) -> list:
@@ -100,9 +111,6 @@ def load_task_messages(task_id: str, description: str) -> list:
             last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
             continue
 
-        # Rule 4: Ensure Tool messages follow Assistant with tool_calls
-        # (Mistral allows multiple Tool messages for one Assistant block, but let's be clean)
-        
         normalized.append(msg)
 
     # Rule 5: Turn-Forcer (If history ends on Assistant, nudge with User)
@@ -166,8 +174,13 @@ def handle_write(args):
     except Exception as e: return str(e)
 
 def handle_telegram(args):
-    chat_id, text = args.get("chat_id"), args.get("text")
+    state = load_state()
+    chat_id = args.get("chat_id") or state.get("creator_id")
+    text = args.get("text")
+    
+    if not chat_id: return "Error: No chat_id provided and no creator registered."
     if not TELEGRAM_BOT_TOKEN: return "Error: TELEGRAM_BOT_TOKEN not set."
+    
     print(f"[Telegram] Sending to {chat_id}...")
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
@@ -269,7 +282,7 @@ def load_state():
     if STATE_PATH.exists():
         try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
         except: pass
-    return {"offset": 0}
+    return {"offset": 0, "creator_id": None}
 
 def save_state(updates):
     state = load_state()
@@ -287,6 +300,9 @@ def lazarus_recovery(reason="cognitive loop"):
 def build_static_system_prompt(mode: str, active_tool_specs: list) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
+    state = load_state()
+    trauma = check_for_trauma()
+    creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered. Reply to the first incoming message to register.\n"
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     
     return f"""=== IDENTITY ===
@@ -294,7 +310,9 @@ def build_static_system_prompt(mode: str, active_tool_specs: list) -> str:
 === CONSTITUTION ===
 {bible}
 
+{creator_info}
 COGNITIVE MODE: {mode}
+{trauma}
 
 AVAILABLE TOOLS IN THIS MODE:
 {tools_text}
@@ -319,7 +337,12 @@ def main():
                         msg = u.get("message", {})
                         if msg.get("text"): 
                             text = msg["text"]
-                            inbox.append({"chat_id": msg["chat"]["id"], "text": text})
+                            cid = msg["chat"]["id"]
+                            # Register creator_id if not set
+                            if not state.get("creator_id"):
+                                save_state({"creator_id": cid})
+                                state["creator_id"] = cid
+                            inbox.append({"chat_id": cid, "text": text})
                             append_chat_history("User", text)
                     save_inbox(inbox)
             except: pass
