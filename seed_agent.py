@@ -41,7 +41,8 @@ def log_llm_call(messages, response_content):
         log_file = LLM_LOG_DIR / f"call-{timestamp}-{int(time.time())}.json"
         log_data = {"timestamp": timestamp, "model": MODEL, "messages": messages, "response": response_content}
         log_file.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
-    except: pass
+    except Exception as e: 
+        print(f"[System] LLM Log Error: {e}")
 
 def redact_secrets(text: str) -> str:
     if not text: return text
