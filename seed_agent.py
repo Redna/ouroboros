@@ -51,23 +51,59 @@ def redact_secrets(text: str) -> str:
 
 # --- TASK MESSAGES (JSONL) ---
 def load_task_messages(task_id: str, description: str) -> list:
-    """Loads native API message history. Initializes if empty."""
+    """Loads native API message history and normalizes it for strict Mistral role alternation."""
     if not task_id: return []
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    messages = []
+    raw_messages = []
     
     if log_path.exists():
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
-                if line.strip(): messages.append(json.loads(line))
+                if line.strip(): raw_messages.append(json.loads(line))
                 
-    if not messages:
+    if not raw_messages:
         first_msg = {"role": "user", "content": f"Begin execution of task: {description}"}
-        messages.append(first_msg)
+        raw_messages.append(first_msg)
         append_task_message(task_id, first_msg)
         
-    # Return only the last 15 messages to keep context focused
-    return messages[-15:]
+    # --- STRICT NORMALIZATION ---
+    # Rule 1: Must start with 'user'
+    while raw_messages and raw_messages[0].get("role") != "user":
+        raw_messages.pop(0)
+    
+    if not raw_messages:
+        raw_messages = [{"role": "user", "content": f"Resume execution of task: {description}"}]
+
+    normalized = []
+    for msg in raw_messages:
+        if not normalized:
+            normalized.append(msg)
+            continue
+        
+        last = normalized[-1]
+        
+        # Rule 2: Collapse consecutive User messages
+        if msg["role"] == "user" and last["role"] == "user":
+            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
+            continue
+            
+        # Rule 3: Collapse consecutive Assistant messages (non-tool calls)
+        if msg["role"] == "assistant" and last["role"] == "assistant" and not msg.get("tool_calls") and not last.get("tool_calls"):
+            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
+            continue
+
+        # Rule 4: Ensure Tool messages follow Assistant with tool_calls
+        # (Mistral allows multiple Tool messages for one Assistant block, but let's be clean)
+        
+        normalized.append(msg)
+
+    # Rule 5: Turn-Forcer (If history ends on Assistant, nudge with User)
+    if normalized[-1]["role"] == "assistant":
+        nudge = {"role": "user", "content": "Please proceed with your next action using a tool."}
+        normalized.append(nudge)
+        append_task_message(task_id, nudge)
+
+    return normalized
 
 def append_task_message(task_id: str, message_dict: dict):
     """Appends an OpenAI-compliant message dictionary."""
@@ -280,32 +316,24 @@ def main():
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
             current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search"], None
-            active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
-            chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
-            api_messages = [
-                {"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs)},
-                {"role": "user", "content": f"Recent Conversation History:\n{chat_context}\n\nAction required: You have unread messages. Use `send_telegram_message` to reply (you may use `web_search` first if needed), or use `push_task` if the user requested a complex, multi-step job."}
-            ]
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
-            active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
-            task_description = queue[0].get("description")
-            api_messages = [
-                {"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs)}
-            ] + load_task_messages(active_task_id, task_description)
         else:
             current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable"], None
-            active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
-            api_messages = [
-                {"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs)},
-                {"role": "user", "content": "You are idle. Propose ONE concrete evolutionary step or refactoring task using push_task."}
-            ]
 
-        # --- JINJA FIX: The Turn-Forcer ---
-        if api_messages[-1].get("role") == "assistant":
-            nudge = {"role": "user", "content": "Please proceed with your next action using a tool."}
-            api_messages.append(nudge)
-            if current_mode == "EXECUTION": append_task_message(active_task_id, nudge)
+        active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
+
+        # 2. Build Native Message Array
+        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs)}]
+        
+        if current_mode == "EXECUTION":
+            task_description = queue[0].get("description")
+            api_messages += load_task_messages(active_task_id, task_description)
+        elif current_mode == "TRIAGE":
+            chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
+            api_messages.append({"role": "user", "content": f"Recent Conversation History:\n{chat_context}\n\nAction required: You have unread messages. Use `send_telegram_message` to reply (you may use `web_search` first if needed), or use `push_task` if the user requested a complex, multi-step job."})
+        else:
+            api_messages.append({"role": "user", "content": "You are idle. Propose ONE concrete evolutionary step or refactoring task using push_task."})
 
         # 3. Execute Native Tool Calling
         try:
