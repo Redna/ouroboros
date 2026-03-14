@@ -72,6 +72,13 @@ def load_task_messages(task_id: str, description: str) -> list:
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
     
+    # Keep only the last 15 messages to ensure system prompt dominance
+    raw_messages = raw_messages[-15:]
+    
+    # If the slicing removed the starting 'user' message, fix it
+    while raw_messages and raw_messages[0].get("role") != "user":
+        raw_messages.pop(0)
+
     if not raw_messages:
         raw_messages = [{"role": "user", "content": f"Resume execution of task: {description}"}]
 
