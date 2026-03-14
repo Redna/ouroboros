@@ -78,7 +78,7 @@ class ToolRegistry:
     def execute(self, name, args):
         if name in self.tools:
             try: return self.tools[name]["handler"](args)
-            except Exception as e: return f"Execution Error in tool '{name}': {e}"
+            except Exception as e: return f"Error in tool '{name}': {e}"
         return f"Error: Tool '{name}' not found."
 
 registry = ToolRegistry()
@@ -111,7 +111,7 @@ def handle_write(args):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"Successfully wrote to {path_str}."
-    except Exception as e: return f"Error writing file: {e}"
+    except Exception as e: return f"Error: {e}"
 
 def handle_telegram(args):
     chat_id, text = args.get("chat_id"), args.get("text")
@@ -233,10 +233,18 @@ registry.register("search_memory_archive", "Search biography.", {"type": "object
 
 def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def build_static_system_prompt() -> str:
+def build_monolithic_prompt(history: list) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     tools = registry.get_specs_as_text()
+    
+    # Render History into a single block
+    history_str = ""
+    for turn in history:
+        role = turn['role'].upper()
+        content = turn.get('content', '')
+        history_str += f"[{role}]: {content}\n"
+
     return f"""You are Ouroboros, an autonomous evolving AI.
     
 === IDENTITY ===
@@ -255,6 +263,9 @@ def build_static_system_prompt() -> str:
 {{"tool": "tool_name", "args": {{"arg1": "val1"}}}}
 ```
 3. You will receive the result in the next User message.
+
+=== CONVERSATION HISTORY ===
+{history_str}
 """
 
 def get_task_history(task_id):
@@ -320,7 +331,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Template-Guaranteed State Seed v2.12. Model: {MODEL}")
+    print(f"Awaking Template-Proof State Seed v2.13. Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -346,12 +357,13 @@ def main():
         if not history: history = [{"role": "user", "content": initial_user_msg}]
         else: history[0]["content"] = initial_user_msg
 
-        # 2. Virtual Template-Guard Mapping
-        # We ensure the LLM only ever sees a strict user/assistant alternation.
-        # Tool results are injected as "user" messages.
-        # Tool calls are already part of the assistant's text.
-        system_content = build_static_system_prompt()
-        messages = [{"role": "system", "content": system_content}] + history
+        # 2. Bypass Jinja Template: Send everything in ONE system message
+        # This prevents role-sequence errors because the template sees only 1 message.
+        monolithic_content = build_monolithic_prompt(history)
+        messages = [
+            {"role": "system", "content": monolithic_content},
+            {"role": "user", "content": "Acknowledge your state and execute your next thought or tool call."}
+        ]
 
         try:
             response = client.chat.completions.create(model=MODEL, messages=messages, temperature=0.7)
@@ -363,15 +375,14 @@ def main():
                 print(f"[{current_mode}]: {text}")
                 history.append({"role": "assistant", "content": text})
 
-                # 3. Manual Tool Parsing (Code Block Extraction)
+                # 3. Manual Tool Parsing
                 tool_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
                 if tool_match:
                     try:
                         tool_data = json.loads(tool_match.group(1))
-                        name = tool_data.get("tool")
-                        args = tool_data.get("args", {})
-                        
+                        name, args = tool_data.get("tool"), tool_data.get("args", {})
                         print(f"[Tool Call]: {name}")
+                        
                         tool_signature = f"{name}:{json.dumps(args)}"
                         TOOL_CALL_HISTORY.append(tool_signature)
                         if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
@@ -380,12 +391,11 @@ def main():
                             break
 
                         result = registry.execute(name, args)
-                        # Map Result to USER turn for strict alternation
                         history.append({"role": "user", "content": f"SYSTEM: Tool '{name}' returned:\n{result}"})
                     except Exception as e:
                         history.append({"role": "user", "content": f"SYSTEM ERROR: Invalid tool JSON syntax. {e}"})
                 else:
-                    print(f"[No tool called in {current_mode}, waiting...]")
+                    print(f"[No tool block found in {current_mode}, waiting...]")
                     time.sleep(10)
 
             # 4. History Maintenance
