@@ -106,7 +106,7 @@ def handle_write(args):
         else:
             path = (ROOT_DIR / path_str).resolve()
             authorized = str(path).startswith(str(ROOT_DIR))
-        if not authorized: return "Error: Permission denied (outside authorized zones)."
+        if not authorized: return "Error: Permission denied."
         if path.name == ".env" or ".git/config" in str(path): return "Error: Modification prohibited."
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -171,7 +171,7 @@ def handle_list_repo(args):
         output.append("/app")
         build_tree(ROOT_DIR)
         return "\n".join(output)
-    except Exception as e: return f"Error listing repository: {e}"
+    except Exception as e: return f"Error: {e}"
 
 def handle_update_state(args):
     key, value = args.get("key"), args.get("value")
@@ -313,7 +313,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Turn-Based State Seed v2.8 (Strict Alternation). Model: {MODEL}")
+    print(f"Awaking Turn-Based State Seed v2.10 (OpenAI Tools + Guard). Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -339,8 +339,6 @@ def main():
         else: history[0]["content"] = initial_user_msg
 
         system_content = build_static_system_prompt(tools)
-        # Template Guard: We will ONLY send user/assistant pairs to the LLM.
-        # Tool results are wrapped in a USER message to ensure strict alternation.
         messages = [{"role": "system", "content": system_content}] + history
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in tools]
 
@@ -355,28 +353,31 @@ def main():
                 history.append({"role": "assistant", "content": thought})
 
             if res_msg.tool_calls:
-                # If content was empty, we need an assistant role to hold the tool_calls
+                # 1. Append Assistant Turn with tool_calls
                 if not res_msg.content:
-                    history.append({"role": "assistant", "content": "Executing tools...", "tool_calls": [t.model_dump() for t in res_msg.tool_calls]})
+                    history.append({"role": "assistant", "content": None, "tool_calls": [t.model_dump() for t in res_msg.tool_calls]})
+                else:
+                    # Content already appended above, just update the last assistant turn with tools
+                    history[-1]["tool_calls"] = [t.model_dump() for t in res_msg.tool_calls]
                 
+                # 2. Append Tool Result Turns
                 for tool_call in res_msg.tool_calls:
                     name, raw_args = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
-                    
                     tool_signature = f"{name}:{raw_args}"
                     TOOL_CALL_HISTORY.append(tool_signature)
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
-                        lazarus_recovery(reason="tool execution loop")
+                        lazarus_recovery(reason="tool loop")
                         break
-
                     try:
                         args = json.loads(raw_args)
                         result = registry.execute(name, args)
                     except json.JSONDecodeError as e: result = f"SYSTEM ERROR: Invalid JSON. {e}. Retry."
-                    
-                    # Template Guard: Append tool result as a USER message to keep user/assistant alternating
-                    history.append({"role": "user", "content": f"SYSTEM: Tool '{name}' returned:\n{result}"})
+                    history.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": str(result)})
+                
+                # 3. TEMPLATE GUARD: Always append a USER role message after a TOOL role to ensure alternation
+                history.append({"role": "user", "content": "Tool results received. Acknowledge and proceed."})
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(10)
