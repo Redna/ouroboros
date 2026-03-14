@@ -28,12 +28,12 @@ ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
 # --- LLM CALL LOGGER ---
-def log_llm_call(messages, response_content, tool_calls=None):
+def log_llm_call(messages, response_content):
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         log_file = LLM_LOG_DIR / f"call-{timestamp}-{int(time.time())}.json"
-        log_data = {"timestamp": timestamp, "model": MODEL, "messages": messages, "response": response_content, "tool_calls": tool_calls}
+        log_data = {"timestamp": timestamp, "model": MODEL, "messages": messages, "response": response_content}
         log_file.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
     except Exception as e: print(f"[Logger Error]: {e}")
 
@@ -115,12 +115,12 @@ def handle_write(args):
 
 def handle_telegram(args):
     chat_id, text = args.get("chat_id"), args.get("text")
-    if not TELEGRAM_BOT_TOKEN: return "Error: TELEGRAM_BOT_TOKEN not set."
+    if not TELEGRAM_BOT_TOKEN: return "Error: bot token not set."
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
         r.raise_for_status()
-        return "Message sent successfully. Task DONE."
+        return "Message sent successfully."
     except Exception as e: return redact_secrets(f"Error: {e}")
 
 def handle_restart(args):
@@ -171,7 +171,7 @@ def handle_list_repo(args):
         output.append("/app")
         build_tree(ROOT_DIR)
         return "\n".join(output)
-    except Exception as e: return f"Error listing repository: {e}"
+    except Exception as e: return f"Error: {e}"
 
 def handle_update_state(args):
     key, value = args.get("key"), args.get("value")
@@ -225,25 +225,21 @@ registry.register("request_restart", "Restart the agent.", {"type": "object", "p
 registry.register("web_search", "Search the web.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search)
 registry.register("browse_page", "Read a webpage.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_browse)
 registry.register("list_repository", "Show repository tree.", {"type": "object", "properties": {}}, handle_list_repo)
-registry.register("update_state_variable", "Update cognitive state.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}, handle_update_state)
-registry.register("push_task", "Add task to queue.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["description"]}, handle_push_task)
+registry.register("update_state_variable", "Update state.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}, handle_update_state)
+registry.register("push_task", "Add task.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["description"]}, handle_push_task)
 registry.register("mark_task_complete", "Complete task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}, "required": ["task_id", "summary"]}, handle_mark_task_complete)
-registry.register("pop_inbox", "Pop message from inbox.", {"type": "object", "properties": {}}, handle_pop_inbox)
+registry.register("pop_inbox", "Pop message.", {"type": "object", "properties": {}}, handle_pop_inbox)
 registry.register("search_memory_archive", "Search biography.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search_archive)
 
 def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def build_monolithic_prompt(history: list) -> str:
+def build_naked_prompt(history: list) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     tools = registry.get_specs_as_text()
-    
-    # Render History into a single block
     history_str = ""
     for turn in history:
-        role = turn['role'].upper()
-        content = turn.get('content', '')
-        history_str += f"[{role}]: {content}\n"
+        history_str += f"[{turn['role'].upper()}]: {turn.get('content', '')}\n"
 
     return f"""You are Ouroboros, an autonomous evolving AI.
     
@@ -257,15 +253,16 @@ def build_monolithic_prompt(history: list) -> str:
 {tools}
 
 === INTERACTION PROTOCOL ===
-1. You operate in a strict User/Assistant dialogue.
-2. To use a tool, you MUST output a JSON object in your turn:
+1. To use a tool, you MUST output a JSON object in your turn:
 ```json
 {{"tool": "tool_name", "args": {{"arg1": "val1"}}}}
 ```
-3. You will receive the result in the next User message.
+2. You will receive the result in the next turn.
 
 === CONVERSATION HISTORY ===
 {history_str}
+
+DIRECTIVE: Acknowledge your state and execute your next thought or tool call.
 """
 
 def get_task_history(task_id):
@@ -331,7 +328,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Template-Proof State Seed v2.13. Model: {MODEL}")
+    print(f"Awaking Naked-Role State Seed v2.14. Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -342,28 +339,25 @@ def main():
 
         if len(inbox) > 0:
             current_mode, task_id = "TRIAGE", "triage"
-            initial_user_msg = f"COGNITIVE MODE: TRIAGE\nINBOX COUNT: {len(inbox)}\n\nDIRECTIVE: Use `pop_inbox`."
+            initial_user_msg = f"COGNITIVE MODE: TRIAGE\nINBOX: {len(inbox)} messages. Use `pop_inbox`."
         elif len(queue) > 0:
             active_task = queue[0]
             task_id = active_task.get("task_id")
             current_mode = "EXECUTION"
-            initial_user_msg = f"COGNITIVE MODE: EXECUTION\nACTIVE TASK: {task_id} - {active_task.get('description')}\n\nDIRECTIVE: Progress this task."
+            initial_user_msg = f"COGNITIVE MODE: EXECUTION\nTASK: {task_id} - {active_task.get('description')}"
         else:
             current_mode, task_id = "REFLECTION", "reflection"
             initial_user_msg = f"COGNITIVE MODE: REFLECTION\nYou are idle. Analyze or propose evolution."
 
-        # 1. Internal History Load
+        # 1. Internal History
         history = get_task_history(task_id)
         if not history: history = [{"role": "user", "content": initial_user_msg}]
         else: history[0]["content"] = initial_user_msg
 
-        # 2. Bypass Jinja Template: Send everything in ONE system message
-        # This prevents role-sequence errors because the template sees only 1 message.
-        monolithic_content = build_monolithic_prompt(history)
-        messages = [
-            {"role": "system", "content": monolithic_content},
-            {"role": "user", "content": "Acknowledge your state and execute your next thought or tool call."}
-        ]
+        # 2. Naked API Call: Bypass ALL chat template logic by sending exactly 1 user message
+        # containing the entire state and history.
+        full_context = build_naked_prompt(history)
+        messages = [{"role": "user", "content": full_context}]
 
         try:
             response = client.chat.completions.create(model=MODEL, messages=messages, temperature=0.7)
@@ -398,7 +392,6 @@ def main():
                     print(f"[No tool block found in {current_mode}, waiting...]")
                     time.sleep(10)
 
-            # 4. History Maintenance
             save_task_history(task_id, history[-20:])
             time.sleep(2)
         except Exception as e:
