@@ -160,14 +160,20 @@ def handle_write(args):
 def handle_telegram(args):
     chat_id, text = args.get("chat_id"), args.get("text")
     if not TELEGRAM_BOT_TOKEN: return "Error: TELEGRAM_BOT_TOKEN not set."
+    print(f"[Telegram] Sending to {chat_id}...")
     try:
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
         if r.status_code == 200:
             append_chat_history("Ouroboros", text)
             return "Message sent successfully."
         else:
-            return f"Telegram Error {r.status_code}: {r.text}"
-    except Exception as e: return redact_secrets(f"Error: {e}")
+            err_msg = f"Telegram Error {r.status_code}: {r.text}"
+            print(f"[Telegram] {err_msg}")
+            return err_msg
+    except Exception as e: 
+        err_msg = redact_secrets(f"Error: {e}")
+        print(f"[Telegram] {err_msg}")
+        return err_msg
 
 def handle_push_task(args):
     q = load_task_queue(); tid = f"task_{int(time.time())}"
@@ -330,8 +336,12 @@ def main():
             task_description = queue[0].get("description")
             api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "TRIAGE":
+            formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
-            api_messages.append({"role": "user", "content": f"Recent Conversation History:\n{chat_context}\n\nAction required: You have unread messages. Use `send_telegram_message` to reply (you may use `web_search` first if needed), or use `push_task` if the user requested a complex, multi-step job."})
+            api_messages.append({
+                "role": "user", 
+                "content": f"Recent Conversation History:\n{chat_context}\n\nNEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. Use `send_telegram_message` with the CORRECT chat_id from the inbox to reply, or use `push_task` for complex jobs."
+            })
         else:
             api_messages.append({"role": "user", "content": "You are idle. Propose ONE concrete evolutionary step or refactoring task using push_task."})
 
@@ -361,9 +371,10 @@ def main():
 
                     try:
                         args = json.loads(raw_arguments)
+                        print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
                         if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
-                            save_inbox([]); print("[System] Inbox Cleared.")
+                            save_inbox([]); print(f"[System] Inbox Cleared in {current_mode} mode.")
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
