@@ -313,7 +313,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Turn-Based State Seed v2.7. Model: {MODEL}")
+    print(f"Awaking Turn-Based State Seed v2.8 (Strict Alternation). Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -324,7 +324,7 @@ def main():
 
         if len(inbox) > 0:
             current_mode, tools, task_id = "TRIAGE", ["pop_inbox", "send_telegram_message", "push_task", "update_state_variable"], "triage"
-            initial_user_msg = f"COGNITIVE MODE: TRIAGE\nINBOX COUNT: {len(inbox)}\n\nDIRECTIVE: Use `pop_inbox` to see the first message."
+            initial_user_msg = f"COGNITIVE MODE: TRIAGE\nINBOX COUNT: {len(inbox)}\n\nDIRECTIVE: Use `pop_inbox`."
         elif len(queue) > 0:
             active_task = queue[0]
             task_id = active_task.get("task_id")
@@ -339,6 +339,8 @@ def main():
         else: history[0]["content"] = initial_user_msg
 
         system_content = build_static_system_prompt(tools)
+        # Template Guard: We will ONLY send user/assistant pairs to the LLM.
+        # Tool results are wrapped in a USER message to ensure strict alternation.
         messages = [{"role": "system", "content": system_content}] + history
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in tools]
 
@@ -353,24 +355,28 @@ def main():
                 history.append({"role": "assistant", "content": thought})
 
             if res_msg.tool_calls:
-                if not res_msg.content: history.append({"role": "assistant", "content": None, "tool_calls": [t.model_dump() for t in res_msg.tool_calls]})
+                # If content was empty, we need an assistant role to hold the tool_calls
+                if not res_msg.content:
+                    history.append({"role": "assistant", "content": "Executing tools...", "tool_calls": [t.model_dump() for t in res_msg.tool_calls]})
+                
                 for tool_call in res_msg.tool_calls:
                     name, raw_args = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
+                    
                     tool_signature = f"{name}:{raw_args}"
                     TOOL_CALL_HISTORY.append(tool_signature)
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
                         lazarus_recovery(reason="tool execution loop")
                         break
+
                     try:
                         args = json.loads(raw_args)
                         result = registry.execute(name, args)
                     except json.JSONDecodeError as e: result = f"SYSTEM ERROR: Invalid JSON. {e}. Retry."
-                    history.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": str(result)})
-                
-                # Jinja Alternation Guard: Inject a user role after a tool result to keep the pattern user/assistant
-                history.append({"role": "user", "content": "Acknowledged. Continue."})
+                    
+                    # Template Guard: Append tool result as a USER message to keep user/assistant alternating
+                    history.append({"role": "user", "content": f"SYSTEM: Tool '{name}' returned:\n{result}"})
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(10)
