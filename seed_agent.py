@@ -313,7 +313,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Turn-Based State Seed v2.6. Model: {MODEL}")
+    print(f"Awaking Turn-Based State Seed v2.7. Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -368,6 +368,9 @@ def main():
                         result = registry.execute(name, args)
                     except json.JSONDecodeError as e: result = f"SYSTEM ERROR: Invalid JSON. {e}. Retry."
                     history.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": str(result)})
+                
+                # Jinja Alternation Guard: Inject a user role after a tool result to keep the pattern user/assistant
+                history.append({"role": "user", "content": "Acknowledged. Continue."})
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(10)
