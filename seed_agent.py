@@ -266,10 +266,6 @@ def load_inbox():
 def save_inbox(messages):
     INBOX_PATH.write_text(json.dumps(messages, indent=2), encoding="utf-8")
 
-def handle_clear_inbox(args):
-    save_inbox([])
-    return "Inbox cleared. Returning to standard operations."
-
 # --- SEARCH TOOL ---
 def handle_search_archive(args):
     query = args.get("query", "").lower()
@@ -291,7 +287,6 @@ registry.register("update_state_variable", "Update cognitive state.", {"type": "
 registry.register("push_task", "Add task to queue.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["description"]}, handle_push_task)
 registry.register("mark_task_complete", "Complete task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}, "required": ["task_id", "summary"]}, handle_mark_task_complete)
 registry.register("compress_memory_block", "Compress a log file.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}, "required": ["target_log_file", "dense_summary"]}, handle_compress_memory)
-registry.register("clear_inbox", "Empty the inbox after handling all messages.", {"type": "object", "properties": {}}, handle_clear_inbox)
 registry.register("search_memory_archive", "Search your biography for a keyword.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search_archive)
 
 def load_state():
@@ -337,7 +332,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Native JSONL State Seed v3.0. Model: {MODEL}")
+    print(f"Awaking Native JSONL State Seed v3.1 (Amnesia Patch). Model: {MODEL}")
     while True:
         # 1. Load State
         state = load_state()
@@ -351,11 +346,11 @@ def main():
 
         # 2. Determine Mode & Tools
         if len(inbox_messages) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "clear_inbox", "update_state_variable"], None
+            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable"], None
             formatted_inbox = "\n".join([f"- [{msg['chat_id']}] {msg['text']}" for msg in inbox_messages])
             api_messages = [
                 {"role": "system", "content": build_static_system_prompt(current_mode)},
-                {"role": "user", "content": f"You have unread messages:\n{formatted_inbox}\nAction required: Reply, push to queue, or clear inbox."}
+                {"role": "user", "content": f"You have unread messages:\n{formatted_inbox}\nAction required: You MUST either reply using `send_telegram_message` or queue a new task using `push_task`."}
             ]
         elif len(task_queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), task_queue[0].get("task_id")
@@ -402,6 +397,14 @@ def main():
                     try:
                         args = json.loads(raw_arguments)
                         result = registry.execute(name, args)
+                        
+                        # --- PATCH: Auto-Clear Inbox on Triage Action ---
+                        if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
+                            if "Error" not in str(result):
+                                save_inbox([])
+                                print(f"[System] Auto-cleared inbox after successful {name}.")
+                        # ------------------------------------------------
+                        
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                         
