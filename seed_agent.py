@@ -149,7 +149,7 @@ def handle_write(args):
         else:
             path = (ROOT_DIR / path_str).resolve()
             authorized = str(path).startswith(str(ROOT_DIR))
-        if not authorized: return "Error: Permission denied (outside authorized zones)."
+        if not authorized: return "Error: Permission denied."
         if path.name == ".env" or ".git/config" in str(path): return "Error: Modification prohibited."
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -230,7 +230,7 @@ def handle_push_task(args):
     queue.append({"task_id": task_id, "description": description, "priority": priority, "status": "pending"})
     queue = sorted(queue, key=lambda x: x.get("priority", 1), reverse=True)
     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-    return f"Task '{task_id}' added to queue with priority {priority}."
+    return f"Task '{task_id}' added to queue."
 
 def handle_mark_task_complete(args):
     task_id, summary = args.get("task_id"), args.get("summary")
@@ -332,7 +332,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Native JSONL State Seed v3.1 (Amnesia Patch). Model: {MODEL}")
+    print(f"Awaking Native JSONL State Seed v3.2 (Heartbeat Patch). Model: {MODEL}")
     while True:
         # 1. Load State
         state = load_state()
@@ -355,7 +355,15 @@ def main():
         elif len(task_queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), task_queue[0].get("task_id")
             task_description = task_queue[0].get("description")
-            api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode)}] + load_task_messages(active_task_id, task_description)
+            history = load_task_messages(active_task_id, task_description)
+            
+            # --- TEMPLATE GUARD: Heartbeat Acknowledgement ---
+            # If the last message was from the assistant, we must inject a user heartbeat to satisfy strict alternation.
+            if history and history[-1]["role"] == "assistant":
+                history.append({"role": "user", "content": "Acknowledged. Please continue or execute a tool to progress."})
+            # --------------------------------------------------
+            
+            api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode)}] + history
         else:
             current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable"], None
             api_messages = [
@@ -391,19 +399,18 @@ def main():
                     TOOL_CALL_HISTORY.append(tool_signature)
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
-                        lazarus_recovery(reason="cognitive loop")
+                        lazarus_recovery(reason="tool execution loop")
                         break
                     
                     try:
                         args = json.loads(raw_arguments)
                         result = registry.execute(name, args)
                         
-                        # --- PATCH: Auto-Clear Inbox on Triage Action ---
+                        # Auto-Clear Inbox on Triage Action (v3.1 baseline)
                         if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
                             if "Error" not in str(result):
                                 save_inbox([])
                                 print(f"[System] Auto-cleared inbox after successful {name}.")
-                        # ------------------------------------------------
                         
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
