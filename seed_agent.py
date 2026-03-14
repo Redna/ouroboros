@@ -26,6 +26,8 @@ LLM_LOG_DIR = MEMORY_DIR / "llm_logs"
 ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 
+TOOL_CALL_HISTORY = []
+
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
 # --- UTILS ---
@@ -64,7 +66,8 @@ def load_task_messages(task_id: str, description: str) -> list:
         messages.append(first_msg)
         append_task_message(task_id, first_msg)
         
-    return messages
+    # Return only the last 15 messages to keep context focused
+    return messages[-15:]
 
 def append_task_message(task_id: str, message_dict: dict):
     """Appends an OpenAI-compliant message dictionary."""
@@ -182,6 +185,12 @@ def handle_compress_memory(args):
 def handle_search_memory(args):
     return "Memory search complete. No matches found." # Stub
 
+def handle_restart(args):
+    """Exits the script. The external Docker watchdog will automatically restart the container, loading the fresh code."""
+    print("[System] Restart requested by agent. Exiting...")
+    import os
+    os._exit(0)
+
 registry.register("bash_command", "Execute bash.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash)
 registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
 registry.register("send_telegram_message", "Telegram.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
@@ -197,6 +206,7 @@ registry.register("update_state_variable", "Update state.", {"type": "object", "
 registry.register("web_search", "Search web.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search)
 registry.register("compress_memory_block", "Compress log.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory)
 registry.register("search_memory_archive", "Search memory.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory)
+registry.register("request_restart", "Restart the agent to apply new code updates.", {"type": "object", "properties": {}}, handle_restart)
 
 # --- STATE ---
 def load_inbox(): return json.loads(read_file(INBOX_PATH) or "[]")
@@ -267,6 +277,7 @@ def main():
         inbox, queue = load_inbox(), load_task_queue()
         
         # Determine Mode & Tools
+        # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
             current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search"], None
             active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
@@ -309,6 +320,17 @@ def main():
                 for tool_call in message.tool_calls:
                     name, raw_arguments = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
+                    
+                    # --- LAZARUS TRACKING ---
+                    global TOOL_CALL_HISTORY
+                    tool_signature = f"{name}:{raw_arguments}"
+                    TOOL_CALL_HISTORY.append(tool_signature)
+                    if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
+                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
+                        lazarus_recovery(reason="cognitive tool loop")
+                        break # Break out of the tool execution loop
+                    # ------------------------
+
                     try:
                         args = json.loads(raw_arguments)
                         result = registry.execute(name, args)
