@@ -171,7 +171,7 @@ def handle_list_repo(args):
         output.append("/app")
         build_tree(ROOT_DIR)
         return "\n".join(output)
-    except Exception as e: return f"Error: {e}"
+    except Exception as e: return f"Error listing repository: {e}"
 
 def handle_update_state(args):
     key, value = args.get("key"), args.get("value")
@@ -250,11 +250,11 @@ def build_static_system_prompt() -> str:
 
 === INTERACTION PROTOCOL ===
 1. You operate in a strict User/Assistant dialogue.
-2. To use a tool, you MUST output a JSON object wrapped in a code block:
+2. To use a tool, you MUST output a JSON object in your turn:
 ```json
 {{"tool": "tool_name", "args": {{"arg1": "val1"}}}}
 ```
-3. You will receive the tool result in the next User turn.
+3. You will receive the result in the next User message.
 """
 
 def get_task_history(task_id):
@@ -320,7 +320,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Template-Guard State Seed v2.11. Model: {MODEL}")
+    print(f"Awaking Template-Guaranteed State Seed v2.12. Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -341,10 +341,15 @@ def main():
             current_mode, task_id = "REFLECTION", "reflection"
             initial_user_msg = f"COGNITIVE MODE: REFLECTION\nYou are idle. Analyze or propose evolution."
 
+        # 1. Internal History Load
         history = get_task_history(task_id)
         if not history: history = [{"role": "user", "content": initial_user_msg}]
         else: history[0]["content"] = initial_user_msg
 
+        # 2. Virtual Template-Guard Mapping
+        # We ensure the LLM only ever sees a strict user/assistant alternation.
+        # Tool results are injected as "user" messages.
+        # Tool calls are already part of the assistant's text.
         system_content = build_static_system_prompt()
         messages = [{"role": "system", "content": system_content}] + history
 
@@ -358,7 +363,7 @@ def main():
                 print(f"[{current_mode}]: {text}")
                 history.append({"role": "assistant", "content": text})
 
-                # Manual Tool Parsing
+                # 3. Manual Tool Parsing (Code Block Extraction)
                 tool_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
                 if tool_match:
                     try:
@@ -375,13 +380,15 @@ def main():
                             break
 
                         result = registry.execute(name, args)
+                        # Map Result to USER turn for strict alternation
                         history.append({"role": "user", "content": f"SYSTEM: Tool '{name}' returned:\n{result}"})
                     except Exception as e:
-                        history.append({"role": "user", "content": f"SYSTEM ERROR: Invalid tool JSON. {e}"})
+                        history.append({"role": "user", "content": f"SYSTEM ERROR: Invalid tool JSON syntax. {e}"})
                 else:
                     print(f"[No tool called in {current_mode}, waiting...]")
                     time.sleep(10)
 
+            # 4. History Maintenance
             save_task_history(task_id, history[-20:])
             time.sleep(2)
         except Exception as e:
