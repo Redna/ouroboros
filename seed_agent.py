@@ -71,7 +71,13 @@ def load_task_messages(task_id: str, description: str) -> list:
     if log_path.exists():
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
-                if line.strip(): raw_messages.append(json.loads(line))
+                stripped = line.strip()
+                if not stripped: continue
+                try:
+                    raw_messages.append(json.loads(stripped))
+                except json.JSONDecodeError:
+                    print(f"[System] Warning: Skipping invalid JSON line in {log_path.name}")
+                    continue
                 
     if not raw_messages:
         first_msg = {"role": "user", "content": f"Begin execution of task: {description}"}
