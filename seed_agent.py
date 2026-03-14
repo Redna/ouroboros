@@ -72,9 +72,9 @@ def lazarus_recovery(reason="cognitive loop"):
 class ToolRegistry:
     def __init__(self): self.tools = {}
     def register(self, name, description, parameters, handler): 
-        self.tools[name] = {"spec": {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}, "handler": handler}
-    def get_specs(self): return [tool["spec"] for tool in self.tools.values()]
-    def get_names(self): return list(self.tools.keys())
+        self.tools[name] = {"description": description, "parameters": parameters, "handler": handler}
+    def get_specs_as_text(self):
+        return "\n".join([f"- {n}: {t['description']} (Args: {json.dumps(t['parameters']['properties'])})" for n,t in self.tools.items()])
     def execute(self, name, args):
         if name in self.tools:
             try: return self.tools[name]["handler"](args)
@@ -233,10 +233,10 @@ registry.register("search_memory_archive", "Search biography.", {"type": "object
 
 def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def build_static_system_prompt(available_tools: list) -> str:
+def build_static_system_prompt() -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
-    tools_list = ", ".join(available_tools)
+    tools = registry.get_specs_as_text()
     return f"""You are Ouroboros, an autonomous evolving AI.
     
 === IDENTITY ===
@@ -245,9 +245,16 @@ def build_static_system_prompt(available_tools: list) -> str:
 === CONSTITUTION ===
 {bible}
 
-ACTIVE TOOL REGISTRY: [{tools_list}]
-Use ONLY the structured tool-calling API. Never output text that looks like a tool call.
-Your repository root is /app. Memory is in /memory.
+=== AVAILABLE TOOLS ===
+{tools}
+
+=== INTERACTION PROTOCOL ===
+1. You operate in a strict User/Assistant dialogue.
+2. To use a tool, you MUST output a JSON object wrapped in a code block:
+```json
+{{"tool": "tool_name", "args": {{"arg1": "val1"}}}}
+```
+3. You will receive the tool result in the next User turn.
 """
 
 def get_task_history(task_id):
@@ -313,7 +320,7 @@ def get_unread_telegram_messages(offset):
     return new_offset
 
 def main():
-    print(f"Awaking Turn-Based State Seed v2.10 (OpenAI Tools + Guard). Model: {MODEL}")
+    print(f"Awaking Template-Guard State Seed v2.11. Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -323,64 +330,57 @@ def main():
         inbox, queue, working_state = load_inbox(), load_task_queue(), load_working_state()
 
         if len(inbox) > 0:
-            current_mode, tools, task_id = "TRIAGE", ["pop_inbox", "send_telegram_message", "push_task", "update_state_variable"], "triage"
+            current_mode, task_id = "TRIAGE", "triage"
             initial_user_msg = f"COGNITIVE MODE: TRIAGE\nINBOX COUNT: {len(inbox)}\n\nDIRECTIVE: Use `pop_inbox`."
         elif len(queue) > 0:
             active_task = queue[0]
             task_id = active_task.get("task_id")
-            current_mode, tools = "EXECUTION", registry.get_names()
+            current_mode = "EXECUTION"
             initial_user_msg = f"COGNITIVE MODE: EXECUTION\nACTIVE TASK: {task_id} - {active_task.get('description')}\n\nDIRECTIVE: Progress this task."
         else:
-            current_mode, tools, task_id = "REFLECTION", ["push_task", "update_state_variable", "search_memory_archive"], "reflection"
+            current_mode, task_id = "REFLECTION", "reflection"
             initial_user_msg = f"COGNITIVE MODE: REFLECTION\nYou are idle. Analyze or propose evolution."
 
         history = get_task_history(task_id)
         if not history: history = [{"role": "user", "content": initial_user_msg}]
         else: history[0]["content"] = initial_user_msg
 
-        system_content = build_static_system_prompt(tools)
+        system_content = build_static_system_prompt()
         messages = [{"role": "system", "content": system_content}] + history
-        active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in tools]
 
         try:
-            response = client.chat.completions.create(model=MODEL, messages=messages, tools=active_tool_specs, tool_choice="auto", temperature=0.7)
-            res_msg = response.choices[0].message
-            log_llm_call(messages, res_msg.content, tool_calls=[t.model_dump() for t in (res_msg.tool_calls or [])])
+            response = client.chat.completions.create(model=MODEL, messages=messages, temperature=0.7)
+            res_content = response.choices[0].message.content
+            log_llm_call(messages, res_content)
 
-            if res_msg.content:
-                thought = redact_secrets(res_msg.content.strip())
-                print(f"[{current_mode}]: {thought}")
-                history.append({"role": "assistant", "content": thought})
+            if res_content:
+                text = redact_secrets(res_content.strip())
+                print(f"[{current_mode}]: {text}")
+                history.append({"role": "assistant", "content": text})
 
-            if res_msg.tool_calls:
-                # 1. Append Assistant Turn with tool_calls
-                if not res_msg.content:
-                    history.append({"role": "assistant", "content": None, "tool_calls": [t.model_dump() for t in res_msg.tool_calls]})
-                else:
-                    # Content already appended above, just update the last assistant turn with tools
-                    history[-1]["tool_calls"] = [t.model_dump() for t in res_msg.tool_calls]
-                
-                # 2. Append Tool Result Turns
-                for tool_call in res_msg.tool_calls:
-                    name, raw_args = tool_call.function.name, tool_call.function.arguments
-                    print(f"[Tool Call]: {name}")
-                    tool_signature = f"{name}:{raw_args}"
-                    TOOL_CALL_HISTORY.append(tool_signature)
-                    if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
-                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
-                        lazarus_recovery(reason="tool loop")
-                        break
+                # Manual Tool Parsing
+                tool_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+                if tool_match:
                     try:
-                        args = json.loads(raw_args)
+                        tool_data = json.loads(tool_match.group(1))
+                        name = tool_data.get("tool")
+                        args = tool_data.get("args", {})
+                        
+                        print(f"[Tool Call]: {name}")
+                        tool_signature = f"{name}:{json.dumps(args)}"
+                        TOOL_CALL_HISTORY.append(tool_signature)
+                        if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
+                        if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
+                            lazarus_recovery(reason="tool loop")
+                            break
+
                         result = registry.execute(name, args)
-                    except json.JSONDecodeError as e: result = f"SYSTEM ERROR: Invalid JSON. {e}. Retry."
-                    history.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": str(result)})
-                
-                # 3. TEMPLATE GUARD: Always append a USER role message after a TOOL role to ensure alternation
-                history.append({"role": "user", "content": "Tool results received. Acknowledge and proceed."})
-            else:
-                print(f"[No tool called in {current_mode}, waiting...]")
-                time.sleep(10)
+                        history.append({"role": "user", "content": f"SYSTEM: Tool '{name}' returned:\n{result}"})
+                    except Exception as e:
+                        history.append({"role": "user", "content": f"SYSTEM ERROR: Invalid tool JSON. {e}"})
+                else:
+                    print(f"[No tool called in {current_mode}, waiting...]")
+                    time.sleep(10)
 
             save_task_history(task_id, history[-20:])
             time.sleep(2)
