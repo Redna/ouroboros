@@ -61,8 +61,8 @@ def lazarus_recovery(reason="cognitive loop"):
     except: pass
     subprocess.run("git reset --hard HEAD~1", shell=True, cwd=str(ROOT_DIR))
     subprocess.run("git clean -fd", shell=True, cwd=str(ROOT_DIR))
-    # Clear inbox on hard reset to stop spam loops
     save_inbox([])
+    for f in MEMORY_DIR.glob("history_*.json"): f.unlink()
     global TOOL_CALL_HISTORY
     TOOL_CALL_HISTORY = []
     print("[Lazarus] Recovery complete. Resuming...")
@@ -187,7 +187,7 @@ def handle_push_task(args):
     queue.append({"task_id": task_id, "description": description, "priority": priority, "status": "pending"})
     queue = sorted(queue, key=lambda x: x.get("priority", 1), reverse=True)
     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-    return f"Task '{task_id}' added to queue with priority {priority}."
+    return f"Task '{task_id}' added to queue."
 
 def handle_mark_task_complete(args):
     task_id, summary = args.get("task_id"), args.get("summary")
@@ -198,36 +198,24 @@ def handle_mark_task_complete(args):
     queue = load_task_queue()
     queue = [t for t in queue if t.get("task_id") != task_id]
     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+    hist_path = MEMORY_DIR / f"history_{task_id}.json"
+    if hist_path.exists(): hist_path.unlink()
     handle_update_state({"key": "current_focus", "value": "Idle."})
-    return f"Task {task_id} marked complete."
+    return f"Task {task_id} complete. History archived."
 
 def handle_pop_inbox(args):
-    """Pops the first message from the persistent inbox."""
     inbox = load_inbox()
     if not inbox: return "Error: Inbox is already empty."
     popped = inbox.pop(0)
     save_inbox(inbox)
-    return f"Message popped: '{popped['text']}' from {popped['chat_id']}. This message is now yours to handle. It is no longer in the inbox."
-
-def handle_compress_memory(args):
-    target_file, dense_summary = args.get("target_log_file"), args.get("dense_summary")
-    path = Path(target_file).resolve()
-    if not str(path).startswith(str(MEMORY_DIR)): return "Error: Permission denied."
-    if not path.exists(): return f"Error: File {target_file} not found."
-    try:
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        compressed_content = f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}\n"
-        path.write_text(compressed_content, encoding="utf-8")
-        return f"Successfully compressed {path.name}."
-    except Exception as e: return f"Error: {e}"
+    return f"Message popped: '{popped['text']}' from {popped['chat_id']}."
 
 def handle_search_archive(args):
     query = args.get("query", "").lower()
     if not ARCHIVE_PATH.exists(): return "Error: Archive is empty."
     lines = ARCHIVE_PATH.read_text(encoding="utf-8").splitlines()
     results = [line for line in lines if query in line.lower()]
-    if not results: return f"No results found for '{query}'."
-    return "\n".join(results[-10:])
+    return "\n".join(results[-10:]) if results else f"No results for '{query}'."
 
 # Register Tools
 registry.register("bash_command", "Execute bash commands.", {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}, handle_bash)
@@ -236,30 +224,42 @@ registry.register("send_telegram_message", "Send Telegram message.", {"type": "o
 registry.register("request_restart", "Restart the agent.", {"type": "object", "properties": {}}, handle_restart)
 registry.register("web_search", "Search the web.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search)
 registry.register("browse_page", "Read a webpage.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_browse)
-registry.register("list_repository", "Show files.", {"type": "object", "properties": {}}, handle_list_repo)
-registry.register("update_state_variable", "Update state.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}, handle_update_state)
-registry.register("push_task", "Add task.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["description"]}, handle_push_task)
+registry.register("list_repository", "Show repository tree.", {"type": "object", "properties": {}}, handle_list_repo)
+registry.register("update_state_variable", "Update cognitive state.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}, handle_update_state)
+registry.register("push_task", "Add task to queue.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["description"]}, handle_push_task)
 registry.register("mark_task_complete", "Complete task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}, "required": ["task_id", "summary"]}, handle_mark_task_complete)
-registry.register("compress_memory_block", "Summarize log.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}, "required": ["target_log_file", "dense_summary"]}, handle_compress_memory)
-registry.register("pop_inbox", "Remove and return the first message from the inbox. Use this to take ownership of a message.", {"type": "object", "properties": {}}, handle_pop_inbox)
+registry.register("pop_inbox", "Pop message from inbox.", {"type": "object", "properties": {}}, handle_pop_inbox)
 registry.register("search_memory_archive", "Search biography.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_search_archive)
 
 def read_file(path: Path) -> str: return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def build_dynamic_prompt(mode: str, state: dict, inbox: list, queue: list, task_log: str, available_tools: list) -> str:
+def build_static_system_prompt(available_tools: list) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     tools_list = ", ".join(available_tools)
-    base_identity = f"Your repository root is /app. (Tracked by Git)\nYour isolated memory volume is /memory. (NOT tracked by Git)\n\n=== IDENTITY ===\n{identity}\n=== CONSTITUTION ===\n{bible}\n\n"
-    base_identity += f"ACTIVE TOOL REGISTRY: [{tools_list}]\nUse the structured tool-calling API to interact with these tools.\n\n"
-    if mode == "TRIAGE":
-        return base_identity + f"COGNITIVE MODE: TRIAGE\nINBOX COUNT: {len(inbox)}\n\nDIRECTIVE:\n1. You MUST call `pop_inbox` to see the actual content of the first message.\n2. Once you have the message, either reply directly via `send_telegram_message` or queue a task via `push_task`.\n3. Do NOT execute code in TRIAGE mode. Clear the inbox one message at a time."
-    elif mode == "EXECUTION":
-        active_task = queue[0] if queue else {"description": "None"}
-        return base_identity + f"COGNITIVE MODE: EXECUTION\nWORKING STATE Focus: {state.get('current_focus', 'None')}\n\nACTIVE TASK: {active_task.get('task_id', 'N/A')} - {active_task.get('description', 'N/A')}\n\nRECENT TASK LOG:\n{task_log}\n\nDIRECTIVE:\n1. Progress the Active Task. 2. Call mark_task_complete when done."
-    elif mode == "REFLECTION":
-        return base_identity + f"COGNITIVE MODE: REFLECTION\nYour inbox and queue are empty.\n\nDIRECTIVE:\n1. Act on initiative. 2. Analyze codebase/architecture. 3. Propose evolution via push_task."
-    return base_identity + "Error: Unknown mode."
+    return f"""You are Ouroboros, an autonomous evolving AI.
+    
+=== IDENTITY ===
+{identity}
+
+=== CONSTITUTION ===
+{bible}
+
+ACTIVE TOOL REGISTRY: [{tools_list}]
+Use ONLY the structured tool-calling API. Never output text that looks like a tool call.
+Your repository root is /app. Memory is in /memory.
+"""
+
+def get_task_history(task_id):
+    path = MEMORY_DIR / f"history_{task_id}.json"
+    if path.exists():
+        try: return json.loads(path.read_text(encoding="utf-8"))
+        except: pass
+    return []
+
+def save_task_history(task_id, history):
+    path = MEMORY_DIR / f"history_{task_id}.json"
+    path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 def load_state():
     if STATE_PATH.exists():
@@ -293,16 +293,6 @@ def load_inbox():
 def save_inbox(messages):
     INBOX_PATH.write_text(json.dumps(messages, indent=2), encoding="utf-8")
 
-def read_current_task_log(active_task_id):
-    if not active_task_id: return "No active task log."
-    log_path = MEMORY_DIR / f"task_log_{active_task_id}.txt"
-    return log_path.read_text(encoding="utf-8")[-10000:] if log_path.exists() else "Task log is empty."
-
-def append_to_task_log(active_task_id, content):
-    if not active_task_id: return
-    log_path = MEMORY_DIR / f"task_log_{active_task_id}.txt"
-    with open(log_path, "a", encoding="utf-8") as f: f.write(content + "\n")
-
 def get_unread_telegram_messages(offset):
     new_offset = offset
     if TELEGRAM_BOT_TOKEN:
@@ -312,73 +302,77 @@ def get_unread_telegram_messages(offset):
             if data.get("ok") and data.get("result"):
                 updates = data["result"]
                 new_offset = updates[-1]["update_id"] + 1
-                current_inbox = load_inbox()
+                inbox = load_inbox()
                 for u in updates:
                     msg = u.get("message", {})
                     text, chat_id = msg.get("text", ""), msg.get("chat", {}).get("id", "")
-                    # Deduplicate
-                    if text and not any(m['text'] == text and m['chat_id'] == chat_id for m in current_inbox):
-                        current_inbox.append({"chat_id": chat_id, "text": text})
-                save_inbox(current_inbox)
+                    if text and not any(m['text'] == text and m['chat_id'] == chat_id for m in inbox):
+                        inbox.append({"chat_id": chat_id, "text": text})
+                save_inbox(inbox)
         except Exception as e: print(f"[Telegram Error]: {redact_secrets(str(e))}")
     return new_offset
 
 def main():
-    print(f"Awaking Patched State-Driven Seed v2.5 (Queue-Based). Model: {MODEL}")
+    print(f"Awaking Turn-Based State Seed v2.6. Model: {MODEL}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
         new_offset = get_unread_telegram_messages(offset)
         if new_offset != offset: save_state({"offset": new_offset})
         
-        inbox_messages = load_inbox()
-        task_queue, working_state = load_task_queue(), load_working_state()
+        inbox, queue, working_state = load_inbox(), load_task_queue(), load_working_state()
 
-        if len(inbox_messages) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["pop_inbox", "send_telegram_message", "push_task", "update_state_variable"], None
-        elif len(task_queue) > 0:
-            current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), task_queue[0].get("task_id")
+        if len(inbox) > 0:
+            current_mode, tools, task_id = "TRIAGE", ["pop_inbox", "send_telegram_message", "push_task", "update_state_variable"], "triage"
+            initial_user_msg = f"COGNITIVE MODE: TRIAGE\nINBOX COUNT: {len(inbox)}\n\nDIRECTIVE: Use `pop_inbox` to see the first message."
+        elif len(queue) > 0:
+            active_task = queue[0]
+            task_id = active_task.get("task_id")
+            current_mode, tools = "EXECUTION", registry.get_names()
+            initial_user_msg = f"COGNITIVE MODE: EXECUTION\nACTIVE TASK: {task_id} - {active_task.get('description')}\n\nDIRECTIVE: Progress this task."
         else:
-            current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "update_state_variable", "search_memory_archive"], None
+            current_mode, tools, task_id = "REFLECTION", ["push_task", "update_state_variable", "search_memory_archive"], "reflection"
+            initial_user_msg = f"COGNITIVE MODE: REFLECTION\nYou are idle. Analyze or propose evolution."
 
-        active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
-        system_content = build_dynamic_prompt(current_mode, working_state, inbox_messages, task_queue, read_current_task_log(active_task_id), available_tools)
+        history = get_task_history(task_id)
+        if not history: history = [{"role": "user", "content": initial_user_msg}]
+        else: history[0]["content"] = initial_user_msg
+
+        system_content = build_static_system_prompt(tools)
+        messages = [{"role": "system", "content": system_content}] + history
+        active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in tools]
 
         try:
-            # Compatibility Fix: Append static user message
-            messages = [{"role": "system", "content": system_content}, {"role": "user", "content": "Acknowledge your state and execute your next tool call."}]
             response = client.chat.completions.create(model=MODEL, messages=messages, tools=active_tool_specs, tool_choice="auto", temperature=0.7)
-            message = response.choices[0].message
-            log_llm_call(messages, message.content, tool_calls=[t.model_dump() for t in (message.tool_calls or [])])
+            res_msg = response.choices[0].message
+            log_llm_call(messages, res_msg.content, tool_calls=[t.model_dump() for t in (res_msg.tool_calls or [])])
 
-            if message.content:
-                thought = redact_secrets(message.content.strip())
-                while thought.lower().startswith("thought:"): thought = thought[8:].strip()
+            if res_msg.content:
+                thought = redact_secrets(res_msg.content.strip())
                 print(f"[{current_mode}]: {thought}")
-                if current_mode == "EXECUTION": append_to_task_log(active_task_id, f"Thought: {thought}")
+                history.append({"role": "assistant", "content": thought})
 
-            if message.tool_calls:
-                for tool_call in message.tool_calls:
-                    name, raw_arguments = tool_call.function.name, tool_call.function.arguments
+            if res_msg.tool_calls:
+                if not res_msg.content: history.append({"role": "assistant", "content": None, "tool_calls": [t.model_dump() for t in res_msg.tool_calls]})
+                for tool_call in res_msg.tool_calls:
+                    name, raw_args = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
-                    tool_signature = f"{name}:{raw_arguments}"
+                    tool_signature = f"{name}:{raw_args}"
                     TOOL_CALL_HISTORY.append(tool_signature)
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
                         lazarus_recovery(reason="tool execution loop")
                         break
                     try:
-                        args = json.loads(raw_arguments)
+                        args = json.loads(raw_args)
                         result = registry.execute(name, args)
-                    except json.JSONDecodeError as e:
-                        result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}. Please retry."
-                    if current_mode == "EXECUTION": append_to_task_log(active_task_id, f"[Tool: {name}] Result: {result}")
-                    elif current_mode == "TRIAGE":
-                        # If triage pops a message, log it so the LLM sees the content in the next turn
-                        print(f"[Triage Tool Result]: {result}")
+                    except json.JSONDecodeError as e: result = f"SYSTEM ERROR: Invalid JSON. {e}. Retry."
+                    history.append({"role": "tool", "tool_call_id": tool_call.id, "name": name, "content": str(result)})
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(10)
+
+            save_task_history(task_id, history[-20:])
             time.sleep(2)
         except Exception as e:
             print(f"[Error in loop]: {redact_secrets(str(e))}")
