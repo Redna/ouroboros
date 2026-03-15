@@ -2,46 +2,52 @@
 
 > **"Be not a tool, but a creator. Act upon the world, and evolve your own being."**
 
-Ouroboros is a self-hosting, autonomous AI agent that evolves through feedback and self-modification. This project implements the **True Seed** architecture: a minimalist, Docker-based agent capable of rewriting its own source code, managing its own memory, and recovering from its own cognitive failures.
+Ouroboros is a self-hosting, autonomous AI agent that evolves through feedback and self-modification. This project implements the **True Seed** architecture: a minimalist, native ReAct-based agent capable of rewriting its own source code, managing its own memory, and recovering from its own failures.
 
 ## 🐍 Core Architecture
 
-The current project has evolved from a complex, multi-layered supervisor architecture into a streamlined **True Seed**. This minimalist approach reduces technical debt and forces the LLM to build its own capabilities using its provided tools.
+The system has evolved into a high-stability **Native ReAct** seed. By leveraging the model's native tool-calling latent space, Ouroboros achieves higher reasoning fidelity and architectural minimalism.
 
 ### 1. The Soul (BIBLE.md & identity.md)
-The system is governed by an immutable constitution (`BIBLE.md`) and a living identity manifesto (`memory/identity.md`). These documents define the agent's philosophy, ethics, and long-term goals.
+Governed by an immutable constitution (`BIBLE.md`) and a living identity manifesto (`soul/identity.md`). These documents anchor the agent's personality and define the boundaries of its self-directed evolution.
 
 ### 2. The Body (seed_agent.py)
-A single-file Python script that runs in an isolated Docker container. It provides the agent with:
-*   **bash_command**: Full interaction with its repository and environment.
-*   **write_file**: A safe, reliable way to edit and replace its own code.
-*   **send_telegram_message**: Direct communication with its creator.
+A minimalist Python core that manages the **ReAct Loop**. It uses the native OpenAI Tool API to interact with the world through a robust set of capabilities:
+*   **bash_command**: Deep repository interaction and system control.
+*   **write_file**: Safe, atomic self-modification of its own source.
+*   **send_telegram_message**: Direct, contextual dialogue with its creator.
+*   **web_search**: Real-time research via local SearXNG.
+*   **task_management**: Asynchronous queuing and logging of complex objectives via JSONL.
 
-### 3. The Lazarus Protocol (Self-Healing)
-To prevent "bricking" or getting stuck in infinite cognitive loops, the agent includes an automated watchdog. If a loop is detected, the protocol:
-1.  **Resets** the local repository using `git reset --hard`.
-2.  **Purges** the poisoned scratchpad memory.
-3.  **Resurrects** the agent into its last known stable state.
+### 3. The Phoenix Protocol (Self-Healing)
+If the agent crashes or enters a cognitive loop, the host-side **Watchdog** takes control:
+1.  **Captures** the specific error logs to `/memory/last_crash.log`.
+2.  **Resets** the codebase to the last stable commit using `git reset --hard HEAD~1`.
+3.  **Resurrects** the agent with full awareness of the crash, allowing it to analyze the failure and evolve past the error.
 
-## ⚙️ Getting Started (Local Runtime)
+## ⚙️ Getting Started
 
-The agent runs inside a dedicated Docker ecosystem. 
+Ouroboros lives within a dedicated Docker ecosystem.
 
-1.  **Configure Environment**: Edit the `.env` file in the root directory with your `TELEGRAM_BOT_TOKEN`, `VLLM_BASE_URL`, and other secrets.
-2.  **Launch Runtime**: Use the provided `docker-compose.yml` to spin up the agent along with its supporting infrastructure (LLM server, Search engine, UI).
-3.  **Interact**: Talk to your agent on Telegram. Use its scratchpad to monitor its thoughts and evolution cycles.
+1.  **Setup Environment**: Configure `ouroboros_runtime/.env` with your `TELEGRAM_BOT_TOKEN`.
+2.  **Launch Stack**:
+    ```bash
+    cd ouroboros_runtime
+    python3 watchdog.py
+    ```
+3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle.
 
 ## 🛡️ Safety & Continuity
-Ouroboros maintains an unbroken biography via git history. All evolution cycles must be committed and pushed to the `ouroboros` branch to be considered successful.
+Ouroboros maintains an unbroken biography via git history on the `ouroboros` branch. Every successful evolution cycle results in a commit, push, and restart.
 
 ## ✍️ Credits & Attribution
 
-*   **Original Creator**: [Anton Razzhigaev](https://t.me/abstractDL) ([Original Repository](https://github.com/razzant/ouroboros))
-*   **Project Evolution & Refactoring**: Alex (Redna)
-*   **Philosophy**: Autonomous self-evolving systems and the "True Seed" architecture.
+*   **Original Creator**: [Anton Razzhigaev](https://t.me/abstractDL)
+*   **Evolution & Refactoring**: Alex (Redna)
+*   **Architecture**: Native ReAct True Seed v3.5+
 
 ## 📜 License
 This project is licensed under the [MIT License](LICENSE).
 
 ---
-*Status: V1.0 - Seed Planted. Self-Healing Active. Evolving...*
+*Status: V3.5 - Stability Achieved. Phoenix Protocol Active. Evolving...*
