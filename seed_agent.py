@@ -119,11 +119,31 @@ def load_task_messages(task_id: str, description: str) -> list:
 
         normalized.append(msg)
 
-    # Rule 5: Turn-Forcer (If history ends on Assistant, nudge with User)
-    if normalized[-1]["role"] == "assistant":
+    # Rule 5: Turn-Forcer (If history ends on Assistant WITHOUT tools, nudge with User)
+    if normalized and normalized[-1]["role"] == "assistant" and not normalized[-1].get("tool_calls"):
         nudge = {"role": "user", "content": "Please proceed with your next action using a tool."}
         normalized.append(nudge)
         append_task_message(task_id, nudge)
+
+    # --- Rule 6: Memory Healer (Dangling Tool Call Fix) ---
+    # If history ends with an assistant making a tool call, but there is no tool result,
+    # the Jinja template will crash. We inject a synthetic tool response to heal the memory.
+    if normalized and normalized[-1]["role"] == "assistant" and normalized[-1].get("tool_calls"):
+        for tool_call in normalized[-1]["tool_calls"]:
+            # Handle dicts vs OpenAI objects safely
+            call_id = getattr(tool_call, 'id', None) or (tool_call.get("id") if isinstance(tool_call, dict) else None)
+            safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
+            func_name = getattr(tool_call.function, 'name', None) or (tool_call["function"]["name"] if isinstance(tool_call, dict) else None)
+            
+            synthetic_tool_msg = {
+                "role": "tool",
+                "tool_call_id": safe_call_id,
+                "name": str(func_name),
+                "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted or crashed before completion. You have been rebooted. Please evaluate your state and continue."
+            }
+            normalized.append(synthetic_tool_msg)
+            append_task_message(task_id, synthetic_tool_msg)
+    # ----------------------------------------------------------------
 
     return normalized
 
@@ -274,10 +294,8 @@ def handle_search_memory(args):
     except Exception as e: return f"Search error: {e}"
 
 def handle_restart(args):
-    """Exits the script. The external Docker watchdog will automatically restart the container, loading the fresh code."""
-    print("[System] Restart requested by agent. Exiting...")
-    import os
-    os._exit(0)
+    """Returns a signal rather than killing the process immediately."""
+    return "SYSTEM_SIGNAL_RESTART"
 
 registry.register("bash_command", "Execute bash.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash)
 registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
@@ -437,12 +455,28 @@ def main():
                     if current_mode == "EXECUTION":
                         tool_result_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)}
                         append_task_message(active_task_id, tool_result_msg)
+
+                    # --- SAFE EXIT LOGIC ---
+                    if result == "SYSTEM_SIGNAL_RESTART":
+                        print("[System] Tool logged. Executing safe restart...")
+                        import os
+                        os._exit(0)
+                    # ------------------------
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(10)
             time.sleep(2)
         except Exception as e:
-            print(f"[Error in loop]: {redact_secrets(str(e))}")
+            error_msg = str(e)
+            print(f"[Error in loop]: {redact_secrets(error_msg)}")
+            
+            # --- FATAL ERROR DETECTION ---
+            if "500" in error_msg or "400" in error_msg or "template" in error_msg.lower():
+                print("\033[91m[CRITICAL] Unrecoverable API/Template Error detected. Exiting to trigger Phoenix Protocol.\033[0m")
+                import sys
+                sys.exit(1) # This tells the Watchdog we are broken
+            # -----------------------------
+            
             time.sleep(10)
 
 if __name__ == "__main__": main()
