@@ -350,6 +350,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: list) -> str:
     
     return f"""=== IDENTITY ===
 {identity}
+
 === CONSTITUTION ===
 {bible}
 
@@ -357,10 +358,15 @@ def build_static_system_prompt(mode: str, active_tool_specs: list) -> str:
 COGNITIVE MODE: {mode}
 {trauma}
 
-AVAILABLE TOOLS IN THIS MODE:
+=== AVAILABLE TOOLS ===
 {tools_text}
 
-CRITICAL INSTRUCTION: You must strictly use the provided tool-calling API to interact with the world. Do not output raw text blocks when an action is required."""
+=== CRITICAL INSTRUCTIONS ===
+1. I possess ALL the tools listed above. They are active, functional, and ready for use.
+2. I must NEVER say I don't have tools. If I need information or must perform an action, I MUST call the appropriate tool.
+3. In EXECUTION mode, my ONLY goal is to complete the task. I express my thoughts and decisions via tool calls.
+4. I use the Native ReAct Tool API. I do not output raw JSON text; I use the function-calling mechanism.
+"""
 
 def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL}")
