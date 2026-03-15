@@ -35,7 +35,7 @@ Ouroboros lives within a dedicated Docker ecosystem.
     cd ouroboros_runtime
     python3 watchdog.py
     ```
-3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle.
+3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle. You can monitor its thoughts through the `.jsonl` task logs in the `/memory` directory (which replaces the legacy `scratchpad.md`).
 
 ## 🛡️ Safety & Continuity
 Ouroboros maintains an unbroken biography via git history on the `ouroboros` branch. Every successful evolution cycle results in a commit, push, and restart.

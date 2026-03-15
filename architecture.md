@@ -34,11 +34,12 @@ The agent operates through a high-frequency **ReAct Loop** implemented using the
 
 ## 3. Memory & State Management
 
-The agent uses an isolated volume mounted at `/memory` to manage its cognitive state.
+The agent uses an isolated volume mounted at `/memory` to manage its cognitive state. This replaces the legacy monolithic `scratchpad.md` system with a more granular, token-efficient architecture.
 
 *   **Permanent Memory (Git)**: Code and history on the `ouroboros` branch.
 *   **Conversational Memory (chat_history.json)**: Rolling window of the last 20 messages for dialogue continuity.
-*   **Task-Bound Memory (JSONL)**: Each task has its own `.jsonl` log, strictly normalized for Mistral's role-alternation rules.
+*   **Task-Bound Memory (JSONL)**: Each task has its own `.jsonl` log, strictly normalized for Mistral's role-alternation rules. This ensures the agent remains focused on the specific task at hand without being distracted by unrelated history.
+*   **Archival Memory (global_biography.md)**: Final summaries of completed tasks are moved here to preserve long-term history.
 *   **Persistence (.agent_state.json)**: Stores critical metadata like the Telegram `offset` and the registered `creator_id`.
 
 ## 4. Self-Healing: The Phoenix Protocol
