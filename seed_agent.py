@@ -418,14 +418,7 @@ def main():
         
         if current_mode == "EXECUTION":
             task_description = queue[0].get("description")
-            history = load_task_messages(active_task_id, task_description)
-            api_messages += history
-            # Add a final re-anchoring message if the history is long or potentially confusing
-            if len(history) > 2:
-                api_messages.append({
-                    "role": "user", 
-                    "content": f"REMINDER: You are in EXECUTION mode. Your active task is: {task_description}. Use your tools to proceed."
-                })
+            api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "TRIAGE":
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
