@@ -405,6 +405,10 @@ def main():
         try:
             response = client.chat.completions.create(model=MODEL, messages=api_messages, tools=active_tool_specs, tool_choice="auto", temperature=0.7)
             message = response.choices[0].message
+            
+            # Log the raw LLM call
+            log_llm_call(api_messages, message.model_dump(exclude_unset=True))
+
             if current_mode == "EXECUTION":
                 assistant_msg = message.model_dump(exclude_unset=True)
                 append_task_message(active_task_id, assistant_msg)
