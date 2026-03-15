@@ -247,7 +247,16 @@ def handle_compress_memory(args):
     if not path.exists(): return f"Error: File {target_file} not found."
     try:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        path.write_text(f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}\n", encoding="utf-8")
+        if path.suffix == ".jsonl":
+            # For JSONL files, we must write a valid JSON object per line.
+            # We use a system role message to store the compression metadata.
+            compressed_msg = {
+                "role": "system",
+                "content": f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}"
+            }
+            path.write_text(json.dumps(compressed_msg) + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}\n", encoding="utf-8")
         return f"Successfully compressed {path.name}."
     except Exception as e: return f"Error: {e}"
 
