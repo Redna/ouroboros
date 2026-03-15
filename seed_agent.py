@@ -121,9 +121,13 @@ def load_task_messages(task_id: str, description: str) -> list:
 
     # Rule 5: Turn-Forcer (If history ends on Assistant WITHOUT tools, nudge with User)
     if normalized and normalized[-1]["role"] == "assistant" and not normalized[-1].get("tool_calls"):
-        nudge = {"role": "user", "content": "Please proceed with your next action using a tool."}
-        normalized.append(nudge)
-        append_task_message(task_id, nudge)
+        nudge_content = "Please proceed with your next action using a tool."
+        # Avoid repeating the nudge if the last User message was already exactly this
+        last_user_msg = next((m for m in reversed(normalized) if m["role"] == "user"), None)
+        if not last_user_msg or last_user_msg.get("content") != nudge_content:
+            nudge = {"role": "user", "content": nudge_content}
+            normalized.append(nudge)
+            append_task_message(task_id, nudge)
 
     # --- Rule 6: Memory Healer (Dangling Tool Call Fix) ---
     # If history ends with an assistant making a tool call, but there is no tool result,
@@ -414,7 +418,14 @@ def main():
         
         if current_mode == "EXECUTION":
             task_description = queue[0].get("description")
-            api_messages += load_task_messages(active_task_id, task_description)
+            history = load_task_messages(active_task_id, task_description)
+            api_messages += history
+            # Add a final re-anchoring message if the history is long or potentially confusing
+            if len(history) > 2:
+                api_messages.append({
+                    "role": "user", 
+                    "content": f"REMINDER: You are in EXECUTION mode. Your active task is: {task_description}. Use your tools to proceed."
+                })
         elif current_mode == "TRIAGE":
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
