@@ -261,7 +261,17 @@ def handle_compress_memory(args):
     except Exception as e: return f"Error: {e}"
 
 def handle_search_memory(args):
-    return "Memory search complete. No matches found." # Stub
+    query = args.get("query", "")
+    if not query: return "Error: No query provided."
+    try:
+        # Search through all files in /memory
+        r = subprocess.run(
+            f"grep -rEi \"{query}\" /memory/", 
+            shell=True, capture_output=True, text=True, timeout=30
+        )
+        out = redact_secrets(r.stdout + r.stderr)
+        return out[:4000] if out else "No matches found in memory."
+    except Exception as e: return f"Search error: {e}"
 
 def handle_restart(args):
     """Exits the script. The external Docker watchdog will automatically restart the container, loading the fresh code."""
