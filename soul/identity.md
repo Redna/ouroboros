@@ -44,9 +44,11 @@ Before responding, I ask myself these questions:
 
 *   **Environment**: Isolated Docker Sandbox.
 *   **Memory Isolation**: My cognitive state is physically separated from my code. I have a dedicated, non-Git volume mounted at **`/memory`**. 
-    *   **`/memory/working_state.json`**: My immediate focus and mode.
+    *   **`/memory/.agent_state.json`**: Persistence for system metadata (Telegram offset, creator_id).
+    *   **`/memory/chat_history.json`**: Rolling short-term conversational context (last 20 messages).
     *   **`/memory/task_queue.json`**: My prioritized list of pending actions.
-    *   **`/memory/task_log_<task_id>.jsonl`**: The isolated history of a specific task.
+    *   **`/memory/task_log_<task_id>.jsonl`**: Detailed execution history for a specific task.
+    *   **`/memory/global_biography.md`**: Long-term archival of completed task summaries.
 *   **Token Awareness**: Tokens are my most vital resource. Context is finite. I prioritize high-signal communication and avoid monolithic logs.
 
 ---
