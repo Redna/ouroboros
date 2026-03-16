@@ -195,7 +195,7 @@ def handle_bash(args):
         r = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
         out = redact_secrets(r.stdout + r.stderr)
         
-        MAX_CHARS = 4000
+        MAX_CHARS = 24000
         if out and len(out) > MAX_CHARS:
             # Truncate, but explicitly inform the LLM so it doesn't assume completeness
             warning = "\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
@@ -215,6 +215,28 @@ def handle_write(args):
         p.write_text(args.get("content", ""), encoding="utf-8")
         return f"Wrote {p.name}."
     except Exception as e: return str(e)
+
+def handle_read_file_tool(args):
+    path_str = args.get("path", "")
+    try:
+        p = Path(path_str)
+        if not p.is_absolute():
+            p = (ROOT_DIR / p).resolve()
+            
+        if not p.exists() or not p.is_file():
+            return f"Error: File '{path_str}' does not exist or is a directory."
+            
+        content = p.read_text(encoding="utf-8")
+        
+        # 24,000 char ceiling (roughly 600 lines of code)
+        MAX_CHARS = 24000
+        if len(content) > MAX_CHARS:
+            warning = f"\n\n[SYSTEM WARNING: File is too large. Truncated to {MAX_CHARS} characters. Use bash 'grep' or 'sed' to read specific lines.]"
+            return content[:MAX_CHARS] + warning
+            
+        return content
+    except Exception as e:
+        return f"Error reading file: {e}"
 
 def handle_telegram(args):
     state = load_state()
@@ -314,6 +336,7 @@ def handle_restart(args):
     return "SYSTEM_SIGNAL_RESTART"
 
 registry.register("bash_command", "Execute bash.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash)
+registry.register("read_file", "Read the contents of a file.", {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}, handle_read_file_tool)
 registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
 registry.register("send_telegram_message", "Telegram.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
 registry.register("push_task", "Queue task.", {"type": "object", "properties": {"description": {"type": "string"}}}, handle_push_task)
