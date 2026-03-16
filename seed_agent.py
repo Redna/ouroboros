@@ -516,7 +516,7 @@ def main():
                     # ------------------------
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
-                time.sleep(10)
+                time.sleep(0.5)
             time.sleep(2)
         except Exception as e:
             error_msg = str(e)
@@ -529,6 +529,6 @@ def main():
                 sys.exit(1) # This tells the Watchdog we are broken
             # -----------------------------
             
-            time.sleep(10)
+            time.sleep(0.5)
 
 if __name__ == "__main__": main()
