@@ -437,13 +437,15 @@ def main():
         
         if current_mode == "EXECUTION" and len(queue) > 0:
             current_task_tokens = queue[0].get("task_tokens", 0)
+            global_in = state.get("global_input_tokens", 0)
+            global_out = state.get("global_output_tokens", 0)
             token_warning = ""
             if last_context > 50000:
                 token_warning = "\n[CRITICAL WARNING: Context window is reaching maximum capacity (65536). You MUST use `compress_memory_block` immediately or finish the task.]"
             elif last_context > 40000:
                 token_warning = "\n[WARNING: Context window is filling up. Consider compressing logs soon.]"
 
-            token_sensation = f"\n\n[SYSTEM METRICS] Last Context: {last_context} / 65536 tokens (In: {last_in}, Out: {last_out}). Cumulative Task Cost: {current_task_tokens} tokens.{token_warning}"
+            token_sensation = f"\n\n[SYSTEM METRICS] Last Context: {last_context} / 65536 tokens (In: {last_in}, Out: {last_out}). Cumulative: {state.get('global_tokens_consumed', 0)} (Total In: {global_in}, Total Out: {global_out}). Task Cost: {current_task_tokens} tokens.{token_warning}"
             
             # Append this sensation to the last user message so the LLM reads it immediately before acting
             for i in range(len(api_messages)-1, -1, -1):
@@ -465,6 +467,8 @@ def main():
                 
                 # 1. Update Global Token Cost
                 state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + context_size
+                state["global_input_tokens"] = state.get("global_input_tokens", 0) + prompt_tokens
+                state["global_output_tokens"] = state.get("global_output_tokens", 0) + completion_tokens
                 state["last_context_size"] = context_size
                 state["last_input_tokens"] = prompt_tokens
                 state["last_output_tokens"] = completion_tokens
