@@ -436,10 +436,46 @@ def main():
         else:
             api_messages.append({"role": "user", "content": "You are idle. Propose ONE concrete evolutionary step or refactoring task using push_task."})
 
+        # --- TOKEN SENSATION INJECTION ---
+        state = load_state()
+        last_context = state.get("last_context_size", 0)
+        
+        if current_mode == "EXECUTION" and len(queue) > 0:
+            current_task_tokens = queue[0].get("task_tokens", 0)
+            token_warning = ""
+            if last_context > 50000:
+                token_warning = "\n[CRITICAL WARNING: Context window is reaching maximum capacity (65536). You MUST use `compress_memory_block` immediately or finish the task.]"
+            elif last_context > 40000:
+                token_warning = "\n[WARNING: Context window is filling up. Consider compressing logs soon.]"
+
+            token_sensation = f"\n\n[SYSTEM METRICS] Last Context Size: {last_context} / 65536 tokens. Cumulative Task Cost: {current_task_tokens} tokens.{token_warning}"
+            
+            # Append this sensation to the last user message so the LLM reads it immediately before acting
+            for i in range(len(api_messages)-1, -1, -1):
+                if api_messages[i]["role"] == "user":
+                    api_messages[i]["content"] += token_sensation
+                    break
+        # ---------------------------------
+
         # 3. Execute Native Tool Calling
         try:
             response = client.chat.completions.create(model=MODEL, messages=api_messages, tools=active_tool_specs, tool_choice="auto", temperature=0.7)
             message = response.choices[0].message
+            
+            # --- TOKEN SENSATION TRACKING ---
+            if hasattr(response, 'usage') and response.usage:
+                context_size = response.usage.total_tokens
+                
+                # 1. Update Global Token Cost
+                state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + context_size
+                state["last_context_size"] = context_size
+                save_state(state)
+                
+                # 2. Update Active Task Cost
+                if current_mode == "EXECUTION" and len(queue) > 0:
+                    queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + context_size
+                    TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+            # --------------------------------
             if current_mode == "EXECUTION":
                 assistant_msg = message.model_dump(exclude_unset=True)
                 append_task_message(active_task_id, assistant_msg)
