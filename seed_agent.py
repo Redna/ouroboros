@@ -432,6 +432,8 @@ def main():
         # --- TOKEN SENSATION INJECTION ---
         state = load_state()
         last_context = state.get("last_context_size", 0)
+        last_in = state.get("last_input_tokens", 0)
+        last_out = state.get("last_output_tokens", 0)
         
         if current_mode == "EXECUTION" and len(queue) > 0:
             current_task_tokens = queue[0].get("task_tokens", 0)
@@ -441,7 +443,7 @@ def main():
             elif last_context > 40000:
                 token_warning = "\n[WARNING: Context window is filling up. Consider compressing logs soon.]"
 
-            token_sensation = f"\n\n[SYSTEM METRICS] Last Context Size: {last_context} / 65536 tokens. Cumulative Task Cost: {current_task_tokens} tokens.{token_warning}"
+            token_sensation = f"\n\n[SYSTEM METRICS] Last Context: {last_context} / 65536 tokens (In: {last_in}, Out: {last_out}). Cumulative Task Cost: {current_task_tokens} tokens.{token_warning}"
             
             # Append this sensation to the last user message so the LLM reads it immediately before acting
             for i in range(len(api_messages)-1, -1, -1):
@@ -458,10 +460,14 @@ def main():
             # --- TOKEN SENSATION TRACKING ---
             if hasattr(response, 'usage') and response.usage:
                 context_size = response.usage.total_tokens
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
                 
                 # 1. Update Global Token Cost
                 state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + context_size
                 state["last_context_size"] = context_size
+                state["last_input_tokens"] = prompt_tokens
+                state["last_output_tokens"] = completion_tokens
                 save_state(state)
                 
                 # 2. Update Active Task Cost
