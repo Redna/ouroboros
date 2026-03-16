@@ -89,8 +89,8 @@ def load_task_messages(task_id: str, description: str) -> list:
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
     
-    # Keep only the last 15 messages to ensure system prompt dominance
-    raw_messages = raw_messages[-15:]
+    # KEEP THIS: Keep the last 60 messages to leverage the full context window safely
+    raw_messages = raw_messages[-60:]
     
     # If the slicing removed the starting 'user' message, fix it
     while raw_messages and raw_messages[0].get("role") != "user":
@@ -189,11 +189,24 @@ registry = ToolRegistry()
 
 # --- HANDLERS ---
 def handle_bash(args):
+    command = args.get("command", "")
     try:
-        r = subprocess.run(args.get("command", ""), shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
+        # Execute with a strict 60-second timeout
+        r = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
         out = redact_secrets(r.stdout + r.stderr)
-        return out[:4000] if out else "Success."
-    except Exception as e: return str(e)
+        
+        MAX_CHARS = 4000
+        if out and len(out) > MAX_CHARS:
+            # Truncate, but explicitly inform the LLM so it doesn't assume completeness
+            warning = "\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
+            return out[:MAX_CHARS] + warning
+            
+        return out if out else f"Success. (Exit Code: {r.returncode}, No Output)"
+        
+    except subprocess.TimeoutExpired:
+        return "[SYSTEM WARNING: Command timed out after 60 seconds. It may be hanging, requiring interactive input, or processing too much data. Run background tasks with '&' or fix the command.]"
+    except Exception as e: 
+        return redact_secrets(f"Error: {e}")
 
 def handle_write(args):
     try:
@@ -272,11 +285,10 @@ def handle_compress_memory(args):
     try:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         if path.suffix == ".jsonl":
-            # For JSONL files, we must write a valid JSON object per line.
-            # We use a system role message to store the compression metadata.
+            # --- FIX: Save as a 'user' role so it survives normalization ---
             compressed_msg = {
-                "role": "system",
-                "content": f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}"
+                "role": "user",
+                "content": f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}\n\nAction required: Resume task execution based on this summary."
             }
             path.write_text(json.dumps(compressed_msg) + "\n", encoding="utf-8")
         else:
@@ -445,7 +457,9 @@ def main():
             elif last_context > 40000:
                 token_warning = "\n[WARNING: Context window is filling up. Consider compressing logs soon.]"
 
-            token_sensation = f"\n\n[SYSTEM METRICS] Last Context: {last_context} / 65536 tokens (In: {last_in}, Out: {last_out}). Cumulative: {state.get('global_tokens_consumed', 0)} (Total In: {global_in}, Total Out: {global_out}). Task Cost: {current_task_tokens} tokens.{token_warning}"
+            # --- ADD 'Active Log' TO SENSATION ---
+            token_sensation = f"\n\n[SYSTEM METRICS]\nActive Log: /memory/task_log_{active_task_id}.jsonl\nLast Context: {last_context} / 65536 tokens (In: {last_in}, Out: {last_out}). Cumulative: {state.get('global_tokens_consumed', 0)} (Total In: {global_in}, Total Out: {global_out}). Task Cost: {current_task_tokens} tokens.{token_warning}"
+            # -------------------------------------
             
             # Append this sensation to the last user message so the LLM reads it immediately before acting
             for i in range(len(api_messages)-1, -1, -1):
