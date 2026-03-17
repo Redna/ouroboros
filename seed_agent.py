@@ -267,11 +267,13 @@ def handle_push_task(args):
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
     return f"Queued {tid}."
 
-def handle_pop_inbox(args):
-    inbox = load_inbox()
-    if not inbox: return "Empty."
-    p = inbox.pop(0); save_inbox(inbox)
-    return f"Msg: {p['text']} from {p['chat_id']}"
+def handle_clear_inbox(args):
+    save_inbox([])
+    triage_log = MEMORY_DIR / "task_log_triage.jsonl"
+    if triage_log.exists():
+        try: triage_log.unlink()
+        except: pass
+    return "Inbox cleared. Triage state reset. History deleted."
 
 def handle_mark_task_complete(args):
     task_id = args.get("task_id")
@@ -340,7 +342,7 @@ registry.register("read_file", "Read the contents of a file.", {"type": "object"
 registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
 registry.register("send_telegram_message", "Telegram.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
 registry.register("push_task", "Queue task.", {"type": "object", "properties": {"description": {"type": "string"}}}, handle_push_task)
-registry.register("pop_inbox", "Pop msg.", {"type": "object", "properties": {}}, handle_pop_inbox)
+registry.register("clear_inbox", "Marks the current inbox messages as fully processed and clears them. Call this ONLY after you have finished all necessary investigations, replies, and task queuing.", {"type": "object", "properties": {}}, handle_clear_inbox)
 registry.register(
     "mark_task_complete", 
     "Close active task.", 
@@ -379,7 +381,7 @@ def lazarus_recovery(reason="cognitive loop"):
     time.sleep(5)
 
 # --- PROMPT BUILDER ---
-def build_static_system_prompt(mode: str, active_tool_specs: list) -> str:
+def build_static_system_prompt(mode: str, active_tool_specs: list, inbox: list = None) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     state = load_state()
@@ -387,12 +389,17 @@ def build_static_system_prompt(mode: str, active_tool_specs: list) -> str:
     creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered. Reply to the first incoming message to register.\n"
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     
+    state_info = ""
+    if inbox:
+        formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
+        state_info = f"\n=== CURRENT STATE ===\nUNREAD MESSAGES IN INBOX:\n{formatted_inbox}\n"
+
     return f"""=== IDENTITY ===
 {identity}
 
 === CONSTITUTION ===
 {bible}
-
+{state_info}
 {creator_info}
 COGNITIVE MODE: {mode}
 {trauma}
@@ -440,7 +447,7 @@ def main():
         # Determine Mode & Tools
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search"], None
+            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "read_file", "clear_inbox"], "triage"
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
@@ -449,7 +456,7 @@ def main():
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
 
         # 2. Build Native Message Array
-        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs)}]
+        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, inbox if current_mode == "TRIAGE" else None)}]
         
         if current_mode == "EXECUTION":
             task_description = queue[0].get("description")
@@ -457,10 +464,8 @@ def main():
         elif current_mode == "TRIAGE":
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
-            api_messages.append({
-                "role": "user", 
-                "content": f"Recent Conversation History:\n{chat_context}\n\nNEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. Use `send_telegram_message` with the CORRECT chat_id from the inbox to reply, or use `push_task` for complex jobs."
-            })
+            triage_description = f"Recent Conversation History:\n{chat_context}\n\nNEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. You may use `web_search` or `read_file` to investigate. Use `send_telegram_message` to reply, or `push_task` for complex jobs. When you are completely done processing these messages, you MUST call `clear_inbox` to clear the queue and resume normal operations."
+            api_messages += load_task_messages(active_task_id, triage_description)
         else:
             api_messages.append({"role": "user", "content": "You are idle. Propose ONE concrete evolutionary step or refactoring task using push_task."})
 
@@ -516,7 +521,7 @@ def main():
                     queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + context_size
                     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             # --------------------------------
-            if current_mode == "EXECUTION":
+            if current_mode in ["EXECUTION", "TRIAGE"]:
                 assistant_msg = message.model_dump(exclude_unset=True)
                 append_task_message(active_task_id, assistant_msg)
             if message.content:
@@ -541,11 +546,11 @@ def main():
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
                         if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
-                            save_inbox([]); print(f"[System] Inbox Cleared in {current_mode} mode.")
+                            print(f"[System] Action recorded in {current_mode} mode. Remember to call clear_inbox when finished.")
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
-                    if current_mode == "EXECUTION":
+                    if current_mode in ["EXECUTION", "TRIAGE"]:
                         tool_result_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)}
                         append_task_message(active_task_id, tool_result_msg)
 
