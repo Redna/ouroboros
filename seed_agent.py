@@ -632,6 +632,7 @@ COGNITIVE MODE: {mode}
 3. In EXECUTION mode, my ONLY goal is to complete the task. I express my thoughts and decisions via tool calls.
 4. I use the Native ReAct Tool API. I do not output raw JSON text; I use the function-calling mechanism.
 5. I use `update_state_variable` to pass important findings and context to my future self before ending a task.
+6. Before finishing a coding task or submitting a major change, I MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` using `bash_command` to validate my work and ensure no regressions.
 """
 
 def main():
