@@ -707,7 +707,11 @@ def main():
             api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "TRIAGE":
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
-            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. You may use `web_search` or `read_file` to investigate. Use `send_telegram_message` to reply, or `push_task` (priority > 1) for urgent user requests. Sending a message or queuing a task will automatically clear your inbox and resume normal operations."
+            
+            # --- FIX: Explicit Parallel Tool Instruction ---
+            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. Investigate using `web_search` or `read_file` if necessary. When ready to conclude this triage, use `send_telegram_message` to reply, AND/OR `push_task` to queue work.\n\nCRITICAL: If you intend to reply AND queue a task, you MUST call BOTH tools simultaneously in this exact response. Calling either routing tool will instantly clear the inbox and end the triage session."
+            # -----------------------------------------------
+            
             api_messages += load_task_messages(active_task_id, triage_description)
         elif current_mode == "REFLECTION":
             api_messages.append({
