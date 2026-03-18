@@ -604,6 +604,8 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     if ARCHIVE_PATH.exists():
         bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
         recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
+    chat_hist = load_chat_history()
+    chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
     # ------------------------------------------
 
     return f"""=== IDENTITY ===
@@ -623,6 +625,9 @@ COGNITIVE MODE: {mode}
 === RECENT HISTORY (Global Biography) ===
 {recent_biography}
 
+=== RECENT CONVERSATION (Telegram) ===
+{chat_context}
+
 === AVAILABLE TOOLS ===
 {tools_text}
 
@@ -632,6 +637,7 @@ COGNITIVE MODE: {mode}
 3. In EXECUTION mode, my ONLY goal is to complete the task. I express my thoughts and decisions via tool calls.
 4. I use the Native ReAct Tool API. I do not output raw JSON text; I use the function-calling mechanism.
 5. I use `update_state_variable` to pass important findings and context to my future self before ending a task.
+6. Before finishing a coding task or submitting a major change, I MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` using `bash_command` to validate my work and ensure no regressions.
 """
 
 def main():
@@ -667,7 +673,7 @@ def main():
         # Determine Mode & Tools
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "read_file", "clear_inbox"], "triage"
+            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "read_file"], "triage"
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
@@ -701,8 +707,7 @@ def main():
             api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "TRIAGE":
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
-            chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
-            triage_description = f"Recent Conversation History:\n{chat_context}\n\nNEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. You may use `web_search` or `read_file` to investigate. Use `send_telegram_message` to reply, or `push_task` for complex jobs. When you are completely done processing these messages, you MUST call `clear_inbox` to clear the queue and resume normal operations."
+            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. You may use `web_search` or `read_file` to investigate. Use `send_telegram_message` to reply, or `push_task` (priority > 1) for urgent user requests. Sending a message or queuing a task will automatically clear your inbox and resume normal operations."
             api_messages += load_task_messages(active_task_id, triage_description)
         elif current_mode == "REFLECTION":
             api_messages.append({
@@ -791,8 +796,21 @@ Action required: Consolidate your state. If stable, output a tool call updating 
                         args = json.loads(raw_arguments)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
+                        
+                        # --- FIX: AUTO-CLEAR REFLEX ---
                         if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
-                            print(f"[System] Action recorded in {current_mode} mode. Remember to call clear_inbox when finished.")
+                            save_inbox([]) 
+                            print(f"[System] Inbox Auto-Cleared in {current_mode} mode.")
+                            
+                            # Wipe the triage log so the next interruption is a fresh slate
+                            triage_log = MEMORY_DIR / "task_log_triage.jsonl"
+                            if triage_log.exists():
+                                try: triage_log.unlink()
+                                except: pass
+                            
+                            # Set active_task_id to None so we don't re-create the log file below
+                            active_task_id = None
+                        # ------------------------------
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"

@@ -13,7 +13,6 @@ from seed_agent import (
     handle_write,
     handle_read_file_tool,
     handle_push_task,
-    handle_clear_inbox,
     handle_telegram,
     handle_web_search,
     load_task_messages,
@@ -106,13 +105,54 @@ def test_handle_push_task(mock_memory):
     assert len(queue) == 1
     assert queue[0]["description"] == "new task"
 
-def test_handle_clear_inbox(mock_memory):
+def test_handle_auto_clear_inbox(mock_memory):
+    # This test verifies that TRIAGE routing tools trigger an inbox wipe
+    from seed_agent import main
     inbox_file = mock_memory / "inbox.json"
     inbox_file.write_text(json.dumps([{"text": "hi", "chat_id": 123}]))
     triage_log = mock_memory / "task_log_triage.jsonl"
     triage_log.write_text("{}")
     
-    handle_clear_inbox({})
+    # Mock dependencies to simulate one tool execution and then exit
+    def sleep_effect(seconds):
+        raise KeyboardInterrupt("stop loop")
+            
+    with patch("seed_agent.client.chat.completions.create") as mock_openai, \
+         patch("requests.get") as mock_get, \
+         patch("time.sleep", side_effect=sleep_effect), \
+         patch("seed_agent.save_state"):
+        
+        # Create a mock tool call
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_123456789"
+        mock_tool_call.function.name = "send_telegram_message"
+        mock_tool_call.function.arguments = json.dumps({"text": "reply", "chat_id": 123})
+        
+        # Create a mock message
+        mock_message = MagicMock()
+        mock_message.content = "replying"
+        mock_message.tool_calls = [mock_tool_call]
+        mock_message.role = "assistant"
+        mock_message.model_dump.return_value = {
+            "role": "assistant",
+            "content": "replying",
+            "tool_calls": [{"id": "call_123456789", "function": {"name": "send_telegram_message", "arguments": "{\"text\": \"reply\", \"chat_id\": 123}"}}]
+        }
+        
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=mock_message)]
+        mock_response.usage = MagicMock(total_tokens=100, prompt_tokens=50, completion_tokens=50)
+        mock_openai.return_value = mock_response
+        
+        # Mock requests for Telegram send and getUpdates
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            mock_get.return_value.json.return_value = {"ok": True, "result": []}
+            
+            with pytest.raises(KeyboardInterrupt):
+                main()
+        
+    # Verify Auto-Clear happened
     assert json.loads(inbox_file.read_text()) == []
     assert not triage_log.exists()
 
@@ -208,7 +248,7 @@ def test_main_loop_iteration(mock_memory):
     # Mocking external dependencies
     with patch("seed_agent.client.chat.completions.create") as mock_openai, \
          patch("requests.get") as mock_get, \
-         patch("time.sleep", side_effect=InterruptedError("stop loop")), \
+         patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")), \
          patch("seed_agent.load_inbox", return_value=[]), \
          patch("seed_agent.load_task_queue", return_value=[{"task_id": "t1", "description": "test"}]):
         
@@ -220,7 +260,7 @@ def test_main_loop_iteration(mock_memory):
         
         mock_get.return_value.json.return_value = {"ok": True, "result": []}
         
-        with pytest.raises(InterruptedError):
+        with pytest.raises(KeyboardInterrupt):
             main()
         
         # Verify that OpenAI was called at least once
