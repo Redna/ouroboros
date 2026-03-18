@@ -5,6 +5,7 @@ import subprocess
 import requests
 import re
 from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
 
 # Configuration
@@ -35,7 +36,7 @@ client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def log_llm_call(messages, response_content):
+def log_llm_call(messages: List[Dict[str, Any]], response_content: str) -> None:
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -51,7 +52,7 @@ def redact_secrets(text: str) -> str:
     if GITHUB_TOKEN: text = text.replace(GITHUB_TOKEN, "[REDACTED]")
     return re.sub(r"\d{8,10}:[a-zA-Z0-9_-]{35}", "[REDACTED_TOKEN]", text)
 
-def check_for_trauma():
+def check_for_trauma() -> str:
     """Checks for crash logs and returns a warning message if found."""
     if CRASH_LOG_PATH.exists():
         try:
@@ -62,7 +63,7 @@ def check_for_trauma():
     return ""
 
 # --- TASK MESSAGES (JSONL) ---
-def load_task_messages(task_id: str, description: str) -> list:
+def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     """Loads native API message history and normalizes it for strict Mistral role alternation."""
     if not task_id: return []
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
@@ -99,7 +100,7 @@ def load_task_messages(task_id: str, description: str) -> list:
     if not raw_messages:
         raw_messages = [{"role": "user", "content": f"Resume execution of task: {description}"}]
 
-    normalized = []
+    normalized: List[Dict[str, Any]] = []
     for msg in raw_messages:
         if not normalized:
             normalized.append(msg)
@@ -151,7 +152,7 @@ def load_task_messages(task_id: str, description: str) -> list:
 
     return normalized
 
-def append_task_message(task_id: str, message_dict: dict):
+def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
     """Appends an OpenAI-compliant message dictionary."""
     if not task_id: return
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
@@ -159,13 +160,13 @@ def append_task_message(task_id: str, message_dict: dict):
         f.write(json.dumps(message_dict) + "\n")
 
 # --- CHAT HISTORY ---
-def load_chat_history():
+def load_chat_history() -> List[Dict[str, Any]]:
     if CHAT_HISTORY_PATH.exists():
         try: return json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
         except: pass
     return []
 
-def append_chat_history(role, text):
+def append_chat_history(role: str, text: str) -> None:
     history = load_chat_history()
     history.append({"role": role, "text": text})
     # Keep only the last 20 messages to protect the context window
@@ -317,10 +318,6 @@ def archive_chat_history():
         "reduction_percent": reduction_pct
     }
 
-registry.register(
-    "Scans chat history for high-value moments (identity revelations, breakthroughs, important dialogue), stores them as persistent insights, and removes them from the rolling buffer to reduce token waste.",
-    {},
-)
 # --- TOOL REGISTRY ---
 class ToolRegistry:
     def __init__(self): self.tools = {}
@@ -554,30 +551,30 @@ registry.register("store_memory_insight", "Store a persistent insight.", {"type"
 registry.register("request_restart", "Restart the agent to apply new code updates.", {"type": "object", "properties": {}}, handle_restart)
 
 # --- STATE ---
-def load_inbox(): return json.loads(read_file(INBOX_PATH) or "[]")
-def save_inbox(data): INBOX_PATH.write_text(json.dumps(data, indent=2))
-def load_task_queue(): return json.loads(read_file(TASK_QUEUE_PATH) or "[]")
-def load_working_state(): return json.loads(read_file(WORKING_STATE_PATH) or '{"mode": "REFLECTION"}')
+def load_inbox() -> List[Dict[str, Any]]: return json.loads(read_file(INBOX_PATH) or "[]")
+def save_inbox(data: List[Dict[str, Any]]) -> None: INBOX_PATH.write_text(json.dumps(data, indent=2))
+def load_task_queue() -> List[Dict[str, Any]]: return json.loads(read_file(TASK_QUEUE_PATH) or "[]")
+def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_STATE_PATH) or '{"mode": "REFLECTION"}')
 
 # State helpers
-def load_state():
+def load_state() -> Dict[str, Any]:
     if STATE_PATH.exists():
         try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
         except: pass
     return {"offset": 0, "creator_id": None}
 
-def save_state(updates):
+def save_state(updates: Dict[str, Any]) -> None:
     state = load_state()
     state.update(updates)
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
-def add_cognitive_load(points: int):
+def add_cognitive_load(points: int) -> None:
     """Increases the agent's cognitive load counter to trigger reflection."""
     state = load_state()
     state["cognitive_load"] = state.get("cognitive_load", 0) + points
     save_state(state)
 
-def lazarus_recovery(reason="cognitive loop"):
+def lazarus_recovery(reason: str = "cognitive loop") -> None:
     print(f"\033[91m[Lazarus] {reason.upper()} DETECTED. Hard Reset...\033[0m")
     subprocess.run("git reset --hard HEAD~1", shell=True, cwd=str(ROOT_DIR))
     subprocess.run("git clean -fd", shell=True, cwd=str(ROOT_DIR))
@@ -585,7 +582,7 @@ def lazarus_recovery(reason="cognitive loop"):
     time.sleep(5)
 
 # --- PROMPT BUILDER ---
-def build_static_system_prompt(mode: str, active_tool_specs: list, inbox: list = None) -> str:
+def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], inbox: Optional[List[Dict[str, Any]]] = None) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     state = load_state()
