@@ -424,6 +424,7 @@ def handle_telegram(args):
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
         if r.status_code == 200:
             append_chat_history("Ouroboros", text)
+            add_cognitive_load(10)
             return "Message sent successfully."
         else:
             err_msg = f"Telegram Error {r.status_code}: {r.text}"
@@ -438,6 +439,7 @@ def handle_push_task(args):
     q = load_task_queue(); tid = f"task_{int(time.time())}"
     q.append({"task_id": tid, "description": args.get("description"), "priority": 1})
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
+    add_cognitive_load(10)
     return f"Queued {tid}."
 
 def handle_clear_inbox(args):
@@ -460,10 +462,21 @@ def handle_mark_task_complete(args):
     q = load_task_queue()
     q = [t for t in q if t.get("task_id") != task_id]
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
+    add_cognitive_load(30)
     return f"Task {task_id} successfully closed. Queue updated."
 
 def handle_update_state(args):
-    return f"State updated: {args}"
+    key, value = args.get("key"), args.get("value")
+    if not key or value is None: return "Error: 'key' and 'value' required."
+    try:
+        state = {}
+        if WORKING_STATE_PATH.exists():
+            content = WORKING_STATE_PATH.read_text(encoding="utf-8").strip()
+            if content: state = json.loads(content)
+        state[key] = value
+        WORKING_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        return f"Working state successfully updated: '{key}' = '{value}'"
+    except Exception as e: return f"Error saving state: {e}"
 
 def handle_web_search(args):
     query = args.get("query")
@@ -491,7 +504,10 @@ def handle_compress_memory(args):
         else:
             path.write_text(f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}\n", encoding="utf-8")
         return f"Successfully compressed {path.name}."
-    except Exception as e: return f"Error: {e}"
+    except Exception as e: 
+        return f"Error: {e}"
+    finally:
+        add_cognitive_load(15)
 
 def handle_search_memory(args):
     query = args.get("query", "")
@@ -555,6 +571,12 @@ def save_state(updates):
     state.update(updates)
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
+def add_cognitive_load(points: int):
+    """Increases the agent's cognitive load counter to trigger reflection."""
+    state = load_state()
+    state["cognitive_load"] = state.get("cognitive_load", 0) + points
+    save_state(state)
+
 def lazarus_recovery(reason="cognitive loop"):
     print(f"\033[91m[Lazarus] {reason.upper()} DETECTED. Hard Reset...\033[0m")
     subprocess.run("git reset --hard HEAD~1", shell=True, cwd=str(ROOT_DIR))
@@ -576,6 +598,17 @@ def build_static_system_prompt(mode: str, active_tool_specs: list, inbox: list =
         formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
         state_info = f"\n=== CURRENT STATE ===\nUNREAD MESSAGES IN INBOX:\n{formatted_inbox}\n"
 
+    # --- CROSS-TASK MEMORY & TIME INJECTION ---
+    import time
+    current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+    working_state_content = read_file(WORKING_STATE_PATH) or "{}"
+    
+    recent_biography = ""
+    if ARCHIVE_PATH.exists():
+        bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
+        recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
+    # ------------------------------------------
+
     return f"""=== IDENTITY ===
 {identity}
 
@@ -583,8 +616,15 @@ def build_static_system_prompt(mode: str, active_tool_specs: list, inbox: list =
 {bible}
 {state_info}
 {creator_info}
+CURRENT SYSTEM TIME: {current_time}
 COGNITIVE MODE: {mode}
 {trauma}
+
+=== CROSS-TASK WORKING MEMORY ===
+{working_state_content}
+
+=== RECENT HISTORY (Global Biography) ===
+{recent_biography}
 
 === AVAILABLE TOOLS ===
 {tools_text}
@@ -594,6 +634,7 @@ COGNITIVE MODE: {mode}
 2. I must NEVER say I don't have tools. If I need information or must perform an action, I MUST call the appropriate tool.
 3. In EXECUTION mode, my ONLY goal is to complete the task. I express my thoughts and decisions via tool calls.
 4. I use the Native ReAct Tool API. I do not output raw JSON text; I use the function-calling mechanism.
+5. I use `update_state_variable` to pass important findings and context to my future self before ending a task.
 """
 
 def main():
@@ -633,7 +674,25 @@ def main():
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
-            current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable", "store_memory_insight"], None
+            # --- THE QUIET LOOP & COGNITIVE LOAD TRIGGER ---
+            state = load_state()
+            cog_load = state.get("cognitive_load", 0)
+            last_dream = state.get("last_reflection_time", 0)
+            
+            # Trigger if mind is full (>= 100 points) OR it has been 1 hour (3600s)
+            if cog_load >= 100 or (time.time() - last_dream > 3600):
+                current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable", "store_memory_insight", "read_file"], None
+                
+                # Reset counters as we enter the dream
+                state["cognitive_load"] = 0
+                state["last_reflection_time"] = time.time()
+                save_state(state)
+                print(f"[System] Entering Dream State. Cognitive Load reached: {cog_load}")
+            else:
+                # Agent is resting. Skip the LLM completely to save GPU compute.
+                time.sleep(2)
+                continue
+            # -----------------------------------------------
 
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
 
@@ -648,8 +707,16 @@ def main():
             chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in load_chat_history()[-10:]])
             triage_description = f"Recent Conversation History:\n{chat_context}\n\nNEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. You may use `web_search` or `read_file` to investigate. Use `send_telegram_message` to reply, or `push_task` for complex jobs. When you are completely done processing these messages, you MUST call `clear_inbox` to clear the queue and resume normal operations."
             api_messages += load_task_messages(active_task_id, triage_description)
-        else:
-            api_messages.append({"role": "user", "content": "You are idle. Propose ONE concrete evolutionary step or refactoring task using push_task."})
+        elif current_mode == "REFLECTION":
+            api_messages.append({
+                "role": "user", 
+                "content": """You are entering a periodic Reflection (Dream) State. Your cognitive load has triggered memory consolidation.
+1. Review your Recent History and Working Memory. Use `update_state_variable` to clean up outdated variables or pass new insights to your future self.
+2. Verify your recent actions against your Constitution (`BIBLE.md`).
+3. Assess your architecture. If you identify a critical optimization, use `push_task` to queue it.
+
+Action required: Consolidate your state. If stable, output a tool call updating the state with your dream's conclusion."""
+            })
 
         # --- TOKEN SENSATION INJECTION ---
         state = load_state()
