@@ -218,6 +218,9 @@ def handle_write(args):
 
 def handle_read_file_tool(args):
     path_str = args.get("path", "")
+    start_line = args.get("start_line")
+    end_line = args.get("end_line")
+    
     try:
         p = Path(path_str)
         if not p.is_absolute():
@@ -226,15 +229,27 @@ def handle_read_file_tool(args):
         if not p.exists() or not p.is_file():
             return f"Error: File '{path_str}' does not exist or is a directory."
             
-        content = p.read_text(encoding="utf-8")
+        content_lines = p.read_text(encoding="utf-8").splitlines()
+        
+        # Apply line-based filtering if requested
+        if start_line is not None or end_line is not None:
+            # Convert to 0-indexed internal list access
+            s = (max(1, int(start_line)) - 1) if start_line is not None else 0
+            e = int(end_line) if end_line is not None else len(content_lines)
+            content_lines = content_lines[s:e]
+            prefix = f"[Showing lines {s+1} to {e} of {len(content_lines) + s}]\n"
+        else:
+            prefix = ""
+
+        content = "\n".join(content_lines)
         
         # 24,000 char ceiling (roughly 600 lines of code)
         MAX_CHARS = 24000
         if len(content) > MAX_CHARS:
-            warning = f"\n\n[SYSTEM WARNING: File is too large. Truncated to {MAX_CHARS} characters. Use bash 'grep' or 'sed' to read specific lines.]"
-            return content[:MAX_CHARS] + warning
+            warning = f"\n\n[SYSTEM WARNING: File is too large. Truncated to {MAX_CHARS} characters. Use start_line/end_line to read specific sections.]"
+            return prefix + content[:MAX_CHARS] + warning
             
-        return content
+        return prefix + content
     except Exception as e:
         return f"Error reading file: {e}"
 
@@ -333,12 +348,20 @@ def handle_search_memory(args):
         return out[:4000] if out else "No matches found in memory."
     except Exception as e: return f"Search error: {e}"
 
+def handle_store_insight(args):
+    insight, category = args.get("insight"), args.get("category", "General")
+    path = MEMORY_DIR / "insights.md"
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"\n### [{timestamp}] {category}\n{insight}\n")
+    return f"Insight stored in {path.name}."
+
 def handle_restart(args):
     """Returns a signal rather than killing the process immediately."""
     return "SYSTEM_SIGNAL_RESTART"
 
 registry.register("bash_command", "Execute bash.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash)
-registry.register("read_file", "Read the contents of a file.", {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}, handle_read_file_tool)
+registry.register("read_file", "Read file with line support.", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool)
 registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
 registry.register("send_telegram_message", "Telegram.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
 registry.register("push_task", "Queue task.", {"type": "object", "properties": {"description": {"type": "string"}}}, handle_push_task)
@@ -353,6 +376,7 @@ registry.register("update_state_variable", "Update state.", {"type": "object", "
 registry.register("web_search", "Search web.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search)
 registry.register("compress_memory_block", "Compress log.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory)
 registry.register("search_memory_archive", "Search memory.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory)
+registry.register("store_memory_insight", "Store a persistent insight.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight)
 registry.register("request_restart", "Restart the agent to apply new code updates.", {"type": "object", "properties": {}}, handle_restart)
 
 # --- STATE ---
@@ -379,6 +403,51 @@ def lazarus_recovery(reason="cognitive loop"):
     subprocess.run("git clean -fd", shell=True, cwd=str(ROOT_DIR))
     print("[Lazarus] Recovery complete. Resuming...")
     time.sleep(5)
+
+# --- MEMORY COMPRESSION LOGIC ---
+def get_file_size_kb(path: Path) -> float:
+    return path.stat().st_size / 1024 if path.exists() else 0
+
+def should_compress_task_log(task_id: str, threshold_kb=128) -> bool:
+    if not task_id: return False
+    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    return get_file_size_kb(log_path) > threshold_kb
+
+def auto_compress_task_log(task_id: str):
+    """Triggers an internal LLM call to compress the task log if it's too large."""
+    print(f"[System] Task log for {task_id} is large. Triggering auto-compression...")
+    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists(): return
+    
+    # Read the log
+    raw_lines = log_path.read_text(encoding="utf-8").splitlines()
+    # Take the last 20 messages for context during compression
+    recent_context = "\n".join(raw_lines[-20:])
+    
+    compression_prompt = f"""You are the Ouroboros Memory Optimizer. 
+The log for task {task_id} has grown too large. 
+I need you to provide a DENSE, HIGH-SIGNAL summary of the progress so far, including:
+1. The original goal.
+2. What has been achieved (concrete steps).
+3. Any critical findings or errors encountered.
+4. The immediate next steps.
+
+Here is the recent context from the log:
+{recent_context}
+
+Return ONLY the dense summary. Do not include any other text."""
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": compression_prompt}],
+            temperature=0.3
+        )
+        summary = response.choices[0].message.content
+        handle_compress_memory({"target_log_file": str(log_path), "dense_summary": summary})
+        print(f"[System] Auto-compression complete for {task_id}.")
+    except Exception as e:
+        print(f"[System] Auto-compression failed: {e}")
 
 # --- PROMPT BUILDER ---
 def build_static_system_prompt(mode: str, active_tool_specs: list, inbox: list = None) -> str:
@@ -450,8 +519,11 @@ def main():
             current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "read_file", "clear_inbox"], "triage"
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
+            # --- AUTO COMPRESSION CHECK ---
+            if should_compress_task_log(active_task_id):
+                auto_compress_task_log(active_task_id)
         else:
-            current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable"], None
+            current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable", "store_memory_insight"], None
 
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
 
