@@ -775,6 +775,9 @@ Action required: Consolidate your state using the appropriate tools. If your min
             )
             message = response.choices[0].message
             
+            # --- FIX: Log the raw LLM call for debugging ---
+            log_llm_call(api_messages, message.content or str(message.tool_calls))
+            # -----------------------------------------------            
             # --- TOKEN SENSATION TRACKING ---
             if hasattr(response, 'usage') and response.usage:
                 context_size = response.usage.total_tokens
