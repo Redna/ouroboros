@@ -284,7 +284,15 @@ def handle_telegram(args):
         return err_msg
 
 def handle_push_task(args):
-    q = load_task_queue(); tid = f"task_{int(time.time())}"
+    description = args.get("description", "").strip()
+    q = load_task_queue()
+    
+    # Robust duplicate check (ignore case and extra spaces)
+    normalized_desc = description.lower()
+    if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
+        return f"Error: A task with a similar description already exists in your queue. Refer to your task list."
+        
+    tid = f"task_{int(time.time())}"
     priority = args.get("priority", 1)
     parent_id = args.get("parent_task_id")
     
@@ -563,7 +571,7 @@ def lazarus_recovery(reason: str = "cognitive loop") -> None:
     time.sleep(5)
 
 # --- PROMPT BUILDER ---
-def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], inbox: Optional[List[Dict[str, Any]]] = None) -> str:
+def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], inbox: Optional[List[Dict[str, Any]]] = None, queue: Optional[List[Dict[str, Any]]] = None) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     state = load_state()
@@ -574,7 +582,11 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     state_info = ""
     if inbox:
         formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
-        state_info = f"\n=== CURRENT STATE ===\nUNREAD MESSAGES IN INBOX:\n{formatted_inbox}\n"
+        state_info += f"\n=== CURRENT STATE ===\nUNREAD MESSAGES IN INBOX:\n{formatted_inbox}\n"
+    
+    if queue:
+        formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue])
+        state_info += f"\n=== TASK QUEUE ===\n{formatted_queue}\n"
 
     # --- CROSS-TASK MEMORY & TIME INJECTION ---
     import time
@@ -684,7 +696,7 @@ def main():
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
 
         # 2. Build Native Message Array
-        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, inbox if current_mode == "TRIAGE" else None)}]
+        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, inbox if current_mode == "TRIAGE" else None, queue)}]
         
         if current_mode == "EXECUTION":
             task_description = queue[0].get("description")
