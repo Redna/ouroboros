@@ -656,7 +656,7 @@ def main():
         # Determine Mode & Tools
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "fetch_webpage", "read_file", "clear_inbox"], "triage"
+            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "clear_inbox"], "triage"
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
@@ -692,7 +692,7 @@ def main():
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             
             # --- FIX: Update Triage Prompt for Manual Clearance ---
-            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. Investigate using `web_search`, `fetch_webpage`, or `read_file` if necessary. When ready to conclude this triage, use `send_telegram_message` to reply, AND/OR `push_task` to queue work.\n\nCRITICAL: Once you are completely finished responding and planning, you MUST call `clear_inbox` to end the triage session. You may call multiple tools in parallel."
+            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. When ready to conclude this triage, use `send_telegram_message` to reply, AND/OR `push_task` to queue work.\n\nCRITICAL: Once you are completely finished responding and planning, you MUST call `clear_inbox` to end the triage session. You may call multiple tools in parallel."
             # -----------------------------------------------------
             
             api_messages += load_task_messages(active_task_id, triage_description)
