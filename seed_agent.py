@@ -169,7 +169,8 @@ def load_chat_history() -> List[Dict[str, Any]]:
 
 def append_chat_history(role: str, text: str) -> None:
     history = load_chat_history()
-    history.append({"role": role, "text": text})
+    timestamp = time.strftime("%H:%M:%S")
+    history.append({"role": role, "text": text, "timestamp": timestamp})
     # Keep only the last 20 messages to protect the context window
     CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
@@ -586,7 +587,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
         recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
         
     chat_hist = load_chat_history()
-    chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
+    chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
     # ------------------------------------------
 
     return f"""# SYSTEM CONTEXT
