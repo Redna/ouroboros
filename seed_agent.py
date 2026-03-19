@@ -370,6 +370,14 @@ def handle_fetch_webpage(args):
     except Exception as e:
         return f"Failed to fetch webpage: {e}"
 
+def handle_clear_inbox(args):
+    save_inbox([])
+    triage_log = MEMORY_DIR / "task_log_triage.jsonl"
+    if triage_log.exists():
+        try: triage_log.unlink()
+        except: pass
+    return "Inbox cleared. Triage state reset. History deleted."
+
 def handle_compress_memory(args):
     target_file, dense_summary = args.get("target_log_file"), args.get("dense_summary")
     path = Path(target_file).resolve()
@@ -504,6 +512,13 @@ registry.register(
     {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, 
     handle_store_insight
 )
+registry.register(
+    "clear_inbox", 
+    "Marks the current inbox messages as fully processed and clears them. Call this ONLY after you have finished all necessary investigations, replies, and task queuing.", 
+    {"type": "object", "properties": {}}, 
+    handle_clear_inbox
+)
+
 registry.register(
     "request_restart", 
     "Safely terminate to trigger a Watchdog reboot. MUST be called immediately after modifying seed_agent.py to apply the new neural pathways.", 
@@ -645,7 +660,7 @@ def main():
         # Determine Mode & Tools
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "fetch_webpage", "read_file"], "triage"
+            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "fetch_webpage", "read_file", "clear_inbox"], "triage"
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
