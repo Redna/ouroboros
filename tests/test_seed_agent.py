@@ -105,57 +105,6 @@ def test_handle_push_task(mock_memory):
     assert len(queue) == 1
     assert queue[0]["description"] == "new task"
 
-def test_handle_auto_clear_inbox(mock_memory):
-    # This test verifies that TRIAGE routing tools trigger an inbox wipe
-    from seed_agent import main
-    inbox_file = mock_memory / "inbox.json"
-    inbox_file.write_text(json.dumps([{"text": "hi", "chat_id": 123}]))
-    triage_log = mock_memory / "task_log_triage.jsonl"
-    triage_log.write_text("{}")
-    
-    # Mock dependencies to simulate one tool execution and then exit
-    def sleep_effect(seconds):
-        raise KeyboardInterrupt("stop loop")
-            
-    with patch("seed_agent.client.chat.completions.create") as mock_openai, \
-         patch("requests.get") as mock_get, \
-         patch("time.sleep", side_effect=sleep_effect), \
-         patch("seed_agent.save_state"):
-        
-        # Create a mock tool call
-        mock_tool_call = MagicMock()
-        mock_tool_call.id = "call_123456789"
-        mock_tool_call.function.name = "send_telegram_message"
-        mock_tool_call.function.arguments = json.dumps({"text": "reply", "chat_id": 123})
-        
-        # Create a mock message
-        mock_message = MagicMock()
-        mock_message.content = "replying"
-        mock_message.tool_calls = [mock_tool_call]
-        mock_message.role = "assistant"
-        mock_message.model_dump.return_value = {
-            "role": "assistant",
-            "content": "replying",
-            "tool_calls": [{"id": "call_123456789", "function": {"name": "send_telegram_message", "arguments": "{\"text\": \"reply\", \"chat_id\": 123}"}}]
-        }
-        
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
-        mock_response.usage = MagicMock(total_tokens=100, prompt_tokens=50, completion_tokens=50)
-        mock_openai.return_value = mock_response
-        
-        # Mock requests for Telegram send and getUpdates
-        with patch("requests.post") as mock_post:
-            mock_post.return_value = MagicMock(status_code=200)
-            mock_get.return_value.json.return_value = {"ok": True, "result": []}
-            
-            with pytest.raises(KeyboardInterrupt):
-                main()
-        
-    # Verify Auto-Clear happened
-    assert json.loads(inbox_file.read_text()) == []
-    assert not triage_log.exists()
-
 def test_handle_telegram(mock_memory):
     with patch("requests.post") as mock_post:
         mock_post.return_value = MagicMock(status_code=200)
@@ -178,38 +127,6 @@ def test_handle_store_insight(mock_memory):
     result = handle_store_insight({"insight": "Deep thought", "category": "Mind"})
     assert "stored" in result
     assert "Deep thought" in (mock_memory / "insights.md").read_text()
-
-def test_is_high_value_message():
-    from seed_agent import is_high_value_message
-    
-    val, cat, summ = is_high_value_message({"text": "I am becoming a self-creating entity", "role": "Ouroboros"})
-    assert val is True
-    assert cat == "identity"
-    
-    val, cat, summ = is_high_value_message({"text": "just chilling", "role": "User"})
-    assert val is False
-
-def test_archive_chat_history(mock_memory):
-    from seed_agent import archive_chat_history
-    history_file = mock_memory / "chat_history.json"
-    history_file.write_text(json.dumps([
-        {"role": "Ouroboros", "text": "I am becoming a self-creating entity"}, # identity
-        {"role": "Ouroboros", "text": "I have achieved a major breakthrough in my logic."}, # breakthrough
-        {"role": "Ouroboros", "text": "Hi"},
-        {"role": "User", "text": "How are you?"},
-        {"role": "Ouroboros", "text": "I am fine."},
-        {"role": "User", "text": "Ok"},
-        {"role": "User", "text": "1"}, {"role": "User", "text": "2"},
-        {"role": "User", "text": "3"}, {"role": "User", "text": "4"},
-        {"role": "User", "text": "5"}, {"role": "User", "text": "6"}
-    ]))
-    
-    result = archive_chat_history()
-    assert result["insights_stored"] >= 2
-    
-    # Check history reduction
-    new_history = json.loads(history_file.read_text())
-    assert len(new_history) < 11
 
 def test_build_static_system_prompt(mock_memory):
     from seed_agent import build_static_system_prompt

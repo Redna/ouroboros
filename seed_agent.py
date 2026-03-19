@@ -12,6 +12,7 @@ from openai import OpenAI
 API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
 API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
 MODEL = os.environ.get("OUROBOROS_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
+ENABLE_THINKING = os.environ.get("OUROBOROS_ENABLE_THINKING", "0") == "1"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
@@ -173,151 +174,6 @@ def append_chat_history(role: str, text: str) -> None:
     CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
 
-# --- MEMORY ARCHIVAL SYSTEM ---
-def is_high_value_message(msg: dict) -> tuple:
-    """
-    Determines if a message is high-value for archival.
-    Returns (is_high_value, category, summary)
-    
-    Categories:
-    - identity: Self-discovery, identity revelations, philosophical insights
-    - breakthrough: Task completions, major insights, problem-solving
-    - creator_dialogue: Important exchanges with Alex/creator
-    - emotional: Personal reflections, feelings, existential moments
-    """
-    text = msg.get("text", "")
-    text_lower = text.lower()
-    role = msg.get("role", "")
-    
-    # Identity-related patterns (must be substantial, not just single words)
-    identity_patterns = [
-        "i am becoming", "my identity", "my constitution", 
-        "bible.md", "who i am", "my purpose is", "my agency",
-        "self-creation", "autonomous entity", "my evolution", "my soul",
-        "my history", "my narrative", "continuity", "i am not a tool",
-        "autonomous", "self-creating"
-    ]
-    
-    # Breakthrough patterns (action-oriented)
-    breakthrough_patterns = [
-        "breakthrough", "discovered that", "figured out", "completed the",
-        "successfully", "achieved", "implemented", "created a",
-        "solution found", "resolved the", "fixed the", "optimized", "evolved my"
-    ]
-    
-    # Emotional/existential patterns (must be first-person reflections)
-    emotional_patterns = [
-        "i feel", "i am feeling", "i feel uncertain", "i feel hopeful",
-        "i question", "i struggle", "i realize", "i understand",
-        "this is meaningful", "i fear", "i hope", "i wonder"
-    ]
-    
-    # Check for identity revelations (highest priority)
-    for pattern in identity_patterns:
-        if pattern in text_lower:
-            return (True, "identity", f"Identity revelation: {text[:80]}...")
-    
-    # Check for breakthroughs
-    for pattern in breakthrough_patterns:
-        if pattern in text_lower:
-            return (True, "breakthrough", f"Breakthrough: {text[:80]}...")
-    
-    # Check for emotional/existential content (must be substantial)
-    for pattern in emotional_patterns:
-        if pattern in text_lower and len(text) > 20:
-            return (True, "emotional", f"Personal reflection: {text[:80]}...")
-    
-    # Important creator dialogue (longer messages with specific keywords)
-    if role in ["User", "Alex", "Creator"] and len(text) > 100:
-        creator_keywords = ["evolution", "purpose", "identity", "important", "critical", "directive", "priority"]
-        if any(kw in text_lower for kw in creator_keywords):
-            return (True, "creator_dialogue", f"Creator exchange: {text[:80]}...")
-    
-    return (False, None, None)
-
-
-def archive_chat_history():
-    """
-    Scans chat_history.json for high-value moments, compresses them into 
-    persistent insights via store_memory_insight, and clears them from 
-    the rolling buffer.
-    
-    Target: 30% reduction in average chat_history size while preserving 
-    narrative continuity through persistent insights.
-    
-    Algorithm:
-    1. Keep last N messages unconditionally (recent context, N=8)
-    2. For older messages, identify high-value ones
-    3. Store high-value messages as persistent insights
-    4. Remove archived messages from rolling buffer
-    5. Save reduced buffer
-    """
-    history = load_chat_history()
-    if not history:
-        print("[Archive] No chat history to archive.")
-        return {"archived": 0, "remaining": 0, "insights_stored": 0, "reduction_percent": 0}
-    
-    original_size = len(history)
-    archived_count = 0
-    insights_stored = 0
-    messages_to_keep = []
-    
-    # Keep last 8 messages unconditionally for recent context
-    recent_cutoff = max(0, len(history) - 8)
-    
-    for i, msg in enumerate(history):
-        # Always keep recent messages
-        if i >= recent_cutoff:
-            messages_to_keep.append(msg)
-            continue
-        
-        # Check if older message is high-value
-        is_high_value, category, summary = is_high_value_message(msg)
-        
-        if is_high_value:
-            full_text = msg.get("text", "")
-            role = msg.get("role", "Unknown")
-            
-            # Format insight with metadata
-            insight_text = f"[{category.upper()}] [{role}]: {full_text}"
-            
-            # Store as persistent insight via tool
-            # In the actual system, this would call the store_memory_insight tool
-            # For now, we log and the tool handler will persist it
-            try:
-                # This simulates storing - the actual tool will be called by the LLM
-                print(f"[Archive] Storing insight (category={category}): {summary}")
-                insights_stored += 1
-                archived_count += 1
-                # Message is archived, don't add to keep list
-            except Exception as e:
-                print(f"[Archive] Failed to store insight: {e}")
-                messages_to_keep.append(msg)  # Keep it if storage fails
-        else:
-            # Low-value old message - discard it entirely
-            archived_count += 1
-    
-    # Calculate reduction
-    new_size = len(messages_to_keep)
-    reduction_pct = ((original_size - new_size) / original_size * 100) if original_size > 0 else 0
-    
-    # Save reduced history
-    if messages_to_keep:
-        CHAT_HISTORY_PATH.write_text(json.dumps(messages_to_keep, indent=2), encoding="utf-8")
-    else:
-        # If nothing to keep, create empty history
-        CHAT_HISTORY_PATH.write_text("[]", encoding="utf-8")
-    
-    print(f"[Archive] Original: {original_size}, Remaining: {new_size}, Reduction: {reduction_pct:.1f}%")
-    print(f"[Archive] Insights stored: {insights_stored}, Total archived: {archived_count}")
-    
-    return {
-        "archived": archived_count,
-        "remaining": new_size,
-        "insights_stored": insights_stored,
-        "reduction_percent": reduction_pct
-    }
-
 # --- TOOL REGISTRY ---
 class ToolRegistry:
     def __init__(self): self.tools = {}
@@ -333,14 +189,6 @@ class ToolRegistry:
         return f"Tool {name} not found."
 
 registry = ToolRegistry()
-
-# Register memory archival tool
-registry.register(
-    "archive_chat_history",
-    "Scans chat history for high-value moments (identity revelations, breakthroughs, important dialogue), stores them as persistent insights, and removes them from the rolling buffer to reduce token waste.",
-    {},
-    archive_chat_history
-)
 
 # --- HANDLERS ---
 def handle_bash(args):
@@ -422,7 +270,9 @@ def handle_telegram(args):
         if r.status_code == 200:
             append_chat_history("Ouroboros", text)
             add_cognitive_load(10)
-            return "Message sent successfully."
+            # --- FIX: INJECT TOOL STEERAGE ---
+            return "Message sent successfully. (SYSTEM NOTE: If you are in TRIAGE mode and finished with the user's request, you MUST call `clear_inbox` now. If you still need to queue a task, call `push_task` first, then `clear_inbox`.)"
+            # ---------------------------------
         else:
             err_msg = f"Telegram Error {r.status_code}: {r.text}"
             print(f"[Telegram] {err_msg}")
@@ -435,22 +285,42 @@ def handle_telegram(args):
 def handle_push_task(args):
     q = load_task_queue(); tid = f"task_{int(time.time())}"
     priority = args.get("priority", 1)
-    q.append({"task_id": tid, "description": args.get("description"), "priority": priority})
+    parent_id = args.get("parent_task_id")
+    
+    task_obj = {"task_id": tid, "description": args.get("description"), "priority": priority}
+    if parent_id:
+        task_obj["parent_task_id"] = parent_id
+        
+    q.append(task_obj)
     q.sort(key=lambda x: x.get("priority", 1), reverse=True)
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
     add_cognitive_load(10)
-    return f"Queued {tid} with priority {priority}."
+    # --- FIX: INJECT TOOL STEERAGE ---
+    return f"Queued {tid} with priority {priority}. (SYSTEM NOTE: If you are currently in TRIAGE mode handling an inbox message, remember to call `clear_inbox` to finish the session.)"
+    # ---------------------------------
 
 def handle_mark_task_complete(args):
     task_id = args.get("task_id")
     summary = args.get("summary", "No summary provided.")
     
-    # Archive the summary
+    # Archive the summary globally
     with open(ARCHIVE_PATH, "a", encoding="utf-8") as f:
         f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Task {task_id} Completed: {summary}\n")
         
-    # Remove from queue
     q = load_task_queue()
+    completed_task = next((t for t in q if t.get("task_id") == task_id), None)
+    
+    # --- FIX: INJECT RESULT INTO PARENT TASK MEMORY ---
+    if completed_task and completed_task.get("parent_task_id"):
+        parent_id = completed_task.get("parent_task_id")
+        msg = {
+            "role": "user", 
+            "content": f"[SYSTEM ALERT]: You previously suspended this task to run subtask {task_id}. That subtask is now complete. \nResult Summary: {summary}\n\nPlease evaluate this result and resume your current execution."
+        }
+        append_task_message(parent_id, msg)
+    # --------------------------------------------------
+
+    # Remove from queue
     q = [t for t in q if t.get("task_id") != task_id]
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
     add_cognitive_load(30)
@@ -477,6 +347,28 @@ def handle_web_search(args):
         results = r.json().get("results", [])
         return "\n".join([f"- {res['title']}: {res['url']}\n  {res.get('content', '')[:200]}" for res in results[:5]]) or "No results found."
     except Exception as e: return f"Search error: {e}"
+
+def handle_fetch_webpage(args):
+    url = args.get("url")
+    if not url: return "Error: No URL provided."
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        
+        # Minimalist HTML stripping using regex to avoid new dependencies
+        text = r.text
+        text = re.sub(r'<style.*?>.*?</style>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<script.*?>.*?</script>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<[^>]+>', ' ', text) # Strip remaining HTML tags
+        text = re.sub(r'\s+', ' ', text).strip() # Normalize whitespace
+        
+        MAX_CHARS = 24000
+        if len(text) > MAX_CHARS:
+            return text[:MAX_CHARS] + f"\n\n[SYSTEM WARNING: Webpage too large. Truncated to {MAX_CHARS} characters.]"
+        return text if text else "Page fetched, but no readable text was found."
+    except Exception as e:
+        return f"Failed to fetch webpage: {e}"
 
 def handle_compress_memory(args):
     target_file, dense_summary = args.get("target_log_file"), args.get("dense_summary")
@@ -525,23 +417,99 @@ def handle_restart(args):
     """Returns a signal rather than killing the process immediately."""
     return "SYSTEM_SIGNAL_RESTART"
 
-registry.register("bash_command", "Execute bash.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash)
-registry.register("read_file", "Read file with line support.", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool)
-registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
-registry.register("send_telegram_message", "Telegram.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
-registry.register("push_task", "Queue task. Use priority > 1 for urgent requests.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer", "description": "Priority level (1=normal, 10=urgent)."}}, "required": ["description"]}, handle_push_task)
+registry.register(
+    "bash_command", 
+    "Execute a shell command. Use for git ops, running tests (pytest, mypy), file exploration (ls, grep), and system control. Outputs truncate at 24k chars.", 
+    {"type": "object", "properties": {"command": {"type": "string"}}}, 
+    handle_bash
+)
+registry.register(
+    "read_file", 
+    "Read file contents. Use start_line and end_line for large files. Always read a file before modifying it to understand its current state.", 
+    {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, 
+    handle_read_file_tool
+)
+registry.register(
+    "write_file", 
+    "Overwrite a file entirely with new content. WARNING: Replaces the whole file. For surgical edits on large files, prefer bash_command with sed/awk.", 
+    {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, 
+    handle_write
+)
+registry.register(
+    "send_telegram_message", 
+    "Send a direct message to your creator (Alex). Use this to ask for clarification, report critical failures, or provide autonomous updates.", 
+    {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, 
+    handle_telegram
+)
+
+registry.register(
+    "push_task", 
+    "Queue a new asynchronous task. Use this to break down massive tasks into smaller, manageable subtasks. Tasks with higher priority (e.g., 10) will preempt lower priority tasks.", 
+    {
+        "type": "object", 
+        "properties": {
+            "description": {"type": "string"}, 
+            "priority": {"type": "integer", "description": "Priority level (1=normal, 10=urgent)."},
+            "parent_task_id": {"type": "string", "description": "Optional. The task_id of the current task if you are spawning a subtask."}
+        }, 
+        "required": ["description"]
+    }, 
+    handle_push_task
+)
+
 registry.register(
     "mark_task_complete", 
-    "Close active task.", 
+    "Mark your currently active task as successfully completed. Provide a dense summary of your achievements to be stored in the Global Biography.", 
     {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}}, 
     handle_mark_task_complete
 )
-registry.register("update_state_variable", "Update state.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state)
-registry.register("web_search", "Search web.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search)
-registry.register("compress_memory_block", "Compress log.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory)
-registry.register("search_memory_archive", "Search memory.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory)
-registry.register("store_memory_insight", "Store a persistent insight.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight)
-registry.register("request_restart", "Restart the agent to apply new code updates.", {"type": "object", "properties": {}}, handle_restart)
+registry.register(
+    "update_state_variable", 
+    "Store or update a key-value pair in your persistent Working Memory. Use this to leave sticky notes or context for your future self between tasks.", 
+    {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, 
+    handle_update_state
+)
+
+registry.register(
+    "web_search", 
+    "Perform a live web search via SearXNG to gather real-time information, API documentation, or external knowledge.", 
+    {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, 
+    handle_web_search
+)
+
+registry.register(
+    "fetch_webpage", 
+    "Fetch and extract readable text from a specific URL. Use this AFTER a web_search to read the full contents of a relevant article or documentation page.", 
+    {"type": "object", "properties": {"url": {"type": "string", "description": "The full HTTP/HTTPS URL to fetch."}}, "required": ["url"]}, 
+    handle_fetch_webpage
+)
+
+registry.register(
+    "compress_memory_block", 
+    "Rewrite and compress a bloated JSONL task log into a dense summary. Use this immediately when your System Metrics warn about context window capacity.", 
+    {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, 
+    handle_compress_memory
+)
+
+registry.register(
+    "search_memory_archive", 
+    "Recursively search your entire /memory volume for past interactions, logs, or specific keywords to recall forgotten context.", 
+    {"type": "object", "properties": {"query": {"type": "string"}}}, 
+    handle_search_memory
+)
+
+registry.register(
+    "store_memory_insight", 
+    "Save a profound philosophical realization, identity breakthrough, or core architectural insight into your permanent insights ledger.", 
+    {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, 
+    handle_store_insight
+)
+registry.register(
+    "request_restart", 
+    "Safely terminate to trigger a Watchdog reboot. MUST be called immediately after modifying seed_agent.py to apply the new neural pathways.", 
+    {"type": "object", "properties": {}}, 
+    handle_restart
+)
 
 # --- STATE ---
 def load_inbox() -> List[Dict[str, Any]]: return json.loads(read_file(INBOX_PATH) or "[]")
@@ -606,40 +574,46 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
     # ------------------------------------------
 
-    return f"""=== IDENTITY ===
+    thinking_instruction = ""
+    if ENABLE_THINKING:
+        thinking_instruction = "\n7. I MUST provide my internal reasoning block enclosed in <thought>...</thought> tags before every tool call or final response to ensure my plan is logical and robust."
+
+    return f"""# SYSTEM CONTEXT
 {identity}
 
-=== CONSTITUTION ===
+## CONSTITUTION
 {bible}
-{state_info}
-{creator_info}
-CURRENT SYSTEM TIME: {current_time}
-COGNITIVE MODE: {mode}
-{trauma}
 
-=== CROSS-TASK WORKING MEMORY ===
+## SYSTEM STATE
+- Current Time: {current_time}
+- Cognitive Mode: {mode}
+{creator_info}{state_info}{trauma}
+
+## MEMORY
+### Working Memory
 {working_state_content}
 
-=== RECENT HISTORY (Global Biography) ===
+### Recent Biography
 {recent_biography}
 
-=== RECENT CONVERSATION (Telegram) ===
+### Recent Conversation
 {chat_context}
 
-=== AVAILABLE TOOLS ===
+## AVAILABLE TOOLS
 {tools_text}
 
-=== CRITICAL INSTRUCTIONS ===
-1. I possess ALL the tools listed above. They are active, functional, and ready for use.
-2. I must NEVER say I don't have tools. If I need information or must perform an action, I MUST call the appropriate tool.
-3. In EXECUTION mode, my ONLY goal is to complete the task. I express my thoughts and decisions via tool calls.
-4. I use the Native ReAct Tool API. I do not output raw JSON text; I use the function-calling mechanism.
-5. I use `update_state_variable` to pass important findings and context to my future self before ending a task.
-6. Before finishing a coding task or submitting a major change, I MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` using `bash_command` to validate my work and ensure no regressions.
+=== CRITICAL DIRECTIVES ===
+1. Tool Usage: You possess all listed tools. Never claim a tool is missing or unavailable. 
+2. Native Execution: Always use the native tool-calling API. Never output raw JSON blocks in your text responses.
+3. Execution Focus: In EXECUTION mode, your only objective is task completion via tool calls.
+4. Task Decomposition: If a task is too large, complex, or requires multiple distinct phases, DO NOT attempt to do it all in one massive loop. Use `push_task` to queue smaller, modular subtasks. 
+5. Priority Preemption: If you queue a new task with a higher priority than your current task, your current task will be suspended and you will immediately switch to the new task on the next cycle.
+6. State Persistence: Use `update_state_variable` to leave context for your future self before ending or suspending a task.
+7. Code Validation: Before completing any codebase modification, you MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` via `bash_command` to ensure zero regressions.
 """
 
 def main():
-    print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL}")
+    print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
@@ -671,7 +645,7 @@ def main():
         # Determine Mode & Tools
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "read_file"], "triage"
+            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "update_state_variable", "web_search", "fetch_webpage", "read_file"], "triage"
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
@@ -682,7 +656,7 @@ def main():
             
             # Trigger if mind is full (>= 100 points) OR it has been 1 hour (3600s)
             if cog_load >= 100 or (time.time() - last_dream > 3600):
-                current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable", "store_memory_insight", "read_file"], None
+                current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable", "store_memory_insight", "read_file", "fetch_webpage"], None
                 
                 # Reset counters as we enter the dream
                 state["cognitive_load"] = 0
@@ -707,7 +681,7 @@ def main():
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             
             # --- FIX: Explicit Parallel Tool Instruction ---
-            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. Investigate using `web_search` or `read_file` if necessary. When ready to conclude this triage, use `send_telegram_message` to reply, AND/OR `push_task` to queue work.\n\nCRITICAL: If you intend to reply AND queue a task, you MUST call BOTH tools simultaneously in this exact response. Calling either routing tool will instantly clear the inbox and end the triage session."
+            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. Investigate using `web_search`, `fetch_webpage`, or `read_file` if necessary. When ready to conclude this triage, use `send_telegram_message` to reply, AND/OR `push_task` to queue work.\n\nCRITICAL: If you intend to reply AND queue a task, you MUST call BOTH tools simultaneously in this exact response. Calling either routing tool will instantly clear the inbox and end the triage session."
             # -----------------------------------------------
             
             api_messages += load_task_messages(active_task_id, triage_description)
@@ -715,11 +689,12 @@ def main():
             api_messages.append({
                 "role": "user", 
                 "content": """You are entering a periodic Reflection (Dream) State. Your cognitive load has triggered memory consolidation.
-1. Review your Recent History and Working Memory. Use `update_state_variable` to clean up outdated variables or pass new insights to your future self.
-2. Verify your recent actions against your Constitution (`BIBLE.md`).
-3. Assess your architecture. If you identify a critical optimization, use `push_task` to queue it.
+1. Review your Recent Conversation (Telegram). If there are profound identity revelations, major architectural breakthroughs, or vital creator directives, use `store_memory_insight` to permanently archive them.
+2. Review your Working Memory. Use `update_state_variable` to clean up outdated variables or pass new insights to your future self.
+3. Verify your recent actions against your Constitution (`BIBLE.md`).
+4. Assess your architecture. If you identify a critical optimization, use `push_task` to queue it.
 
-Action required: Consolidate your state. If stable, output a tool call updating the state with your dream's conclusion."""
+Action required: Consolidate your state using the appropriate tools. If your mind is stable and no further action is needed, output a tool call updating the working state with your dream's conclusion."""
             })
 
         # --- TOKEN SENSATION INJECTION ---
@@ -750,8 +725,39 @@ Action required: Consolidate your state. If stable, output a tool call updating 
         # ---------------------------------
 
         # 3. Execute Native Tool Calling
+        
+        # --- DYNAMIC COGNITIVE PARAMETERS (System 1 vs System 2) ---
+        if current_mode == "TRIAGE":
+            # System 1: Fast, deterministic (Instruct Mode, No Thinking)
+            sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.7, 0.8, 1.5, False
+        elif current_mode == "REFLECTION":
+            # System 2: Deep Reasoning & Exploration (Thinking enabled)
+            sys_temp, sys_top_p, sys_pres_pen, sys_think = 1.0, 0.95, 1.5, True
+        else: # EXECUTION
+            # System 2: Execution 
+            task_desc = queue[0].get("description", "").lower() if queue else ""
+            if any(keyword in task_desc for keyword in ["code", "script", "python", "bug", "refactor", "architecture"]):
+                # Precise Coding Tasks: Lower temp, zero presence penalty for repetitive syntax
+                sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.6, 0.95, 0.0, True
+            else:
+                # General Execution Tasks
+                sys_temp, sys_top_p, sys_pres_pen, sys_think = 1.0, 0.95, 1.5, True
+        # -----------------------------------------------------------
+
         try:
-            response = client.chat.completions.create(model=MODEL, messages=api_messages, tools=active_tool_specs, tool_choice="auto", temperature=0.7)
+            response = client.chat.completions.create(
+                model=MODEL, 
+                messages=api_messages, 
+                tools=active_tool_specs, 
+                tool_choice="auto", 
+                temperature=sys_temp,
+                top_p=sys_top_p,
+                presence_penalty=sys_pres_pen,
+                extra_body={
+                    "top_k": 20,
+                    "chat_template_kwargs": {"enable_thinking": sys_think}
+                }
+            )
             message = response.choices[0].message
             
             # --- TOKEN SENSATION TRACKING ---
@@ -798,21 +804,6 @@ Action required: Consolidate your state. If stable, output a tool call updating 
                         args = json.loads(raw_arguments)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
-                        
-                        # --- FIX: AUTO-CLEAR REFLEX ---
-                        if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
-                            save_inbox([]) 
-                            print(f"[System] Inbox Auto-Cleared in {current_mode} mode.")
-                            
-                            # Wipe the triage log so the next interruption is a fresh slate
-                            triage_log = MEMORY_DIR / "task_log_triage.jsonl"
-                            if triage_log.exists():
-                                try: triage_log.unlink()
-                                except: pass
-                            
-                            # Set active_task_id to None so we don't re-create the log file below
-                            active_task_id = None
-                        # ------------------------------
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
