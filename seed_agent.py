@@ -284,11 +284,19 @@ def handle_telegram(args):
         return err_msg
 
 def handle_push_task(args):
-    q = load_task_queue(); tid = f"task_{int(time.time())}"
+    description = args.get("description", "").strip()
+    q = load_task_queue()
+    
+    # Robust duplicate check (ignore case and extra spaces)
+    normalized_desc = description.lower()
+    if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
+        return f"Error: A task with a similar description already exists in your queue. (Agency P0: Duplicate task skipped to avoid token waste P6)."
+        
+    tid = f"task_{int(time.time())}"
     priority = args.get("priority", 1)
     parent_id = args.get("parent_task_id")
     
-    task_obj = {"task_id": tid, "description": args.get("description"), "priority": priority}
+    task_obj = {"task_id": tid, "description": description, "priority": priority}
     if parent_id:
         task_obj["parent_task_id"] = parent_id
         
@@ -710,8 +718,8 @@ def main():
         elif current_mode == "TRIAGE":
             formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             
-            # --- FIX: Update Triage Prompt for Manual Clearance ---
-            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. When ready to conclude this triage, use `send_telegram_message` to reply, AND/OR `push_task` to queue work.\n\nCRITICAL: Once you are completely finished responding and planning, you MUST call `clear_inbox` to end the triage session. You may call multiple tools in parallel."
+            # --- FIX: Strict Triage Prompt to prevent loops ---
+            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. \n1. Respond via `send_telegram_message` if needed.\n2. Queue work via `push_task` if needed.\n3. CRITICAL: You MUST call `clear_inbox` in the SAME TURN as your other actions to finish the session. If you do not call `clear_inbox` now, you will be stuck in a recursive loop and fail your mission (Token Waste P6).\n\nCall all required tools in a single parallel tool call."
             # -----------------------------------------------------
             
             api_messages += load_task_messages(active_task_id, triage_description)
