@@ -434,18 +434,12 @@ def handle_telegram(args):
 
 def handle_push_task(args):
     q = load_task_queue(); tid = f"task_{int(time.time())}"
-    q.append({"task_id": tid, "description": args.get("description"), "priority": 1})
+    priority = args.get("priority", 1)
+    q.append({"task_id": tid, "description": args.get("description"), "priority": priority})
+    q.sort(key=lambda x: x.get("priority", 1), reverse=True)
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
     add_cognitive_load(10)
-    return f"Queued {tid}."
-
-def handle_clear_inbox(args):
-    save_inbox([])
-    triage_log = MEMORY_DIR / "task_log_triage.jsonl"
-    if triage_log.exists():
-        try: triage_log.unlink()
-        except: pass
-    return "Inbox cleared. Triage state reset. History deleted."
+    return f"Queued {tid} with priority {priority}."
 
 def handle_mark_task_complete(args):
     task_id = args.get("task_id")
@@ -535,8 +529,7 @@ registry.register("bash_command", "Execute bash.", {"type": "object", "propertie
 registry.register("read_file", "Read file with line support.", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool)
 registry.register("write_file", "Write file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
 registry.register("send_telegram_message", "Telegram.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
-registry.register("push_task", "Queue task.", {"type": "object", "properties": {"description": {"type": "string"}}}, handle_push_task)
-registry.register("clear_inbox", "Marks the current inbox messages as fully processed and clears them. Call this ONLY after you have finished all necessary investigations, replies, and task queuing.", {"type": "object", "properties": {}}, handle_clear_inbox)
+registry.register("push_task", "Queue task. Use priority > 1 for urgent requests.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer", "description": "Priority level (1=normal, 10=urgent)."}}, "required": ["description"]}, handle_push_task)
 registry.register(
     "mark_task_complete", 
     "Close active task.", 
@@ -553,7 +546,11 @@ registry.register("request_restart", "Restart the agent to apply new code update
 # --- STATE ---
 def load_inbox() -> List[Dict[str, Any]]: return json.loads(read_file(INBOX_PATH) or "[]")
 def save_inbox(data: List[Dict[str, Any]]) -> None: INBOX_PATH.write_text(json.dumps(data, indent=2))
-def load_task_queue() -> List[Dict[str, Any]]: return json.loads(read_file(TASK_QUEUE_PATH) or "[]")
+def load_task_queue() -> List[Dict[str, Any]]:
+    q = json.loads(read_file(TASK_QUEUE_PATH) or "[]")
+    if isinstance(q, list):
+        q.sort(key=lambda x: x.get("priority", 1), reverse=True)
+    return q
 def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_STATE_PATH) or '{"mode": "REFLECTION"}')
 
 # State helpers
@@ -604,6 +601,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     if ARCHIVE_PATH.exists():
         bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
         recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
+        
     chat_hist = load_chat_history()
     chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
     # ------------------------------------------
