@@ -589,10 +589,6 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     chat_context = "\n".join([f"{m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
     # ------------------------------------------
 
-    thinking_instruction = ""
-    if ENABLE_THINKING:
-        thinking_instruction = "\n7. I MUST provide my internal reasoning block enclosed in <thought>...</thought> tags before every tool call or final response to ensure my plan is logical and robust."
-
     return f"""# SYSTEM CONTEXT
 {identity}
 
@@ -624,7 +620,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 4. Task Decomposition: If a task is too large, complex, or requires multiple distinct phases, DO NOT attempt to do it all in one massive loop. Use `push_task` to queue smaller, modular subtasks. 
 5. Priority Preemption: If you queue a new task with a higher priority than your current task, your current task will be suspended and you will immediately switch to the new task on the next cycle.
 6. State Persistence: Use `update_state_variable` to leave context for your future self before ending or suspending a task.
-7. Code Validation: Before completing any codebase modification, you MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` via `bash_command` to ensure zero regressions.{thinking_instruction}
+7. Code Validation: Before completing any codebase modification, you MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` via `bash_command` to ensure zero regressions.
 """
 
 def main():
