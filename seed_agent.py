@@ -37,13 +37,13 @@ client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def log_llm_call(messages: List[Dict[str, Any]], response_content: str) -> None:
+def log_llm_call(messages: List[Dict[str, Any]], response_data: Any) -> None:
     try:
         LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         log_file = LLM_LOG_DIR / f"call-{timestamp}-{int(time.time())}.json"
-        log_data = {"timestamp": timestamp, "model": MODEL, "messages": messages, "response": response_content}
-        log_file.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
+        log_data = {"timestamp": timestamp, "model": MODEL, "messages": messages, "response": response_data}
+        log_file.write_text(json.dumps(log_data, indent=2, default=str), encoding="utf-8")
     except Exception as e: 
         print(f"[System] LLM Log Error: {e}")
 
@@ -771,9 +771,8 @@ Action required: Consolidate your state using the appropriate tools. If your min
             )
             message = response.choices[0].message
             
-            # --- FIX: Log the raw LLM call for debugging ---
-            log_llm_call(api_messages, message.content or str(message.tool_calls))
-            # -----------------------------------------------            
+            # Log the complete call (content + tool calls)
+            log_llm_call(api_messages, message.model_dump())
             # --- TOKEN SENSATION TRACKING ---
             if hasattr(response, 'usage') and response.usage:
                 context_size = response.usage.total_tokens
