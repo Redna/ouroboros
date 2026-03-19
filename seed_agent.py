@@ -542,7 +542,7 @@ def load_state() -> Dict[str, Any]:
     if STATE_PATH.exists():
         try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
         except: pass
-    return {"offset": 0, "creator_id": None}
+    return {"offset": 0, "creator_id": None, "idle_check_count": 0}
 
 def save_state(updates: Dict[str, Any]) -> None:
     state = load_state()
@@ -658,6 +658,12 @@ def main():
 
         inbox, queue = load_inbox(), load_task_queue()
         
+        # Reset idle counter whenever there is active work
+        if len(inbox) > 0 or len(queue) > 0:
+            state = load_state()
+            if state.get("idle_check_count", 0) != 0:
+                save_state({"idle_check_count": 0})
+
         # Determine Mode & Tools
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
@@ -669,6 +675,8 @@ def main():
             state = load_state()
             cog_load = state.get("cognitive_load", 0)
             last_dream = state.get("last_reflection_time", 0)
+            idle_count = state.get("idle_check_count", 0)
+            MAX_IDLE = 2
             
             # Trigger if mind is full (>= 100 points) OR it has been 1 hour (3600s)
             if cog_load >= 100 or (time.time() - last_dream > 3600):
@@ -677,8 +685,14 @@ def main():
                 # Reset counters as we enter the dream
                 state["cognitive_load"] = 0
                 state["last_reflection_time"] = time.time()
+                state["idle_check_count"] = 0
                 save_state(state)
                 print(f"[System] Entering Dream State. Cognitive Load reached: {cog_load}")
+            elif idle_count < MAX_IDLE:
+                current_mode, available_tools, active_task_id = "IDLE_CHECK", ["push_task", "update_state_variable", "read_file", "store_memory_insight", "send_telegram_message"], None
+                state["idle_check_count"] = idle_count + 1
+                save_state(state)
+                print(f"[System] Performing idle check-in {state['idle_check_count']}/{MAX_IDLE}")
             else:
                 # Agent is resting. Skip the LLM completely to save GPU compute.
                 time.sleep(2)
@@ -711,6 +725,11 @@ def main():
 4. Assess your architecture. If you identify a critical optimization, use `push_task` to queue it.
 
 Action required: Consolidate your state using the appropriate tools. If your mind is stable and no further action is needed, output a tool call updating the working state with your dream's conclusion."""
+            })
+        elif current_mode == "IDLE_CHECK":
+            api_messages.append({
+                "role": "user",
+                "content": "Your queue and inbox are empty. This is a brief idle check-in. Use this moment to see if there are any loose ends, unexpressed thoughts, or small optimizations you'd like to address before resting. If you have nothing to add, simply use `update_state_variable` to note your satisfaction and you will enter sleep mode."
             })
 
         # --- TOKEN SENSATION INJECTION ---
