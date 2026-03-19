@@ -284,15 +284,7 @@ def handle_telegram(args):
         return err_msg
 
 def handle_push_task(args):
-    description = args.get("description", "").strip()
-    q = load_task_queue()
-    
-    # Robust duplicate check (ignore case and extra spaces)
-    normalized_desc = description.lower()
-    if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
-        return f"Error: A task with a similar description already exists in your queue. Refer to your task list."
-        
-    tid = f"task_{int(time.time())}"
+    q = load_task_queue(); tid = f"task_{int(time.time())}"
     priority = args.get("priority", 1)
     parent_id = args.get("parent_task_id")
     
