@@ -242,7 +242,7 @@ def handle_bash(args):
         r = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
         out = redact_secrets(r.stdout + r.stderr)
         
-        MAX_CHARS = 24000
+        MAX_CHARS = 40000
         if out and len(out) > MAX_CHARS:
             # Truncate, but explicitly inform the LLM so it doesn't assume completeness
             warning = "\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
@@ -305,8 +305,8 @@ def handle_read_file_tool(args):
 
         content = "\n".join(content_lines)
         
-        # 24,000 char ceiling (roughly 600 lines of code)
-        MAX_CHARS = 24000
+        # 40,000 char ceiling (roughly 1000 lines of code)
+        MAX_CHARS = 40000
         if len(content) > MAX_CHARS:
             warning = f"\n\n[SYSTEM WARNING: File is too large. Truncated to {MAX_CHARS} characters. Use start_line/end_line to read specific sections.]"
             return prefix + content[:MAX_CHARS] + warning
@@ -435,7 +435,7 @@ def handle_fetch_webpage(args):
         text = re.sub(r'<[^>]+>', ' ', text) # Strip remaining HTML tags
         text = re.sub(r'\s+', ' ', text).strip() # Normalize whitespace
         
-        MAX_CHARS = 24000
+        MAX_CHARS = 40000
         if len(text) > MAX_CHARS:
             return text[:MAX_CHARS] + f"\n\n[SYSTEM WARNING: Webpage too large. Truncated to {MAX_CHARS} characters.]"
         return text if text else "Page fetched, but no readable text was found."
@@ -499,7 +499,7 @@ def handle_restart(args):
 
 registry.register(
     "bash_command", 
-    "Execute a shell command. Use for git ops, running tests (pytest, mypy), file exploration (ls, grep), and system control. Outputs truncate at 24k chars.", 
+    "Execute a shell command. Use for git ops, running tests (pytest, mypy), file exploration (ls, grep), and system control. Outputs truncate at 40k chars.", 
     {"type": "object", "properties": {"command": {"type": "string"}}}, 
     handle_bash
 )
