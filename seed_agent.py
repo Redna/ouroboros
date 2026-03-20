@@ -395,6 +395,15 @@ def handle_mark_task_complete(args):
     # Remove from queue
     q = [t for t in q if t.get("task_id") != task_id]
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
+    
+    # --- FIX: Clear idle check memory if queue is now empty ---
+    if not q:
+        ws = load_working_state()
+        if "last_idle_check" in ws:
+            del ws["last_idle_check"]
+            WORKING_STATE_PATH.write_text(json.dumps(ws, indent=2), encoding="utf-8")
+    # ----------------------------------------------------------
+
     add_cognitive_load(30)
     return f"Task {task_id} successfully closed. Queue updated."
 
@@ -448,6 +457,14 @@ def handle_clear_inbox(args):
     if triage_log.exists():
         try: triage_log.unlink()
         except: pass
+        
+    # --- FIX: Clear idle check memory ---
+    ws = load_working_state()
+    if "last_idle_check" in ws:
+        del ws["last_idle_check"]
+        WORKING_STATE_PATH.write_text(json.dumps(ws, indent=2), encoding="utf-8")
+    # ------------------------------------
+
     return "Inbox cleared. Triage state reset. History deleted."
 
 def handle_compress_memory(args):
@@ -826,7 +843,7 @@ Action required: Consolidate your state using the appropriate tools. If your min
         elif current_mode == "IDLE_CHECK":
             api_messages.append({
                 "role": "user",
-                "content": "Your queue and inbox are empty. This is a brief idle check-in. Use this moment to see if there are any loose ends, unexpressed thoughts, or small optimizations you'd like to address before resting. If you have nothing to add, simply use `update_state_variable` to note your satisfaction and you will enter sleep mode."
+                "content": "Your queue and inbox are empty. This is a brief idle check-in. \n1. Review your Recent Biography and Working Memory. \n2. If you have just completed a task or a conversation, you MUST conclude by sending a brief summary of your satisfaction/progress to your creator via `send_telegram_message`.\n3. After messaging (or if you truly have nothing to say), use `update_state_variable` to set `last_idle_check` with your current timestamp and conclusion. This will signal your entry into rest mode."
             })
 
         # --- TOKEN SENSATION INJECTION ---
