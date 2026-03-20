@@ -847,9 +847,14 @@ Action required: Consolidate your state using the appropriate tools. If your min
             if message.content:
                 print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
+                triage_action_taken = False
+                
                 for tool_call in message.tool_calls:
                     name, raw_arguments = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
+                    
+                    if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
+                        triage_action_taken = True
                     
                     # --- LAZARUS TRACKING ---
                     global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
@@ -894,6 +899,11 @@ Action required: Consolidate your state using the appropriate tools. If your min
                         import os
                         os._exit(0)
                     # ------------------------
+
+                if current_mode == "TRIAGE" and triage_action_taken:
+                    if not any(tc.function.name == "clear_inbox" for tc in message.tool_calls):
+                        print("[System] Auto-clearing inbox to prevent triage recursion.")
+                        registry.execute("clear_inbox", {})
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(0.5)
