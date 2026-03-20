@@ -127,10 +127,14 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
     
-    # KEEP THIS: Keep the last 60 messages to leverage the full context window safely
-    raw_messages = raw_messages[-60:]
+    # Rule 1.5: Turn-0 Pinning (Prevent Identity Amnesia)
+    # Always keep the initial task directive, then slice the most recent history.
+    if len(raw_messages) > 60:
+        pinned_instruction = raw_messages[:1]  # The original task prompt
+        recent_history = raw_messages[-59:]    # The sliding window
+        raw_messages = pinned_instruction + recent_history
     
-    # If the slicing removed the starting 'user' message, fix it
+    # If the slicing somehow corrupted the start, fix it
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
 
@@ -851,6 +855,9 @@ Action required: Consolidate your state using the appropriate tools. If your min
         # 3. Execute Native Tool Calling
         
         # --- DYNAMIC COGNITIVE PARAMETERS (System 1 vs System 2) ---
+        state = load_state()
+        error_streak = state.get("error_streak", 0)
+        
         if current_mode == "TRIAGE":
             # System 1: Fast, deterministic (Instruct Mode, No Thinking)
             sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.7, 0.8, 1.5, False
@@ -860,7 +867,12 @@ Action required: Consolidate your state using the appropriate tools. If your min
         else: # EXECUTION
             # System 2: Execution 
             task_desc = queue[0].get("description", "").lower() if queue else ""
-            if any(keyword in task_desc for keyword in ["code", "script", "python", "bug", "refactor", "architecture"]):
+            
+            # Metacognitive override: If flailing, lower temp to force convergence
+            if error_streak >= 3:
+                print(f"[Metacognition] High error streak ({error_streak}). Auto-tuning temperature to 0.3 for syntax precision.")
+                sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.3, 0.90, 0.0, True
+            elif any(keyword in task_desc for keyword in ["code", "script", "python", "bug", "refactor"]):
                 # Precise Coding Tasks: Lower temp, zero presence penalty for repetitive syntax
                 sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.6, 0.95, 0.0, True
             else:
@@ -889,16 +901,26 @@ Action required: Consolidate your state using the appropriate tools. If your min
             
             if current_mode == "EXECUTION" and len(queue) > 0:
                 queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
+                current_task_tokens = queue[0].get("task_tokens", 0)
                 
-                if queue[0]["turn_count"] >= 15:
-                    print(f"[System] Task {active_task_id} hit 15-turn limit. Forcing subtask breakdown.")
+                # Dynamic Threshold: 80% of the maximum allowed window
+                budget_threshold = int(CONTEXT_WINDOW * 0.80) 
+                
+                if queue[0]["turn_count"] >= 15 or current_task_tokens > budget_threshold:
+                    trigger_reason = "15-turn limit" if queue[0]["turn_count"] >= 15 else f"80% context budget exhaustion ({current_task_tokens} tokens)"
+                    print(f"\033[93m[System] Task {active_task_id} hit {trigger_reason}. Forcing preemptive subtask breakdown.\033[0m")
+                    
                     forced_breakdown_msg = {
                         "role": "user",
-                        "content": "[SYSTEM OVERRIDE]: You have spent 15 turns on this task. You MUST now use `push_task` to break the remainder of this work into smaller, independent subtasks. Do not attempt to complete the main objective in this context."
+                        "content": f"[SYSTEM OVERRIDE]: You have hit the {trigger_reason}. You MUST now use `push_task` to break the remainder of this work into smaller, independent subtasks. Do not attempt to complete the main objective in this current context window."
                     }
                     append_task_message(active_task_id, forced_breakdown_msg)
-                    queue[0]["turn_count"] = 0 
                     
+                    queue[0]["turn_count"] = 0 
+                    # Forgive a small amount of token debt so it has room to write the push_task calls without triggering the hard kill
+                    if current_task_tokens > budget_threshold:
+                        queue[0]["task_tokens"] = int(budget_threshold * 0.90)
+                        
                 TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
                 
             # --- TOKEN SENSATION TRACKING ---
@@ -995,6 +1017,15 @@ Action required: Consolidate your state using the appropriate tools. If your min
                         result = registry.execute(name, args)
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
+                    
+                    # Track consecutive errors in state
+                    state = load_state()
+                    if "Error:" in str(result) or "SYSTEM ERROR" in str(result):
+                        state["error_streak"] = state.get("error_streak", 0) + 1
+                    else:
+                        state["error_streak"] = 0
+                    save_state(state)
+                    
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
                     if current_mode in ["EXECUTION", "TRIAGE"]:
                         tool_result_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)}
