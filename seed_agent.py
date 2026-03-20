@@ -65,6 +65,40 @@ def check_for_trauma() -> str:
         except: pass
     return ""
 
+def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = 4) -> List[Dict[str, Any]]:
+    """
+    Retains the agent's reasoning but strips massive tool outputs from older turns 
+    to maintain a strict cognitive boundary.
+    """
+    processed = []
+    total_msgs = len(messages)
+    
+    for i, msg in enumerate(messages):
+        # Always keep the system/user instruction and the most recent N messages fully intact
+        if i == 0 or i >= total_msgs - retain_full_last_n:
+            processed.append(msg)
+            continue
+            
+        new_msg = msg.copy()
+        
+        # If it is an old tool output that is exceptionally large, compress it
+        if new_msg.get("role") == "tool" and new_msg.get("content"):
+            content_str = str(new_msg["content"])
+            if len(content_str) > 2000:
+                new_msg["content"] = f"[SYSTEM LOG: Historical tool output removed to preserve bounded context. Output was {len(content_str)} chars. If you need this data again, you must re-fetch it.]\n\nPreview: {content_str[:500]}..."
+                
+        # If it is an old user message containing a massive system sensation/warning
+        if new_msg.get("role") == "user" and new_msg.get("content"):
+            content_str = str(new_msg["content"])
+            if "[SYSTEM METRICS]" in content_str and len(content_str) > 1000:
+                # Keep the instruction but strip the old metrics noise
+                clean_content = content_str.split("[SYSTEM METRICS]")[0].strip()
+                new_msg["content"] = clean_content + "\n[SYSTEM METRICS: Archived]"
+                
+        processed.append(new_msg)
+        
+    return processed
+
 # --- TASK MESSAGES (JSONL) ---
 def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     """Loads native API message history and normalizes it for strict Mistral role alternation."""
