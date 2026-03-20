@@ -652,6 +652,30 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 7. Code Validation: Before completing any codebase modification, you MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` via `bash_command` to ensure zero regressions.
 """
 
+def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
+    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists(): return
+    
+    lines = log_path.read_text(encoding="utf-8").strip().split('\n')
+    if len(lines) <= max_messages: return
+    
+    print(f"[System] Auto-compacting log for {task_id} (Length: {len(lines)} > {max_messages})")
+    
+    messages = [json.loads(line) for line in lines if line.strip()]
+    first_msg = messages[0]
+    recent_msgs = messages[-20:]
+    
+    compaction_notice = {
+        "role": "user",
+        "content": "[SYSTEM NOTE]: Older execution steps have been automatically archived to save context space. Proceed based on your recent actions."
+    }
+    
+    compacted = [first_msg, compaction_notice] + recent_msgs
+    
+    with open(log_path, "w", encoding="utf-8") as f:
+        for msg in compacted:
+            f.write(json.dumps(msg) + "\n")
+
 def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
@@ -727,8 +751,9 @@ def main():
 
         # 2. Build Native Message Array
         api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, inbox if current_mode == "TRIAGE" else None, queue)}]
-        
+
         if current_mode == "EXECUTION":
+            auto_compact_task_log(active_task_id)
             task_description = queue[0].get("description")
             api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "TRIAGE":
