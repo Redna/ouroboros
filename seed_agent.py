@@ -16,6 +16,7 @@ ENABLE_THINKING = os.environ.get("OUROBOROS_ENABLE_THINKING", "0") == "1"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
+CONTEXT_WINDOW = int(os.environ.get("OUROBOROS_CONTEXT_WINDOW", "65536"))
 ROOT_DIR = Path(__file__).parent.resolve()
 MEMORY_DIR = Path("/memory")
 
@@ -794,12 +795,15 @@ Action required: Consolidate your state using the appropriate tools. If your min
             current_task_tokens = queue[0].get("task_tokens", 0)
 
             token_warning = ""
-            if last_context > 45000:
-                token_warning = "\n[CRITICAL WARNING: Context at 45k/64k. Cognition degrading. You MUST call `compress_memory_block` immediately.]"
-            elif last_context > 32000:
-                token_warning = "\n[SYSTEM WARNING: Context window is half full (32k/64k). You must either finish this task now, or use `push_task` to queue the remaining work as a subtask and mark this current task complete.]"
+            critical_limit = int(CONTEXT_WINDOW * 0.70) # 70%
+            warning_limit = int(CONTEXT_WINDOW * 0.50)  # 50%
+            
+            if last_context > critical_limit:
+                token_warning = f"\n[CRITICAL WARNING: Context at {last_context}/{CONTEXT_WINDOW}. Cognition degrading. You MUST call `compress_memory_block` immediately.]"
+            elif last_context > warning_limit:
+                token_warning = f"\n[SYSTEM WARNING: Context window is half full ({last_context}/{CONTEXT_WINDOW}). You must either finish this task now, or use `push_task` to queue the remaining work as a subtask and mark this current task complete.]"
 
-            token_sensation = f"\n\n[SYSTEM METRICS]\nActive Log: /memory/task_log_{active_task_id}.jsonl\nLast Context: {last_context} / 65536 tokens. Cumulative Task Cost: {current_task_tokens}.{token_warning}"
+            token_sensation = f"\n\n[SYSTEM METRICS]\nActive Log: /memory/task_log_{active_task_id}.jsonl\nLast Context: {last_context} / {CONTEXT_WINDOW} tokens. Cumulative Task Cost: {current_task_tokens}.{token_warning}"
 
             for i in range(len(api_messages)-1, -1, -1):
                 if api_messages[i]["role"] == "user":
@@ -882,8 +886,8 @@ Action required: Consolidate your state using the appropriate tools. If your min
                     current_task_tokens = queue[0].get("task_tokens", 0)
                     
                     # Define the absolute maximum tokens a single task is allowed to consume
-                    # For a 64k model, 100k cumulative tokens across turns is a safe hard ceiling
-                    TASK_TOKEN_HARD_LIMIT = 100000 
+                    # Set to roughly 1.5x the context window to prevent infinite recursive waste
+                    TASK_TOKEN_HARD_LIMIT = int(CONTEXT_WINDOW * 1.5)
                     
                     if current_task_tokens >= TASK_TOKEN_HARD_LIMIT:
                         print(f"\033[91m[System] Task {active_task_id} exceeded token hard limit ({TASK_TOKEN_HARD_LIMIT}). Forcing task closure and inducing Dream State.\033[0m")
