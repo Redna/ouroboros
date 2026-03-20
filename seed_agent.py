@@ -214,11 +214,26 @@ def handle_bash(args):
 
 def handle_write(args):
     try:
-        p = Path(args.get("path")).resolve()
+        raw_path = args.get("path", "")
+        p = Path(raw_path)
+        if not p.is_absolute():
+            p = (ROOT_DIR / p).resolve()
+        
+        # Security/Sanity Check: Ensure it's not escaping the project root
+        if not str(p).startswith(str(ROOT_DIR)) and not str(p).startswith(str(MEMORY_DIR)):
+            return f"Error: Permission denied. You must write within {ROOT_DIR} or {MEMORY_DIR}."
+
         Path(p.parent).mkdir(parents=True, exist_ok=True)
         p.write_text(args.get("content", ""), encoding="utf-8")
-        return f"Wrote {p.name}."
-    except Exception as e: return str(e)
+        
+        # Immediate Verification
+        if p.exists() and p.stat().st_size > 0:
+            return f"Success: Wrote {p.name} to {p.absolute()}. Verified file exists on disk."
+        else:
+            return f"Critical Error: Attempted to write {p.name}, but file verification failed."
+            
+    except Exception as e: 
+        return f"Error writing file: {e}"
 
 def handle_read_file_tool(args):
     path_str = args.get("path", "")
