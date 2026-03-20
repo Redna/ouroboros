@@ -157,6 +157,9 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
 
         normalized.append(msg)
 
+    # Rule 4: Apply Cognitive Boundary (Shed historical payloads)
+    normalized = shed_heavy_payloads(normalized, retain_full_last_n=6)
+
     # Rule 5: Turn-Forcer (If history ends on Assistant WITHOUT tools, nudge with User)
     if normalized and normalized[-1]["role"] == "assistant" and not normalized[-1].get("tool_calls"):
         nudge_content = "Please proceed with your next action using a tool."
