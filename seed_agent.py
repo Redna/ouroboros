@@ -312,7 +312,12 @@ def handle_push_task(args):
     priority = args.get("priority", 1)
     parent_id = args.get("parent_task_id")
     
-    task_obj = {"task_id": tid, "description": description, "priority": priority}
+    task_obj = {
+        "task_id": tid, 
+        "description": description, 
+        "priority": priority,
+        "turn_count": 0  # Initialize turn counter
+    }
     if parent_id:
         task_obj["parent_task_id"] = parent_id
         
@@ -839,6 +844,21 @@ Action required: Consolidate your state using the appropriate tools. If your min
             
             # Log the complete call (content + tool calls)
             log_llm_call(api_messages, message.model_dump())
+            
+            if current_mode == "EXECUTION" and len(queue) > 0:
+                queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
+                
+                if queue[0]["turn_count"] >= 15:
+                    print(f"[System] Task {active_task_id} hit 15-turn limit. Forcing subtask breakdown.")
+                    forced_breakdown_msg = {
+                        "role": "user",
+                        "content": "[SYSTEM OVERRIDE]: You have spent 15 turns on this task. You MUST now use `push_task` to break the remainder of this work into smaller, independent subtasks. Do not attempt to complete the main objective in this context."
+                    }
+                    append_task_message(active_task_id, forced_breakdown_msg)
+                    queue[0]["turn_count"] = 0 
+                    
+                TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                
             # --- TOKEN SENSATION TRACKING ---
             if hasattr(response, 'usage') and response.usage:
                 context_size = response.usage.total_tokens
