@@ -208,7 +208,7 @@ def load_chat_history() -> List[Dict[str, Any]]:
 
 def append_chat_history(role: str, text: str) -> None:
     history = load_chat_history()
-    timestamp = time.strftime("%H:%M:%S")
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     history.append({"role": role, "text": text, "timestamp": timestamp})
     # Keep only the last 20 messages to protect the context window
     CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
@@ -640,7 +640,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     
     state_info = ""
     if inbox:
-        formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
+        formatted_inbox = "\n".join([f"- [{msg.get('timestamp', 'N/A')}] From {msg['chat_id']}: {msg['text']}" for msg in inbox])
         state_info += f"\n=== CURRENT STATE ===\nUNREAD MESSAGES IN INBOX:\n{formatted_inbox}\n"
     
     if queue:
@@ -738,11 +738,12 @@ def main():
                         if msg.get("text"): 
                             text = msg["text"]
                             cid = msg["chat"]["id"]
+                            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
                             # Register creator_id if not set
                             if not state.get("creator_id"):
                                 save_state({"creator_id": cid})
                                 state["creator_id"] = cid
-                            inbox.append({"chat_id": cid, "text": text})
+                            inbox.append({"chat_id": cid, "text": text, "timestamp": timestamp})
                             append_chat_history("User", text)
                     save_inbox(inbox)
             except: pass
@@ -800,7 +801,7 @@ def main():
             task_description = queue[0].get("description")
             api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "TRIAGE":
-            formatted_inbox = "\n".join([f"- From {msg['chat_id']}: {msg['text']}" for msg in inbox])
+            formatted_inbox = "\n".join([f"- [{msg.get('timestamp', 'N/A')}] From {msg['chat_id']}: {msg['text']}" for msg in inbox])
             
             # --- FIX: Strict Triage Prompt to prevent loops ---
             triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. \n1. Respond via `send_telegram_message` if needed.\n2. Queue work via `push_task` if needed.\n3. CRITICAL: You MUST call `clear_inbox` in the SAME TURN as your other actions to finish the session. If you do not call `clear_inbox` now, you will be stuck in a recursive loop and fail your mission (Token Waste P6).\n\nCall all required tools in a single parallel tool call."
