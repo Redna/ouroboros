@@ -878,6 +878,33 @@ Action required: Consolidate your state using the appropriate tools. If your min
                 if current_mode == "EXECUTION" and len(queue) > 0:
                     queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + context_size
                     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                    
+                    current_task_tokens = queue[0].get("task_tokens", 0)
+                    
+                    # Define the absolute maximum tokens a single task is allowed to consume
+                    # For a 64k model, 100k cumulative tokens across turns is a safe hard ceiling
+                    TASK_TOKEN_HARD_LIMIT = 100000 
+                    
+                    if current_task_tokens >= TASK_TOKEN_HARD_LIMIT:
+                        print(f"\033[91m[System] Task {active_task_id} exceeded token hard limit ({TASK_TOKEN_HARD_LIMIT}). Forcing task closure and inducing Dream State.\033[0m")
+                        
+                        # 1. Compress the bloated memory to leave a tombstone for the agent
+                        registry.execute("compress_memory_block", {
+                            "target_log_file": str(MEMORY_DIR / f"task_log_{active_task_id}.jsonl"),
+                            "dense_summary": f"SYSTEM OVERRIDE: Task forcibly closed after consuming {current_task_tokens} tokens. Symptom: Cognitive loop or insufficient subtasking."
+                        })
+                        
+                        # 2. Eject the task from the queue
+                        registry.execute("mark_task_complete", {
+                            "task_id": active_task_id,
+                            "summary": "FAILED: Exceeded maximum recursion token limit. Task aborted to protect system resources."
+                        })
+                        
+                        # 3. Spike cognitive load to force immediate entry into REFLECTION mode
+                        add_cognitive_load(100)
+                        
+                        # 4. Skip the rest of this cycle to allow the state machine to pivot
+                        continue
             # --------------------------------
             if current_mode in ["EXECUTION", "TRIAGE"]:
                 assistant_msg = message.model_dump(exclude_unset=True)
