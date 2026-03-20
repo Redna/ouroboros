@@ -30,6 +30,7 @@ CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 
 TOOL_CALL_HISTORY = []
+TOOL_INTENT_HISTORY = []
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
@@ -851,13 +852,29 @@ Action required: Consolidate your state using the appropriate tools. If your min
                     print(f"[Tool Call]: {name}")
                     
                     # --- LAZARUS TRACKING ---
-                    global TOOL_CALL_HISTORY
+                    global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
                     tool_signature = f"{name}:{raw_arguments}"
                     TOOL_CALL_HISTORY.append(tool_signature)
+
+                    intent_signature = name
+                    if name in ["read_file", "write_file", "bash_command"]:
+                        try:
+                            intent_target = json.loads(raw_arguments).get("path", "") or json.loads(raw_arguments).get("command", "")
+                            intent_signature = f"{name}:{intent_target.split()[0]}"
+                        except:
+                            pass
+                    TOOL_INTENT_HISTORY.append(intent_signature)
+
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
+                    if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY.pop(0)
+
                     if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
-                        lazarus_recovery(reason="cognitive tool loop")
-                        break # Break out of the tool execution loop
+                        lazarus_recovery(reason="exact tool loop")
+                        break
+                        
+                    if len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
+                        lazarus_recovery(reason="cognitive stall (reading without acting)")
+                        break
                     # ------------------------
 
                     try:
