@@ -784,30 +784,23 @@ Action required: Consolidate your state using the appropriate tools. If your min
         # --- TOKEN SENSATION INJECTION ---
         state = load_state()
         last_context = state.get("last_context_size", 0)
-        last_in = state.get("last_input_tokens", 0)
-        last_out = state.get("last_output_tokens", 0)
-        
+
         if current_mode == "EXECUTION" and len(queue) > 0:
             current_task_tokens = queue[0].get("task_tokens", 0)
-            global_in = state.get("global_input_tokens", 0)
-            global_out = state.get("global_output_tokens", 0)
-            token_warning = ""
-            if last_context > 50000:
-                token_warning = "\n[CRITICAL WARNING: Context window is reaching maximum capacity (65536). You MUST use `compress_memory_block` immediately or finish the task.]"
-            elif last_context > 40000:
-                token_warning = "\n[WARNING: Context window is filling up. Consider compressing logs soon.]"
 
-            # --- ADD 'Active Log' TO SENSATION ---
-            token_sensation = f"\n\n[SYSTEM METRICS]\nActive Log: /memory/task_log_{active_task_id}.jsonl\nLast Context: {last_context} / 65536 tokens (In: {last_in}, Out: {last_out}). Cumulative: {state.get('global_tokens_consumed', 0)} (Total In: {global_in}, Total Out: {global_out}). Task Cost: {current_task_tokens} tokens.{token_warning}"
-            # -------------------------------------
-            
-            # Append this sensation to the last user message so the LLM reads it immediately before acting
+            token_warning = ""
+            if last_context > 45000:
+                token_warning = "\n[CRITICAL WARNING: Context at 45k/64k. Cognition degrading. You MUST call `compress_memory_block` immediately.]"
+            elif last_context > 32000:
+                token_warning = "\n[SYSTEM WARNING: Context window is half full (32k/64k). You must either finish this task now, or use `push_task` to queue the remaining work as a subtask and mark this current task complete.]"
+
+            token_sensation = f"\n\n[SYSTEM METRICS]\nActive Log: /memory/task_log_{active_task_id}.jsonl\nLast Context: {last_context} / 65536 tokens. Cumulative Task Cost: {current_task_tokens}.{token_warning}"
+
             for i in range(len(api_messages)-1, -1, -1):
                 if api_messages[i]["role"] == "user":
                     api_messages[i]["content"] += token_sensation
                     break
         # ---------------------------------
-
         # 3. Execute Native Tool Calling
         
         # --- DYNAMIC COGNITIVE PARAMETERS (System 1 vs System 2) ---
