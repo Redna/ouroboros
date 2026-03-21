@@ -719,7 +719,7 @@ registry.register(
 
 registry.register(
     "request_restart", 
-    "Safely terminate to trigger a Watchdog reboot. MUST be called immediately after modifying seed_agent.py to apply the new neural pathways.", 
+    "Safely terminate to apply code updates. WARNING: This tool will automatically run 'mypy' and 'pytest' on your code. If validation fails, the restart will be blocked and you will receive the error trace to fix. Call this only when your code is complete and syntactically sound.", 
     {"type": "object", "properties": {}}, 
     handle_restart
 )
