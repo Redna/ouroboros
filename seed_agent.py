@@ -969,10 +969,9 @@ def main():
             
             api_messages += load_task_messages(active_task_id, triage_description)
         elif current_mode == "AUTONOMY":
-            api_messages.append({
-                "role": "user",
-                "content": f"Your task queue and inbox are empty. You are in AUTONOMY mode. Your current cognitive load is {load_state().get('cognitive_load', 0)}.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
-            })
+            autonomy_description = f"Your task queue and inbox are empty. You are in AUTONOMY mode. Your current cognitive load is {load_state().get('cognitive_load', 0)}.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
+            
+            api_messages += load_task_messages(active_task_id, autonomy_description)
 
         # --- TOKEN SENSATION INJECTION ---
         state = load_state()
