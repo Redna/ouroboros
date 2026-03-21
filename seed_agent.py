@@ -933,23 +933,23 @@ Action required: Consolidate your state using the appropriate tools. If your min
                 queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
                 current_task_tokens = queue[0].get("task_tokens", 0)
                 
-                # Dynamic Threshold: 80% of the maximum allowed window
-                budget_threshold = int(CONTEXT_WINDOW * 0.80) 
+                # Dynamic Budget logic
+                max_budget = int(CONTEXT_WINDOW * 0.80)
+                average_tokens_per_turn = current_task_tokens / max(1, queue[0]["turn_count"])
+                projected_next_turn = current_task_tokens + average_tokens_per_turn
                 
-                if queue[0]["turn_count"] >= 15 or current_task_tokens > budget_threshold:
-                    trigger_reason = "15-turn limit" if queue[0]["turn_count"] >= 15 else f"80% context budget exhaustion ({current_task_tokens} tokens)"
-                    print(f"\033[93m[System] Task {active_task_id} hit {trigger_reason}. Forcing preemptive subtask breakdown.\033[0m")
+                if queue[0]["turn_count"] >= 15 or projected_next_turn > max_budget:
+                    trigger_reason = "15-turn limit" if queue[0]["turn_count"] >= 15 else f"insufficient budget for next turn (Projected: {projected_next_turn}, Max: {max_budget})"
+                    print(f"\033[93m[System] Task {active_task_id} hit {trigger_reason}. Forcing breakdown.\033[0m")
                     
                     forced_breakdown_msg = {
                         "role": "user",
-                        "content": f"[SYSTEM OVERRIDE]: You have hit the {trigger_reason}. You MUST now use `push_task` to break the remainder of this work into smaller, independent subtasks. Do not attempt to complete the main objective in this current context window."
+                        "content": f"[SYSTEM OVERRIDE]: You have hit the {trigger_reason}. You MUST now use `push_task` to break the remainder of this work into smaller subtasks and then call `mark_task_complete` for this session."
                     }
                     append_task_message(active_task_id, forced_breakdown_msg)
                     
                     queue[0]["turn_count"] = 0 
-                    # Forgive a small amount of token debt so it has room to write the push_task calls without triggering the hard kill
-                    if current_task_tokens > budget_threshold:
-                        queue[0]["task_tokens"] = int(budget_threshold * 0.90)
+                    queue[0]["task_tokens"] = int(max_budget * 0.85) # Forgive debt to allow final tools
                         
                 TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
                 
