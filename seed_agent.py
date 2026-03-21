@@ -599,7 +599,14 @@ def handle_store_insight(args):
     return f"Insight stored in {path.name}."
 
 def handle_restart(args):
-    """Returns a signal rather than killing the process immediately."""
+    """Validates code integrity before allowing a system reboot."""
+    success, report = run_pre_flight_checks()
+    
+    if not success:
+        # Block the restart and feed the errors back to the agent
+        return f"RESTART REJECTED. Your code modifications failed validation. You MUST fix these errors before trying to restart again.\n\n{report}"
+        
+    print("[System] Pre-flight checks passed. Signaling Watchdog for reboot.")
     return "SYSTEM_SIGNAL_RESTART"
 
 registry.register(
