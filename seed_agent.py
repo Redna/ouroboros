@@ -291,6 +291,39 @@ def handle_write(args):
     except Exception as e: 
         return f"Error writing file: {e}"
 
+def handle_patch_file(args):
+    try:
+        raw_path = args.get("path", "")
+        search_text = args.get("search_text", "")
+        replace_text = args.get("replace_text", "")
+        
+        file_path = Path(raw_path)
+        if not file_path.is_absolute():
+            file_path = (ROOT_DIR / file_path).resolve()
+            
+        if not str(file_path).startswith(str(ROOT_DIR)):
+            return f"Error: Permission denied. Target must be within {ROOT_DIR}."
+            
+        if not file_path.exists() or not file_path.is_file():
+            return f"Error: File '{file_path.name}' does not exist."
+
+        content = file_path.read_text(encoding="utf-8")
+        occurrence_count = content.count(search_text)
+        
+        if occurrence_count == 0:
+            return "Error: The exact 'search_text' was not found in the file. Whitespace and indentation must match exactly. Use 'read_file' to get the exact text first."
+        elif occurrence_count > 1:
+            return f"Error: The 'search_text' appears {occurrence_count} times in the file. Your search block must be larger and more unique to avoid ambiguous replacements."
+            
+        # Perform the surgical replacement
+        new_content = content.replace(search_text, replace_text)
+        file_path.write_text(new_content, encoding="utf-8")
+        
+        return f"Success: Surgically patched {file_path.name}. Replaced {len(search_text)} chars with {len(replace_text)} chars."
+        
+    except Exception as e:
+        return f"Error patching file: {e}"
+
 def handle_read_file_tool(args):
     path_str = args.get("path", "")
     start_line = args.get("start_line")
@@ -541,9 +574,23 @@ registry.register(
 )
 registry.register(
     "write_file", 
-    "Overwrite a file entirely with new content. WARNING: Replaces the whole file. For surgical edits on large files, prefer bash_command with sed/awk.", 
+    "Overwrite a file entirely with new content. WARNING: Replaces the whole file. For surgical edits on large files, prefer patch_file.", 
     {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, 
     handle_write
+)
+registry.register(
+    "patch_file", 
+    "Surgically replace a specific block of text in a file. Use this for precise edits on large files to avoid overwriting or context issues. 'search_text' must be unique and match exactly.", 
+    {
+        "type": "object", 
+        "properties": {
+            "path": {"type": "string"}, 
+            "search_text": {"type": "string", "description": "The exact block of text to find."}, 
+            "replace_text": {"type": "string", "description": "The new text to insert."}
+        },
+        "required": ["path", "search_text", "replace_text"]
+    }, 
+    handle_patch_file
 )
 registry.register(
     "send_telegram_message", 
