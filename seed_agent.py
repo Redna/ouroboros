@@ -862,18 +862,21 @@ def main():
                     save_inbox(inbox)
             except: pass
 
-        # --- HIBERNATION CHECK ---
-        state = load_state() # Reload to catch "wake_time": 0 from sync
+        # 2. Wake/Sleep Interrupt Logic
+        inbox, queue = load_inbox(), load_task_queue()
+        state = load_state()
+        
         wake_time = state.get("wake_time", 0)
         if time.time() < wake_time:
-            sleep_duration = min(60, wake_time - time.time())
-            if sleep_duration > 0:
-                time.sleep(sleep_duration)
+            if len(inbox) > 0:
+                print("[System] External stimulus detected. Breaking hibernation.")
+                state["wake_time"] = 0
+                save_state(state)
+            else:
+                # Agent is voluntarily sleeping, skip the LLM cycle
+                time.sleep(5)
                 continue
-        # -------------------------
 
-        inbox, queue = load_inbox(), load_task_queue()
-        
         # Reset idle counter whenever there is active work
         if len(inbox) > 0 or len(queue) > 0:
             state = load_state()
