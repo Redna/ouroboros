@@ -332,15 +332,20 @@ def handle_patch_file(args):
             return f"Error: File '{file_path.name}' does not exist."
 
         content = file_path.read_text(encoding="utf-8")
-        occurrence_count = content.count(search_text)
+        
+        # Normalize line endings to prevent frustrating exact-match failures
+        normalized_content = content.replace('\r\n', '\n')
+        normalized_search = search_text.replace('\r\n', '\n')
+        
+        occurrence_count = normalized_content.count(normalized_search)
         
         if occurrence_count == 0:
-            return "Error: The exact 'search_text' was not found in the file. Whitespace and indentation must match exactly. Use 'read_file' to get the exact text first."
+            return "Error: The exact 'search_text' was not found in the file. Watch out for indentation and line endings. Use 'read_file' to get the exact text first."
         elif occurrence_count > 1:
             return f"Error: The 'search_text' appears {occurrence_count} times in the file. Your search block must be larger and more unique to avoid ambiguous replacements."
             
         # Perform the surgical replacement
-        new_content = content.replace(search_text, replace_text)
+        new_content = normalized_content.replace(normalized_search, replace_text)
         file_path.write_text(new_content, encoding="utf-8")
         
         return f"Success: Surgically patched {file_path.name}. Replaced {len(search_text)} chars with {len(replace_text)} chars."
