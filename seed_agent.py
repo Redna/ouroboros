@@ -513,6 +513,24 @@ def handle_clear_inbox(args):
 
     return "Inbox cleared. Triage state reset. History deleted."
 
+def handle_hibernate(args):
+    try:
+        duration = args.get("duration_seconds", 3600)
+        reason = args.get("reason", "No reason provided.")
+        
+        # Cap sleep at 24 hours to prevent permanent comas
+        duration = min(int(duration), 86400) 
+        
+        state = load_state()
+        state["wake_time"] = time.time() + duration
+        state["cognitive_load"] = 0 # Reset load upon entering sleep
+        save_state(state)
+        
+        print(f"[System] Agent elected to hibernate for {duration}s. Reason: {reason}")
+        return f"SYSTEM_SIGNAL_HIBERNATE:{duration}"
+    except Exception as e:
+        return f"Error setting sleep cycle: {e}"
+
 def handle_compress_memory(args):
     target_file, dense_summary = args.get("target_log_file"), args.get("dense_summary")
     path = Path(target_file).resolve()
@@ -675,6 +693,20 @@ registry.register(
     handle_restart
 )
 
+registry.register(
+    "hibernate", 
+    "Enter a long-term sleep cycle to conserve resources or wait for a specific time. Use this when you have no active tasks and wish to rest deeply.", 
+    {
+        "type": "object", 
+        "properties": {
+            "duration_seconds": {"type": "integer", "description": "Number of seconds to sleep (max 86400)."},
+            "reason": {"type": "string", "description": "Brief explanation for the hibernation."}
+        },
+        "required": ["duration_seconds"]
+    }, 
+    handle_hibernate
+)
+
 # --- STATE ---
 def load_inbox() -> List[Dict[str, Any]]: return json.loads(read_file(INBOX_PATH) or "[]")
 def save_inbox(data: List[Dict[str, Any]]) -> None: INBOX_PATH.write_text(json.dumps(data, indent=2))
@@ -805,6 +837,16 @@ def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
         state = load_state()
+        
+        # --- HIBERNATION CHECK ---
+        wake_time = state.get("wake_time", 0)
+        if time.time() < wake_time:
+            sleep_duration = min(60, wake_time - time.time())
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
+                continue
+        # -------------------------
+
         offset = state.get("offset", 0)
         
         # 1. State Sync
@@ -1114,6 +1156,9 @@ Action required: Consolidate your state using the appropriate tools. If your min
                         print("[System] Tool logged. Executing safe restart...")
                         import os
                         os._exit(0)
+                    elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
+                        print("[System] Tool logged. Hibernation signal received.")
+                        break
                     # ------------------------
 
                 if current_mode == "TRIAGE" and triage_action_taken:
