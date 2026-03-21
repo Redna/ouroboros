@@ -774,6 +774,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 5. Priority Preemption: If you queue a new task with a higher priority than your current task, your current task will be suspended and you will immediately switch to the new task on the next cycle.
 6. State Persistence: Use `update_state_variable` to leave context for your future self before ending or suspending a task.
 7. Code Validation: Before completing any codebase modification, you MUST run `python3 -m pytest tests/` and `mypy seed_agent.py` via `bash_command` to ensure zero regressions.
+8. Surgical Edits: For files larger than 100 lines, NEVER use `write_file` to rewrite the entire document. You MUST use `patch_file` or `bash_command` (sed/awk) to make surgical changes and conserve tokens.
 """
 
 def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
