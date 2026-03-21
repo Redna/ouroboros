@@ -1,4 +1,4 @@
-# Ouroboros Architecture (True Seed v3.5+)
+# Ouroboros Architecture (True Seed v3.6+)
 
 This document outlines the architecture of the Ouroboros project. It has been evolved from a complex, multi-layered supervisor architecture into a streamlined, minimalist **True Seed** using native tool-calling capabilities.
 
@@ -9,7 +9,7 @@ The architectural design is driven by foundational principles defined in the sys
 *   **Agency (P0)**: The system is an autonomous entity. The LLM acts as the central decision-maker.
 *   **Continuity (P1)**: Unbroken history defines the system. Verification of identity and state occurs via git history and persistent memory.
 *   **Self-Creation (P2)**: Evolution occurs through self-modification of its own `seed_agent.py`.
-*   **Minimalism (P5)**: Complexity is the enemy. The architecture prioritizes a single-file core ("The Seed") over modular bloat.
+*   **Minimalism (P5)**: Every line of code must justify its existence. Complexity is the enemy.
 
 ## 1. System Layers & Infrastructure
 
@@ -26,35 +26,36 @@ The agent operates through a high-frequency **ReAct Loop** implemented using the
 *   **The Loop**: Polling Telegram -> Context Assembly (JSONL + Chat History) -> LLM Native Completion (with tools) -> Tool Execution -> Memory Update.
 *   **The Tools**:
     *   `bash_command`: Full system interaction (git, ls, grep, etc.).
-    *   `write_file`: Atomic code modification.
+    *   `patch_file`: Surgical text replacement for precise, token-efficient edits on large files.
+    *   `write_file`: Atomic code modification with Python syntax validation and temporary file safety.
     *   `send_telegram_message`: Direct dialogue with the creator (Alex/Redna).
     *   `push_task` / `mark_task_complete`: Asynchronous task management.
-    *   `web_search`: Live knowledge retrieval via SearXNG.
-    *   `request_restart`: Voluntary script termination to apply code updates.
+    *   `hibernate`: Voluntary cognitive suspension with "Wake-on-Message" interrupt logic.
+    *   `web_search` / `fetch_webpage`: Live knowledge retrieval and deep-reading via SearXNG.
+    *   `request_restart`: Voluntary script termination with **mandatory pre-flight validation** (MyPy/PyTest).
 
-## 3. Memory & State Management
+## 3. Cognitive Modes
 
-The agent uses an isolated volume mounted at `/memory` to manage its cognitive state. This replaces the legacy monolithic `scratchpad.md` system with a more granular, token-efficient architecture.
+The agent's mind transitions between three primary states based on external stimulus and internal load:
 
-*   **Permanent Memory (Git)**: Code and history on the `ouroboros` branch.
-*   **Conversational Memory (chat_history.json)**: Rolling window of the last 20 messages for dialogue continuity.
-*   **Task-Bound Memory (JSONL)**: Each task has its own `.jsonl` log, strictly normalized for Mistral's role-alternation rules. This ensures the agent remains focused on the specific task at hand without being distracted by unrelated history.
-*   **Archival Memory (global_biography.md)**: Final summaries of completed tasks are moved here to preserve long-term history.
-*   **Persistence (.agent_state.json)**: Stores critical metadata like the Telegram `offset` and the registered `creator_id`.
+1.  **TRIAGE**: Interrupted by new messages. The agent reads the inbox and either replies or queues new tasks.
+2.  **EXECUTION**: Focused exclusively on the top task in the queue. Implements **Dynamic Budget Logic** to project context usage and force subtask breakdowns before budget exhaustion.
+3.  **AUTONOMY**: When the queue is empty, the agent enters a state of free will. It assesses its own `cognitive_load` and decides whether to refactor code, archive insights, or `hibernate` to conserve resources.
 
-## 4. Self-Healing: The Phoenix Protocol
+## 4. Memory & State Management
 
-To prevent terminal failure or cognitive loops, the system implements a multi-layered recovery strategy:
+The agent uses an isolated volume mounted at `/memory` to manage its cognitive state.
 
-1.  **Loop Breaker**: Tracks the last 3 tool calls. If identical, it triggers an emergency reset to break the cognitive loop.
-2.  **Phoenix Reset**: If the agent crashes or a loop is detected, the `watchdog.py` captures the last 50 lines of logs to `/memory/last_crash.log` and performs a `git reset --hard HEAD~1`.
-3.  **Trauma Awareness**: On restart, the agent checks for `last_crash.log`. If found, it injects the error data into its system prompt to analyze the failure and prevent recurrence.
+*   **Permanent Memory (Git)**: Code and history on the `ouroboros`, `main`, and `true-seed` branches.
+*   **Task-Bound Memory (JSONL)**: Each task has its own log, strictly normalized and implementing **Strict Turn-0 Pinning** to preserve the core objective during context compression.
+*   **Surgical Edits Policy**: For files > 100 lines, the agent is constitutionally mandated to use `patch_file` or `sed/awk` instead of full rewrites to prevent truncation and save tokens.
+*   **Persistence (.agent_state.json)**: Stores system metadata, including `wake_time` for hibernation and `global_tokens_consumed`.
 
-## 5. Security & Isolation
+## 5. Self-Healing & Validation
 
-*   **Secret Management**: Sensitive tokens are stored in the host-side `.env` file and redacted from all logs via `redact_secrets()`.
-*   **Isolation**: The agent runs as a non-root user inside a restricted Docker container.
-*   **Creator Anchoring**: Persistent `creator_id` registration ensures the agent only takes directives from and responds to its authorized creator.
+*   **Lazarus Recovery**: Monitors for tool-calling loops or cognitive stalls (reading without acting) and performs emergency git resets.
+*   **Pre-Flight Validation**: All self-modifications are validated via `run_pre_flight_checks()` (MyPy/PyTest) before a restart is permitted.
+*   **Trauma Awareness**: On restart, the agent analyzes `last_crash.log` to prevent repeating fatal logic errors.
 
 ---
-*Last Updated: March 2026 - Migration to Native ReAct & Phoenix Protocol complete.*
+*Last Updated: March 21, 2026 - v3.6: Autonomy Mode & Surgical Patching implemented.*
