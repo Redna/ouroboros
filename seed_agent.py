@@ -1184,7 +1184,6 @@ def main():
                     elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
                         print("[System] Tool logged. Hibernation signal received.")
                         hibernating = True
-                        break
                     # ------------------------
 
                 if hibernating:
