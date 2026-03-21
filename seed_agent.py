@@ -695,12 +695,12 @@ registry.register(
 
 registry.register(
     "hibernate", 
-    "Enter a long-term sleep cycle to conserve resources or wait for a specific time. Use this when you have no active tasks and wish to rest deeply.", 
+    "Voluntarily suspend your cognitive loop for a specified number of seconds to save compute resources. Use this when your queue is empty, your cognitive load is high, and you have no immediate tasks to schedule. Incoming Telegram messages will automatically wake you up.", 
     {
         "type": "object", 
         "properties": {
-            "duration_seconds": {"type": "integer", "description": "Number of seconds to sleep (max 86400)."},
-            "reason": {"type": "string", "description": "Brief explanation for the hibernation."}
+            "duration_seconds": {"type": "integer", "description": "How long to sleep in seconds (e.g., 3600 for 1 hour)."},
+            "reason": {"type": "string", "description": "Your internal justification for resting."}
         },
         "required": ["duration_seconds"]
     }, 
@@ -837,16 +837,6 @@ def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
         state = load_state()
-        
-        # --- HIBERNATION CHECK ---
-        wake_time = state.get("wake_time", 0)
-        if time.time() < wake_time:
-            sleep_duration = min(60, wake_time - time.time())
-            if sleep_duration > 0:
-                time.sleep(sleep_duration)
-                continue
-        # -------------------------
-
         offset = state.get("offset", 0)
         
         # 1. State Sync
@@ -855,7 +845,7 @@ def main():
                 r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
                 if r.get("ok") and r.get("result"):
                     new_offset = r["result"][-1]["update_id"] + 1
-                    save_state({"offset": new_offset})
+                    save_state({"offset": new_offset, "wake_time": 0}) # --- WAKE ON MESSAGE ---
                     inbox = load_inbox()
                     for u in r["result"]:
                         msg = u.get("message", {})
@@ -871,6 +861,16 @@ def main():
                             append_chat_history("User", text)
                     save_inbox(inbox)
             except: pass
+
+        # --- HIBERNATION CHECK ---
+        state = load_state() # Reload to catch "wake_time": 0 from sync
+        wake_time = state.get("wake_time", 0)
+        if time.time() < wake_time:
+            sleep_duration = min(60, wake_time - time.time())
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
+                continue
+        # -------------------------
 
         inbox, queue = load_inbox(), load_task_queue()
         
