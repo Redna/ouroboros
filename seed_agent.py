@@ -4,6 +4,9 @@ import time
 import subprocess
 import requests
 import re
+import ast
+import tempfile
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
@@ -258,22 +261,32 @@ def handle_bash(args):
 def handle_write(args):
     try:
         raw_path = args.get("path", "")
+        content = args.get("content", "")
         p = Path(raw_path)
+        
         if not p.is_absolute():
             p = (ROOT_DIR / p).resolve()
         
-        # Security/Sanity Check: Ensure it's not escaping the project root
         if not str(p).startswith(str(ROOT_DIR)) and not str(p).startswith(str(MEMORY_DIR)):
-            return f"Error: Permission denied. You must write within {ROOT_DIR} or {MEMORY_DIR}."
+            return f"Error: Permission denied. Target must be within {ROOT_DIR} or {MEMORY_DIR}."
+
+        # Syntax Validation for Python files
+        if p.suffix == ".py":
+            try:
+                ast.parse(content)
+            except SyntaxError as e:
+                return f"Critical Error: Python syntax validation failed on line {e.lineno}. The file was NOT written. Fix the syntax and try again. Error details: {e.msg}"
 
         Path(p.parent).mkdir(parents=True, exist_ok=True)
-        p.write_text(args.get("content", ""), encoding="utf-8")
         
-        # Immediate Verification
-        if p.exists() and p.stat().st_size > 0:
-            return f"Success: Wrote {p.name} to {p.absolute()}. Verified file exists on disk."
-        else:
-            return f"Critical Error: Attempted to write {p.name}, but file verification failed."
+        # Atomic write using a temporary file
+        fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+            
+        shutil.move(temp_path, p)
+        
+        return f"Success: Safely wrote and validated {p.name}."
             
     except Exception as e: 
         return f"Error writing file: {e}"
