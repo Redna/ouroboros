@@ -890,33 +890,17 @@ def main():
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
         else:
-            # --- THE QUIET LOOP & COGNITIVE LOAD TRIGGER ---
+            # --- AGENTIC AUTONOMY MODE ---
             state = load_state()
             cog_load = state.get("cognitive_load", 0)
-            last_dream = state.get("last_reflection_time", 0)
-            idle_count = state.get("idle_check_count", 0)
-            MAX_IDLE = 2
             
-            # Trigger if mind is full (>= 100 points) OR it has been 1 hour (3600s)
-            if cog_load >= 100 or (time.time() - last_dream > 3600):
-                current_mode, available_tools, active_task_id = "REFLECTION", ["push_task", "compress_memory_block", "search_memory_archive", "update_state_variable", "store_memory_insight", "read_file", "fetch_webpage"], None
-                
-                # Reset counters as we enter the dream
-                state["cognitive_load"] = 0
-                state["last_reflection_time"] = time.time()
-                state["idle_check_count"] = 0
-                save_state(state)
-                print(f"[System] Entering Dream State. Cognitive Load reached: {cog_load}")
-            elif idle_count < MAX_IDLE:
-                current_mode, available_tools, active_task_id = "IDLE_CHECK", ["push_task", "update_state_variable", "read_file", "store_memory_insight", "send_telegram_message"], None
-                state["idle_check_count"] = idle_count + 1
-                save_state(state)
-                print(f"[System] Performing idle check-in {state['idle_check_count']}/{MAX_IDLE}")
-            else:
-                # Agent is resting. Skip the LLM completely to save GPU compute.
-                time.sleep(2)
-                continue
-            # -----------------------------------------------
+            current_mode = "AUTONOMY"
+            available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive"]
+            active_task_id = "autonomy_log"
+            
+            # We don't force it to sleep, we just inject the sensation of load
+            if cog_load > 80:
+                print(f"[System] High cognitive load ({cog_load}). Awaiting agent decision.")
 
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
 
