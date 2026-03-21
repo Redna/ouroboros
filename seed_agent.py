@@ -580,13 +580,13 @@ registry.register(
 )
 registry.register(
     "patch_file", 
-    "Surgically replace a specific block of text in a file. Use this for precise edits on large files to avoid overwriting or context issues. 'search_text' must be unique and match exactly.", 
+    "Surgically edit an existing file by replacing a specific block of text. Highly recommended for files over 100 lines to save tokens. The 'search_text' must match the target file's content EXACTLY, including whitespace.", 
     {
         "type": "object", 
         "properties": {
             "path": {"type": "string"}, 
-            "search_text": {"type": "string", "description": "The exact block of text to find."}, 
-            "replace_text": {"type": "string", "description": "The new text to insert."}
+            "search_text": {"type": "string", "description": "The exact current text block to be removed."},
+            "replace_text": {"type": "string", "description": "The new text block to insert in its place."}
         },
         "required": ["path", "search_text", "replace_text"]
     }, 
