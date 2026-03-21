@@ -154,12 +154,20 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
     
-    # Rule 1.5: Turn-0 Pinning (Prevent Identity Amnesia)
-    # Always keep the initial task directive, then slice the most recent history.
-    if len(raw_messages) > 60:
-        pinned_instruction = raw_messages[:1]  # The original task prompt
-        recent_history = raw_messages[-59:]    # The sliding window
-        raw_messages = pinned_instruction + recent_history
+    # Rule 1.5: Strict Turn-0 Pinning (Prevent Identity Amnesia)
+    if len(raw_messages) > 40:
+        pinned_instruction = []
+        recent_history = raw_messages[-38:]
+        
+        # Extract the absolute first user message (the core task)
+        for msg in raw_messages:
+            if msg.get("role") == "user" and not pinned_instruction:
+                pinned_instruction.append(msg)
+                break
+                
+        raw_messages = pinned_instruction + [
+            {"role": "user", "content": "[SYSTEM NOTE: Intermediate history compressed to save context. Focus on your original objective above and the recent steps below.]"}
+        ] + recent_history
     
     # If the slicing somehow corrupted the start, fix it
     while raw_messages and raw_messages[0].get("role") != "user":
