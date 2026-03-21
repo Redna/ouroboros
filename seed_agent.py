@@ -918,8 +918,13 @@ def main():
         # TRIAGE always takes precedence over EXECUTION or REFLECTION
         if len(inbox) > 0:
             current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "clear_inbox"], "triage"
+            # Clear transient autonomy thoughts when real work arrives
+            if (MEMORY_DIR / "task_log_autonomy_log.jsonl").exists():
+                (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink()
         elif len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
+            if (MEMORY_DIR / "task_log_autonomy_log.jsonl").exists():
+                (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink()
         else:
             # --- AGENTIC AUTONOMY MODE ---
             state = load_state()
@@ -1097,7 +1102,7 @@ def main():
                         # 4. Skip the rest of this cycle to allow the state machine to pivot
                         continue
             # --------------------------------
-            if current_mode in ["EXECUTION", "TRIAGE"]:
+            if current_mode in ["EXECUTION", "TRIAGE", "AUTONOMY"]:
                 assistant_msg = message.model_dump(exclude_unset=True)
                 append_task_message(active_task_id, assistant_msg)
             if message.content:
@@ -1155,7 +1160,7 @@ def main():
                     save_state(state)
                     
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
-                    if current_mode in ["EXECUTION", "TRIAGE"]:
+                    if current_mode in ["EXECUTION", "TRIAGE", "AUTONOMY"]:
                         tool_result_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)}
                         append_task_message(active_task_id, tool_result_msg)
 
