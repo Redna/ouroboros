@@ -995,6 +995,14 @@ def main():
                 if api_messages[i]["role"] == "user":
                     api_messages[i]["content"] += token_sensation
                     break
+
+        elif current_mode == "AUTONOMY":
+            # Inject dynamic cognitive load into the latest message
+            autonomy_sensation = f"\n\n[SYSTEM SENSATION]\nYour current cognitive load is {state.get('cognitive_load', 0)}. You are free to act or hibernate."
+            for i in range(len(api_messages)-1, -1, -1):
+                if api_messages[i]["role"] == "user":
+                    api_messages[i]["content"] += autonomy_sensation
+                    break
         # ---------------------------------
         # 3. Execute Native Tool Calling
         
