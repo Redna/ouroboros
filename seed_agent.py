@@ -68,6 +68,30 @@ def check_for_trauma() -> str:
         except: pass
     return ""
 
+def run_pre_flight_checks() -> Tuple[bool, str]:
+    """Runs mypy and pytest. Returns (Success, Output String)."""
+    print("[System] Running pre-flight validation checks...")
+    
+    # Run type checking
+    mypy_process = subprocess.run(
+        "python3 -m mypy seed_agent.py", 
+        shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True
+    )
+    
+    # Run unit tests
+    pytest_process = subprocess.run(
+        "python3 -m pytest tests/", 
+        shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True
+    )
+    
+    success = mypy_process.returncode == 0 and pytest_process.returncode == 0
+    
+    report = "=== Pre-Flight Validation Report ===\n"
+    report += f"MyPy Exit Code: {mypy_process.returncode}\n{mypy_process.stdout}\n{mypy_process.stderr}\n"
+    report += f"PyTest Exit Code: {pytest_process.returncode}\n{pytest_process.stdout}\n{pytest_process.stderr}\n"
+    
+    return success, report
+
 def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = 4) -> List[Dict[str, Any]]:
     """
     Retains the agent's reasoning but strips massive tool outputs from older turns 
