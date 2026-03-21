@@ -217,7 +217,12 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
             # Handle dicts vs OpenAI objects safely
             call_id = getattr(tool_call, 'id', None) or (tool_call.get("id") if isinstance(tool_call, dict) else None)
             safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
-            func_name = getattr(tool_call.function, 'name', None) or (tool_call["function"]["name"] if isinstance(tool_call, dict) else None)
+            
+            # SAFE ACCESS TO FUNCTION NAME
+            if isinstance(tool_call, dict):
+                func_name = tool_call.get("function", {}).get("name", "unknown")
+            else:
+                func_name = getattr(tool_call.function, 'name', "unknown")
             
             synthetic_tool_msg = {
                 "role": "tool",
