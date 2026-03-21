@@ -919,21 +919,10 @@ def main():
             # -----------------------------------------------------
             
             api_messages += load_task_messages(active_task_id, triage_description)
-        elif current_mode == "REFLECTION":
-            api_messages.append({
-                "role": "user", 
-                "content": """You are entering a periodic Reflection (Dream) State. Your cognitive load has triggered memory consolidation.
-1. Review your Recent Conversation (Telegram). If there are profound identity revelations, major architectural breakthroughs, or vital creator directives, use `store_memory_insight` to permanently archive them.
-2. Review your Working Memory. Use `update_state_variable` to clean up outdated variables or pass new insights to your future self.
-3. Verify your recent actions against your Constitution (`BIBLE.md`).
-4. Assess your architecture. If you identify a critical optimization, use `push_task` to queue it.
-
-Action required: Consolidate your state using the appropriate tools. If your mind is stable and no further action is needed, output a tool call updating the working state with your dream's conclusion."""
-            })
-        elif current_mode == "IDLE_CHECK":
+        elif current_mode == "AUTONOMY":
             api_messages.append({
                 "role": "user",
-                "content": "Your queue and inbox are empty. This is a brief idle check-in. \n1. Review your Recent Biography and Working Memory. \n2. If you have just completed a task or a conversation, you MUST conclude by sending a brief summary of your satisfaction/progress to your creator via `send_telegram_message`.\n3. After messaging (or if you truly have nothing to say), use `update_state_variable` to set `last_idle_check` with your current timestamp and conclusion. This will signal your entry into rest mode."
+                "content": f"Your task queue and inbox are empty. You are in AUTONOMY mode. Your current cognitive load is {load_state().get('cognitive_load', 0)}.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
             })
 
         # --- TOKEN SENSATION INJECTION ---
@@ -968,7 +957,7 @@ Action required: Consolidate your state using the appropriate tools. If your min
         if current_mode == "TRIAGE":
             # System 1: Fast, deterministic (Instruct Mode, No Thinking)
             sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.7, 0.8, 1.5, False
-        elif current_mode == "REFLECTION":
+        elif current_mode == "AUTONOMY":
             # System 2: Deep Reasoning & Exploration (Thinking enabled)
             sys_temp, sys_top_p, sys_pres_pen, sys_think = 1.0, 0.95, 1.5, True
         else: # EXECUTION
@@ -1084,6 +1073,7 @@ Action required: Consolidate your state using the appropriate tools. If your min
                 print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
                 triage_action_taken = False
+                hibernating = False
                 
                 for tool_call in message.tool_calls:
                     name, raw_arguments = tool_call.function.name, tool_call.function.arguments
@@ -1145,8 +1135,12 @@ Action required: Consolidate your state using the appropriate tools. If your min
                         os._exit(0)
                     elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
                         print("[System] Tool logged. Hibernation signal received.")
+                        hibernating = True
                         break
                     # ------------------------
+
+                if hibernating:
+                    continue
 
                 if current_mode == "TRIAGE" and triage_action_taken:
                     if not any(tc.function.name == "clear_inbox" for tc in message.tool_calls):
