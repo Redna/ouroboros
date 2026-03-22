@@ -724,23 +724,16 @@ def main():
 
         # 2. Wake/Sleep Interrupt Logic
         queue = load_task_queue()
-        inbox = [] # Inbox is legacy after contextual interrupt refactor
         state = load_state()
         
         wake_time = state.get("wake_time", 0)
         if time.time() < wake_time:
-            if len(inbox) > 0:
-                print("[System] External stimulus detected. Breaking hibernation.")
-                state["wake_time"] = 0
-                save_state(state)
-            else:
-                # Agent is voluntarily sleeping, skip the LLM cycle
-                time.sleep(5)
-                continue
+            # Agent is voluntarily sleeping, skip the LLM cycle
+            time.sleep(5)
+            continue
 
         # Reset idle counter whenever there is active work
-        if len(inbox) > 0 or len(queue) > 0:
-            state = load_state()
+        if len(queue) > 0:
             if state.get("idle_check_count", 0) != 0:
                 save_state({"idle_check_count": 0})
 
