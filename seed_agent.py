@@ -628,6 +628,7 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 """
 
 def main():
+    global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
         state, queue = load_state(), load_task_queue()
@@ -724,10 +725,30 @@ def main():
             if message.content: print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
                 hibernating = False
+                
+                # Check for loop BEFORE processing calls to prevent dangling responses
+                loop_detected = False
+                if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
+                    loop_detected = "exact tool loop"
+                elif len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
+                    loop_detected = "cognitive stall"
+
+                if loop_detected:
+                    # Heal the API state by responding to ALL tool calls in this turn with a failure
+                    for tc in message.tool_calls:
+                        safe_id = tc.id if (tc.id and len(tc.id) >= 9) else f"call_{int(time.time())}"
+                        append_task_message(active_task_id, {
+                            "role": "tool", 
+                            "tool_call_id": safe_id, 
+                            "name": tc.function.name, 
+                            "content": f"ABORTED: {loop_detected}."
+                        })
+                    lazarus_recovery(active_task_id, reason=loop_detected)
+                    continue # Skip to next while-loop cycle
+
                 for tool_call in message.tool_calls:
                     name, raw_args = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
-                    global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
                     tool_signature = f"{name}:{raw_args}"
                     TOOL_CALL_HISTORY.append(tool_signature)
                     intent_signature = name
@@ -738,13 +759,6 @@ def main():
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY.pop(0)
 
-                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
-                        lazarus_recovery(active_task_id, reason="exact tool loop")
-                        break
-                        
-                    if len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
-                        lazarus_recovery(active_task_id, reason="cognitive stall (reading without acting)")
-                        break
                     try: 
                         args = json.loads(raw_args)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
