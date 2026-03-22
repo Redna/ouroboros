@@ -649,7 +649,8 @@ def main():
                                 state["creator_id"] = cid
                                 save_state(state)
                             append_chat_history("User", text)
-                            tid = f"task_msg_{int(time.time())}"
+                            # Use Telegram's unique update_id to prevent collision
+                            tid = f"task_msg_{u.get('update_id', int(time.time()))}"
                             queue.append({"task_id": tid, "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: Acknowledge the message and then call `mark_task_complete` to resume.", "priority": 999, "turn_count": 0})
                             interrupt_triggered = True
                     if interrupt_triggered:
