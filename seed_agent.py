@@ -224,7 +224,7 @@ def handle_bash(args):
     try:
         r = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
         out = redact_secrets(r.stdout + r.stderr)
-        MAX_CHARS = 40000
+        MAX_CHARS = 20000
         if out and len(out) > MAX_CHARS:
             warning = "\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
             return out[:MAX_CHARS] + warning
