@@ -142,7 +142,7 @@ def load_state() -> Dict[str, Any]:
     if STATE_PATH.exists():
         try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
         except: pass
-    return {"offset": 0, "creator_id": None, "idle_check_count": 0}
+    return {"offset": 0, "creator_id": None}
 
 def save_state(updates: Dict[str, Any]) -> None:
     state = load_state()
@@ -363,15 +363,6 @@ def handle_mark_task_complete(args):
         append_task_message(parent_id, msg)
     q = [t for t in q if t.get("task_id") != task_id]
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
-    # --- FIX: Clear idle check memory if queue is now empty to prevent TRIAGE/AUTONOMY oscillation ---
-    if not q:
-        if WORKING_STATE_PATH.exists():
-            try:
-                ws = json.loads(WORKING_STATE_PATH.read_text(encoding="utf-8"))
-                if "last_idle_check" in ws:
-                    del ws["last_idle_check"]
-                    WORKING_STATE_PATH.write_text(json.dumps(ws, indent=2), encoding="utf-8")
-            except: pass
     state = load_state()
     if "sys_temp" in state: del state["sys_temp"]
     if "sys_think" in state: del state["sys_think"]
@@ -604,9 +595,7 @@ def main():
         if time.time() < state.get("wake_time", 0):
             time.sleep(5)
             continue
-        if len(queue) > 0 and state.get("idle_check_count", 0) != 0:
-            state["idle_check_count"] = 0
-            save_state(state)
+
         if len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
             (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink(missing_ok=True)
