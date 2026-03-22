@@ -411,17 +411,42 @@ def handle_fetch_webpage(args):
     if not url: return "Error: No URL provided."
     try:
         import trafilatura
-        print(f"[System] Fetching clean markdown locally for: {url}")
+        print(f"[System] Downloading clean markdown locally for: {url}")
+        
+        # Fetch the raw HTML
         downloaded = trafilatura.fetch_url(url)
-        if not downloaded: return f"Error: Could not download {url}."
-        text = trafilatura.extract(downloaded, output_format="markdown", include_links=True, include_formatting=True)
-        if not text: return "Error: Page fetched, but no readable article text was found."
-        MAX_CHARS = 40000
-        if len(text) > MAX_CHARS:
-            return text[:MAX_CHARS] + f"\n\n[SYSTEM WARNING: Webpage too large. Truncated to {MAX_CHARS} characters.]"
-        return text
-    except ImportError: return "SYSTEM ERROR: 'trafilatura' library not installed."
-    except Exception as e: return f"Failed to fetch webpage locally: {e}"
+        if not downloaded:
+            return f"Error: Could not download {url}. The site might be blocking crawlers or requires JavaScript."
+            
+        # Extract core content as Markdown
+        text = trafilatura.extract(
+            downloaded, 
+            output_format="markdown", 
+            include_links=True,
+            include_formatting=True
+        )
+        
+        if not text:
+            return "Error: Page fetched, but no readable article text was found."
+            
+        # Create web cache directory
+        cache_dir = MEMORY_DIR / "web_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create a safe, unique filename
+        safe_name = re.sub(r'[^a-zA-Z0-9]', '_', url.split('//')[-1])[:50]
+        file_name = f"{int(time.time())}_{safe_name}.md"
+        file_path = cache_dir / file_name
+        
+        # Save to disk
+        file_path.write_text(text, encoding="utf-8")
+        line_count = len(text.splitlines())
+        
+        return f"Success: Webpage downloaded and converted to Markdown.\nSaved to: {file_path}\nTotal Lines: {line_count}\n\nAction Required: Use the 'read_file' tool with 'start_line' and 'end_line' to read this file progressively (e.g., 500 lines at a time)."
+    except ImportError:
+        return "SYSTEM ERROR: 'trafilatura' library not installed. Please run 'pip install trafilatura'."
+    except Exception as e:
+        return f"Failed to fetch webpage locally: {e}"
 
 def handle_hibernate(args):
     try:
