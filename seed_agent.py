@@ -722,8 +722,14 @@ def main():
                     TOOL_INTENT_HISTORY.append(intent_signature)
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY.pop(0)
-                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1: lazarus_recovery(active_task_id, "exact tool loop"); break
-                    if len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1: lazarus_recovery(active_task_id, "cognitive stall"); break
+
+                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
+                        lazarus_recovery(active_task_id, reason="exact tool loop")
+                        break
+                        
+                    if len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
+                        lazarus_recovery(active_task_id, reason="cognitive stall (reading without acting)")
+                        break
                     try: 
                         args = json.loads(raw_args)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
