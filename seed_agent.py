@@ -459,6 +459,12 @@ def handle_mark_task_complete(args):
             WORKING_STATE_PATH.write_text(json.dumps(ws, indent=2), encoding="utf-8")
     # ----------------------------------------------------------
 
+    # Clean up state variables in handle_mark_task_complete
+    state = load_state()
+    if "sys_temp" in state: del state["sys_temp"]
+    if "sys_think" in state: del state["sys_think"]
+    save_state(state)
+    
     add_cognitive_load(30)
     return f"Task {task_id} successfully closed. Queue updated."
 
