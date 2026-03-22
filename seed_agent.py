@@ -517,6 +517,25 @@ def handle_fetch_webpage(args):
     except Exception as e:
         return f"Failed to fetch webpage locally: {e}"
 
+def handle_set_cognitive_parameters(args):
+    try:
+        temp = args.get("temperature")
+        think = args.get("enable_thinking")
+        
+        state = load_state()
+        updates = []
+        if temp is not None:
+            state["sys_temp"] = float(temp)
+            updates.append(f"Temperature={temp}")
+        if think is not None:
+            state["sys_think"] = bool(think)
+            updates.append(f"Thinking={think}")
+            
+        save_state(state)
+        return "Cognitive parameters updated: " + ", ".join(updates)
+    except Exception as e:
+        return f"Error setting cognitive parameters: {e}"
+
 def handle_hibernate(args):
     try:
         duration = args.get("duration_seconds", 300) # Default to 5 minutes
@@ -827,12 +846,12 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
-        # Load state and queue EXACTLY ONCE per loop
+        # 1. Load State & Queue EXACTLY ONCE (Eliminates I/O Bloat)
         state = load_state()
         queue = load_task_queue()
         offset = state.get("offset", 0)
         
-        # 1. State Sync & Priority Interrupts
+        # 2. State Sync & Priority Interrupts
         if TELEGRAM_BOT_TOKEN:
             try:
                 r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
@@ -867,16 +886,16 @@ def main():
                     
                     if interrupt_triggered:
                         queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
-                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2))
+                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             except: pass
 
-        # 2. Wake/Sleep Interrupt Logic
+        # 3. Clean Wake/Sleep Interrupt Logic (No Inbox references)
         wake_time = state.get("wake_time", 0)
         if time.time() < wake_time:
             time.sleep(5)
             continue
 
-        # Reset idle counter whenever there is active work
+        # 4. Reset idle counter using in-memory state
         if len(queue) > 0 and state.get("idle_check_count", 0) != 0:
             state["idle_check_count"] = 0
             save_state(state)
