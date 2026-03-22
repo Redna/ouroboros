@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import subprocess
@@ -669,7 +670,6 @@ def main():
         elif current_mode == "AUTONOMY":
             api_messages += load_task_messages(active_task_id, "Your task queue is empty. You are in AUTONOMY mode.")
 
-        state = load_state()
         last_context = state.get("last_context_size", 0)
 
         if current_mode == "EXECUTION" and len(queue) > 0:
