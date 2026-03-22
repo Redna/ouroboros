@@ -813,6 +813,10 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered. Reply to the first incoming message to register.\n"
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     
+    # Retrieve current cognitive parameters
+    current_temp = state.get("sys_temp", 0.8) # Default 0.8
+    current_think = state.get("sys_think", True) # Default True
+    
     state_info = ""
     if queue:
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue])
@@ -841,6 +845,8 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 ## SYSTEM STATE
 - Current Time: {current_time}
 - Cognitive Mode: {mode}
+- Temperature: {current_temp}
+- Thinking Enabled: {current_think}
 {creator_info}{state_info}{trauma}
 
 ## MEMORY
