@@ -145,15 +145,15 @@ def load_state() -> Dict[str, Any]:
         except: pass
     return {"offset": 0, "creator_id": None, "cognitive_load": 0}
 
-def save_state(updates: Dict[str, Any]) -> None:
-    state = load_state()
-    state.update(updates)
-    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+def save_state(state_dict: Dict[str, Any]) -> None:
+    # Pure overwrite. This allows keys to be deleted safely.
+    STATE_PATH.write_text(json.dumps(state_dict, indent=2), encoding="utf-8")
 
 def add_cognitive_load(amount: int) -> None:
-    state = load_state()
-    state["cognitive_load"] = state.get("cognitive_load", 0) + amount
-    save_state(state)
+    # Always load fresh before modifying
+    current_state = load_state()
+    current_state["cognitive_load"] = current_state.get("cognitive_load", 0) + amount
+    save_state(current_state)
 
 def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
