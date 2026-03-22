@@ -520,7 +520,12 @@ registry.register("mark_task_complete", "Close active task.", {"type": "object",
 registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state)
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters)
 registry.register("web_search", "Local SearXNG search.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search)
-registry.register("fetch_webpage", "Local Markdown extraction.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_fetch_webpage)
+registry.register(
+    "fetch_webpage", 
+    "Download a URL, strip out the web bloat, and save it as pristine Markdown to your local /memory/web_cache/ directory. It returns the file path. You MUST follow up by using the 'read_file' tool to actually read the downloaded file.", 
+    {"type": "object", "properties": {"url": {"type": "string", "description": "The full HTTP/HTTPS URL to download."}}, "required": ["url"]}, 
+    handle_fetch_webpage
+)
 registry.register("compress_memory_block", "Compress task logs.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory)
 registry.register("refactor_memory", "Synthesize memory files.", {"type": "object", "properties": {"target_file": {"type": "string"}, "synthesized_content": {"type": "string"}}, "required": ["target_file", "synthesized_content"]}, handle_refactor_memory)
 registry.register("search_memory_archive", "Search /memory volume.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory)
