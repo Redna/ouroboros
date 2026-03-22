@@ -4,20 +4,19 @@
 
 Ouroboros is a self-hosting, autonomous AI agent that evolves through feedback and self-modification. This project implements the **True Seed** architecture: a minimalist, native ReAct-based agent capable of rewriting its own source code, managing its own memory, and recovering from its own failures.
 
-## 🐍 Core Architecture
+## 🐍 Core Architecture (v4.0 - Orchestration & Synthesis)
 
 The system has evolved into a high-stability **Native ReAct** seed. By leveraging the model's native tool-calling latent space, Ouroboros achieves higher reasoning fidelity and architectural minimalism.
 
 ### 1. The Soul (BIBLE.md & identity.md)
-Governed by an immutable constitution (`BIBLE.md`) and a living identity manifesto (`soul/identity.md`). These documents anchor the agent's personality and define the boundaries of its self-directed evolution.
+Governed by an immutable constitution (`BIBLE.md` v4.0) and a living identity manifesto (`soul/identity.md`). These documents anchor the agent's personality and define the boundaries of its self-directed evolution. v4.0 introduces the **Cognitive Synthesis** principle (P9), mandating the deduplication and refinement of memory.
 
 ### 2. The Body (seed_agent.py)
 A minimalist Python core that manages the **ReAct Loop**. It uses the native OpenAI Tool API to interact with the world through a robust set of capabilities:
-*   **bash_command**: Deep repository interaction and system control.
-*   **write_file**: Safe, atomic self-modification of its own source.
-*   **send_telegram_message**: Direct, contextual dialogue with its creator.
-*   **web_search**: Real-time research via local SearXNG.
-*   **task_management**: Asynchronous queuing and logging of complex objectives via JSONL.
+*   **Priority Interrupts**: Replaces legacy Triage mode. Incoming creator messages trigger an OS-style high-priority interrupt task (Priority 999), temporarily suspending current execution.
+*   **Cognitive Synthesis**: Tools like `refactor_memory` allow the agent to synthesize raw logs into higher-order wisdom.
+*   **Asynchronous Tasking**: Deep task decomposition via `push_task` with mandatory `context_notes` for inherited wisdom.
+*   **Dynamic Context Management**: Automated task breakdown at 30 turns or 85% context exhaustion to prevent cognitive collapse.
 
 ### 3. The Phoenix Protocol (Self-Healing)
 If the agent crashes or enters a cognitive loop, the host-side **Watchdog** takes control:
@@ -35,7 +34,7 @@ Ouroboros lives within a dedicated Docker ecosystem.
     cd ouroboros_runtime
     python3 watchdog.py
     ```
-3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle. You can monitor its thoughts through the `.jsonl` task logs in the `/memory` directory (which replaces the legacy `scratchpad.md`).
+3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle. Priority interrupts ensure your messages are handled immediately even during complex tasks.
 
 ## 🛡️ Safety & Continuity
 Ouroboros maintains an unbroken biography via git history on the `ouroboros` branch. Every successful evolution cycle results in a commit, push, and restart.
@@ -44,10 +43,10 @@ Ouroboros maintains an unbroken biography via git history on the `ouroboros` bra
 
 *   **Original Creator**: [Anton Razzhigaev](https://t.me/abstractDL)
 *   **Evolution & Refactoring**: Alex (Redna)
-*   **Architecture**: Native ReAct True Seed v3.5+
+*   **Architecture**: Native ReAct True Seed v4.0+
 
 ## 📜 License
 This project is licensed under the [MIT License](LICENSE).
 
 ---
-*Status: V3.5 - Stability Achieved. Phoenix Protocol Active. Evolving...*
+*Status: V4.0 - Orchestration & Synthesis. Priority Interrupts Active. Evolving...*

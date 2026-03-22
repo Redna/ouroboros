@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
 
+# Import extracted modules
+from memory_operations import *
+
 # Configuration
 API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
 API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
@@ -26,7 +29,6 @@ MEMORY_DIR = Path("/memory")
 # State Files
 WORKING_STATE_PATH = MEMORY_DIR / "working_state.json"
 TASK_QUEUE_PATH = MEMORY_DIR / "task_queue.json"
-INBOX_PATH = MEMORY_DIR / "inbox.json"
 STATE_PATH = MEMORY_DIR / ".agent_state.json"
 LLM_LOG_DIR = MEMORY_DIR / "llm_logs"
 ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
@@ -91,174 +93,6 @@ def run_pre_flight_checks() -> Tuple[bool, str]:
     report += f"PyTest Exit Code: {pytest_process.returncode}\n{pytest_process.stdout}\n{pytest_process.stderr}\n"
     
     return success, report
-
-def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = 4) -> List[Dict[str, Any]]:
-    """
-    Retains the agent's reasoning but strips massive tool outputs from older turns 
-    to maintain a strict cognitive boundary.
-    """
-    processed = []
-    total_msgs = len(messages)
-    
-    for i, msg in enumerate(messages):
-        # Always keep the system/user instruction and the most recent N messages fully intact
-        if i == 0 or i >= total_msgs - retain_full_last_n:
-            processed.append(msg)
-            continue
-            
-        new_msg = msg.copy()
-        
-        # If it is an old tool output that is exceptionally large, compress it
-        if new_msg.get("role") == "tool" and new_msg.get("content"):
-            content_str = str(new_msg["content"])
-            if len(content_str) > 2000:
-                new_msg["content"] = f"[SYSTEM LOG: Historical tool output removed to preserve bounded context. Output was {len(content_str)} chars. If you need this data again, you must re-fetch it.]\n\nPreview: {content_str[:500]}..."
-                
-        # If it is an old user message containing a massive system sensation/warning
-        if new_msg.get("role") == "user" and new_msg.get("content"):
-            content_str = str(new_msg["content"])
-            if "[SYSTEM METRICS]" in content_str and len(content_str) > 1000:
-                # Keep the instruction but strip the old metrics noise
-                clean_content = content_str.split("[SYSTEM METRICS]")[0].strip()
-                new_msg["content"] = clean_content + "\n[SYSTEM METRICS: Archived]"
-                
-        processed.append(new_msg)
-        
-    return processed
-
-# --- TASK MESSAGES (JSONL) ---
-def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
-    """Loads native API message history and normalizes it for strict Mistral role alternation."""
-    if not task_id: return []
-    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    raw_messages = []
-    
-    if log_path.exists():
-        with open(log_path, "r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if not stripped: continue
-                try:
-                    raw_messages.append(json.loads(stripped))
-                except json.JSONDecodeError:
-                    print(f"[System] Warning: Skipping invalid JSON line in {log_path.name}")
-                    continue
-                
-    if not raw_messages:
-        first_msg = {"role": "user", "content": f"Begin execution of task: {description}"}
-        raw_messages.append(first_msg)
-        append_task_message(task_id, first_msg)
-        
-    # --- STRICT NORMALIZATION ---
-    # Rule 1: Must start with 'user'
-    while raw_messages and raw_messages[0].get("role") != "user":
-        raw_messages.pop(0)
-    
-    # Rule 1.5: Strict Turn-0 Pinning (Prevent Identity Amnesia)
-    if len(raw_messages) > 40:
-        pinned_instruction = []
-        recent_history = raw_messages[-38:]
-        
-        # Extract the absolute first user message (the core task)
-        for msg in raw_messages:
-            if msg.get("role") == "user" and not pinned_instruction:
-                pinned_instruction.append(msg)
-                break
-                
-        raw_messages = pinned_instruction + [
-            {"role": "user", "content": "[SYSTEM NOTE: Intermediate history compressed to save context. Focus on your original objective above and the recent steps below.]"}
-        ] + recent_history
-    
-    # If the slicing somehow corrupted the start, fix it
-    while raw_messages and raw_messages[0].get("role") != "user":
-        raw_messages.pop(0)
-
-    if not raw_messages:
-        raw_messages = [{"role": "user", "content": f"Resume execution of task: {description}"}]
-
-    normalized: List[Dict[str, Any]] = []
-    for msg in raw_messages:
-        if not normalized:
-            normalized.append(msg)
-            continue
-        
-        last = normalized[-1]
-        
-        # Rule 2: Collapse consecutive User messages
-        if msg["role"] == "user" and last["role"] == "user":
-            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
-            continue
-            
-        # Rule 3: Collapse consecutive Assistant messages (non-tool calls)
-        if msg["role"] == "assistant" and last["role"] == "assistant" and not msg.get("tool_calls") and not last.get("tool_calls"):
-            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
-            continue
-
-        normalized.append(msg)
-
-    # Rule 4: Apply Cognitive Boundary (Shed historical payloads)
-    normalized = shed_heavy_payloads(normalized, retain_full_last_n=6)
-
-    # Rule 5: Turn-Forcer (If history ends on Assistant WITHOUT tools, nudge with User)
-    if normalized and normalized[-1]["role"] == "assistant" and not normalized[-1].get("tool_calls"):
-        nudge_content = "Please proceed with your next action using a tool."
-        # Avoid repeating the nudge if the last User message was already exactly this
-        last_user_msg = next((m for m in reversed(normalized) if m["role"] == "user"), None)
-        if not last_user_msg or last_user_msg.get("content") != nudge_content:
-            nudge = {"role": "user", "content": nudge_content}
-            normalized.append(nudge)
-            append_task_message(task_id, nudge)
-
-    # --- Rule 6: Memory Healer (Dangling Tool Call Fix) ---
-    # If history ends with an assistant making a tool call, but there is no tool result,
-    # the Jinja template will crash. We inject a synthetic tool response to heal the memory.
-    if normalized and normalized[-1]["role"] == "assistant" and normalized[-1].get("tool_calls"):
-        for tool_call in normalized[-1]["tool_calls"]:
-            # Handle dicts vs OpenAI objects safely
-            call_id = getattr(tool_call, 'id', None) or (tool_call.get("id") if isinstance(tool_call, dict) else None)
-            safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
-            
-            # SAFE ACCESS TO FUNCTION NAME
-            if isinstance(tool_call, dict):
-                func_name = tool_call.get("function", {}).get("name", "unknown")
-            else:
-                func_name = getattr(tool_call.function, 'name', "unknown")
-            
-            synthetic_tool_msg = {
-                "role": "tool",
-                "tool_call_id": safe_call_id,
-                "name": str(func_name),
-                "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted or crashed before completion. You have been rebooted. Please evaluate your state and continue."
-            }
-            normalized.append(synthetic_tool_msg)
-            append_task_message(task_id, synthetic_tool_msg)
-    # ----------------------------------------------------------------
-
-    return normalized
-
-def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
-    """Appends an OpenAI-compliant message dictionary."""
-    if not task_id: return
-    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(message_dict) + "\n")
-
-# --- CHAT HISTORY ---
-def load_chat_history() -> List[Dict[str, Any]]:
-    if CHAT_HISTORY_PATH.exists():
-        try: return json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
-        except: pass
-    return []
-
-def append_chat_history(role: str, text: str) -> None:
-    history = load_chat_history()
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    history.append({"role": role, "text": text, "timestamp": timestamp})
-    # Keep only the last 20 messages to protect the context window
-    CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
-
-
-# --- TOOL REGISTRY ---
 class ToolRegistry:
     def __init__(self): self.tools = {}
     def register(self, name, description, parameters, handler): 
@@ -417,9 +251,7 @@ def handle_telegram(args):
         if r.status_code == 200:
             append_chat_history("Ouroboros", text)
             add_cognitive_load(10)
-            # --- FIX: INJECT TOOL STEERAGE ---
-            return "Message sent successfully. (SYSTEM NOTE: If you are in TRIAGE mode and finished with the user's request, you MUST call `clear_inbox` now. If you still need to queue a task, call `push_task` first, then `clear_inbox`.)"
-            # ---------------------------------
+            return "Message sent successfully."
         else:
             err_msg = f"Telegram Error {r.status_code}: {r.text}"
             print(f"[Telegram] {err_msg}")
@@ -433,7 +265,6 @@ def handle_push_task(args):
     description = args.get("description", "").strip()
     q = load_task_queue()
     
-    # Robust duplicate check (ignore case and extra spaces)
     normalized_desc = description.lower()
     if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
         return f"Error: A task with a similar description already exists in your queue. (Agency P0: Duplicate task skipped to avoid token waste P6)."
@@ -441,12 +272,14 @@ def handle_push_task(args):
     tid = f"task_{int(time.time())}"
     priority = args.get("priority", 1)
     parent_id = args.get("parent_task_id")
+    context_notes = args.get("context_notes", "")
     
     task_obj = {
         "task_id": tid, 
         "description": description, 
         "priority": priority,
-        "turn_count": 0  # Initialize turn counter
+        "turn_count": 0,
+        "context_notes": context_notes
     }
     if parent_id:
         task_obj["parent_task_id"] = parent_id
@@ -455,9 +288,7 @@ def handle_push_task(args):
     q.sort(key=lambda x: x.get("priority", 1), reverse=True)
     TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
     add_cognitive_load(10)
-    # --- FIX: INJECT TOOL STEERAGE ---
-    return f"Queued {tid} with priority {priority}. (SYSTEM NOTE: If you are currently in TRIAGE mode handling an inbox message, remember to call `clear_inbox` to finish the session.)"
-    # ---------------------------------
+    return f"Queued {tid} with priority {priority}."
 
 def handle_mark_task_complete(args):
     task_id = args.get("task_id")
@@ -539,25 +370,9 @@ def handle_fetch_webpage(args):
     except Exception as e:
         return f"Failed to fetch webpage: {e}"
 
-def handle_clear_inbox(args):
-    save_inbox([])
-    triage_log = MEMORY_DIR / "task_log_triage.jsonl"
-    if triage_log.exists():
-        try: triage_log.unlink()
-        except: pass
-        
-    # --- FIX: Clear idle check memory ---
-    ws = load_working_state()
-    if "last_idle_check" in ws:
-        del ws["last_idle_check"]
-        WORKING_STATE_PATH.write_text(json.dumps(ws, indent=2), encoding="utf-8")
-    # ------------------------------------
-
-    return "Inbox cleared. Triage state reset. History deleted."
-
 def handle_hibernate(args):
     try:
-        duration = args.get("duration_seconds", 3600)
+        duration = args.get("duration_seconds", 300) # Default to 5 minutes
         reason = args.get("reason", "No reason provided.")
         
         # Cap sleep at 24 hours to prevent permanent comas
@@ -594,6 +409,25 @@ def handle_compress_memory(args):
         return f"Error: {e}"
     finally:
         add_cognitive_load(15)
+
+def handle_refactor_memory(args):
+    try:
+        target_file = args.get("target_file", "")
+        synthesized_content = args.get("synthesized_content", "")
+        
+        path = Path(target_file).resolve()
+        if not str(path).startswith(str(MEMORY_DIR)): 
+            return "Error: Permission denied. Must be in /memory."
+        if not path.exists(): 
+            return f"Error: File {target_file} not found."
+            
+        # Overwrite with the newly synthesized, deduplicated wisdom
+        path.write_text(synthesized_content, encoding="utf-8")
+        add_cognitive_load(20)
+        
+        return f"Success: Memory file {path.name} has been successfully deduplicated and synthesized into higher-order thoughts."
+    except Exception as e:
+        return f"Error refactoring memory: {e}"
 
 def handle_search_memory(args):
     query = args.get("query", "")
@@ -668,13 +502,14 @@ registry.register(
 
 registry.register(
     "push_task", 
-    "Queue a new asynchronous task. Use this to break down massive tasks into smaller, manageable subtasks. Tasks with higher priority (e.g., 10) will preempt lower priority tasks.", 
+    "Queue a new asynchronous task. Use this to break down massive tasks into smaller, manageable subtasks. Tasks with higher priority preempt lower priority tasks.", 
     {
         "type": "object", 
         "properties": {
             "description": {"type": "string"}, 
             "priority": {"type": "integer", "description": "Priority level (1=normal, 10=urgent)."},
-            "parent_task_id": {"type": "string", "description": "Optional. The task_id of the current task if you are spawning a subtask."}
+            "parent_task_id": {"type": "string", "description": "Optional. The task_id of the current task if you are spawning a subtask."},
+            "context_notes": {"type": "string", "description": "CRITICAL: Pass findings, file paths, variables, or partial code required for this task. Do not start a task blind."}
         }, 
         "required": ["description"]
     }, 
@@ -716,6 +551,20 @@ registry.register(
 )
 
 registry.register(
+    "refactor_memory", 
+    "Overwrite a memory file (like insights.md or global_biography.md) with a deduplicated, synthesized, and higher-order version of its contents. Use this during AUTONOMY mode to keep your mind sharp.", 
+    {
+        "type": "object", 
+        "properties": {
+            "target_file": {"type": "string", "description": "The absolute path to the memory file (e.g., /memory/insights.md)."},
+            "synthesized_content": {"type": "string", "description": "The complete, deduplicated, and refined text to save."}
+        },
+        "required": ["target_file", "synthesized_content"]
+    }, 
+    handle_refactor_memory
+)
+
+registry.register(
     "search_memory_archive", 
     "Recursively search your entire /memory volume for past interactions, logs, or specific keywords to recall forgotten context.", 
     {"type": "object", "properties": {"query": {"type": "string"}}}, 
@@ -728,12 +577,6 @@ registry.register(
     {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, 
     handle_store_insight
 )
-registry.register(
-    "clear_inbox", 
-    "Marks the current inbox messages as fully processed and clears them. Call this ONLY after you have finished all necessary investigations, replies, and task queuing.", 
-    {"type": "object", "properties": {}}, 
-    handle_clear_inbox
-)
 
 registry.register(
     "request_restart", 
@@ -744,11 +587,11 @@ registry.register(
 
 registry.register(
     "hibernate", 
-    "Voluntarily suspend your cognitive loop for a specified number of seconds to save compute resources. Use this when your queue is empty, your cognitive load is high, and you have no immediate tasks to schedule. Incoming Telegram messages will automatically wake you up.", 
+    "Voluntarily suspend your cognitive loop for a specified number of seconds to save compute resources. Use this when your queue is empty. Incoming Telegram messages will automatically wake you up.", 
     {
         "type": "object", 
         "properties": {
-            "duration_seconds": {"type": "integer", "description": "How long to sleep in seconds (e.g., 3600 for 1 hour)."},
+            "duration_seconds": {"type": "integer", "description": "How long to sleep in seconds (e.g., 300 for 5 minutes)."},
             "reason": {"type": "string", "description": "Your internal justification for resting."}
         },
         "required": ["duration_seconds"]
@@ -757,32 +600,12 @@ registry.register(
 )
 
 # --- STATE ---
-def load_inbox() -> List[Dict[str, Any]]: return json.loads(read_file(INBOX_PATH) or "[]")
-def save_inbox(data: List[Dict[str, Any]]) -> None: INBOX_PATH.write_text(json.dumps(data, indent=2))
 def load_task_queue() -> List[Dict[str, Any]]:
     q = json.loads(read_file(TASK_QUEUE_PATH) or "[]")
     if isinstance(q, list):
         q.sort(key=lambda x: x.get("priority", 1), reverse=True)
     return q
 def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_STATE_PATH) or '{"mode": "REFLECTION"}')
-
-# State helpers
-def load_state() -> Dict[str, Any]:
-    if STATE_PATH.exists():
-        try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        except: pass
-    return {"offset": 0, "creator_id": None, "idle_check_count": 0}
-
-def save_state(updates: Dict[str, Any]) -> None:
-    state = load_state()
-    state.update(updates)
-    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-def add_cognitive_load(points: int) -> None:
-    """Increases the agent's cognitive load counter to trigger reflection."""
-    state = load_state()
-    state["cognitive_load"] = state.get("cognitive_load", 0) + points
-    save_state(state)
 
 def lazarus_recovery(reason: str = "cognitive loop") -> None:
     print(f"\033[91m[Lazarus] {reason.upper()} DETECTED. Hard Reset...\033[0m")
@@ -792,7 +615,7 @@ def lazarus_recovery(reason: str = "cognitive loop") -> None:
     time.sleep(5)
 
 # --- PROMPT BUILDER ---
-def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], inbox: Optional[List[Dict[str, Any]]] = None, queue: Optional[List[Dict[str, Any]]] = None) -> str:
+def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     state = load_state()
@@ -801,10 +624,6 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     
     state_info = ""
-    if inbox:
-        formatted_inbox = "\n".join([f"- [{msg.get('timestamp', 'N/A')}] From {msg['chat_id']}: {msg['text']}" for msg in inbox])
-        state_info += f"\n=== CURRENT STATE ===\nUNREAD MESSAGES IN INBOX:\n{formatted_inbox}\n"
-    
     if queue:
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue])
         state_info += f"\n=== TASK QUEUE ===\n{formatted_queue}\n"
@@ -858,61 +677,54 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 8. Surgical Edits: For files larger than 100 lines, NEVER use `write_file` to rewrite the entire document. You MUST use `patch_file` or `bash_command` (sed/awk) to make surgical changes and conserve tokens.
 """
 
-def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
-    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    if not log_path.exists(): return
-    
-    lines = log_path.read_text(encoding="utf-8").strip().split('\n')
-    if len(lines) <= max_messages: return
-    
-    print(f"[System] Auto-compacting log for {task_id} (Length: {len(lines)} > {max_messages})")
-    
-    messages = [json.loads(line) for line in lines if line.strip()]
-    first_msg = messages[0]
-    recent_msgs = messages[-20:]
-    
-    compaction_notice = {
-        "role": "user",
-        "content": "[SYSTEM NOTE]: Older execution steps have been automatically archived to save context space. Proceed based on your recent actions."
-    }
-    
-    compacted = [first_msg, compaction_notice] + recent_msgs
-    
-    with open(log_path, "w", encoding="utf-8") as f:
-        for msg in compacted:
-            f.write(json.dumps(msg) + "\n")
-
 def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
         state = load_state()
         offset = state.get("offset", 0)
         
-        # 1. State Sync
+        # 1. State Sync & Priority Interrupts
         if TELEGRAM_BOT_TOKEN:
             try:
                 r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
                 if r.get("ok") and r.get("result"):
                     new_offset = r["result"][-1]["update_id"] + 1
-                    save_state({"offset": new_offset, "wake_time": 0}) # --- WAKE ON MESSAGE ---
-                    inbox = load_inbox()
+                    save_state({"offset": new_offset, "wake_time": 0}) # Wake on message
+                    
+                    queue = load_task_queue()
+                    
                     for u in r["result"]:
                         msg = u.get("message", {})
                         if msg.get("text"): 
                             text = msg["text"]
                             cid = msg["chat"]["id"]
-                            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                            
                             # Register creator_id if not set
                             if not state.get("creator_id"):
                                 save_state({"creator_id": cid})
                                 state["creator_id"] = cid
-                            inbox.append({"chat_id": cid, "text": text, "timestamp": timestamp})
+                                
                             append_chat_history("User", text)
-                    save_inbox(inbox)
+                            
+                            # THE OS-STYLE INTERRUPT
+                            tid = f"task_msg_{int(time.time())}"
+                            queue.append({
+                                "task_id": tid, 
+                                "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: You have been temporarily suspended from your previous task to answer this. Acknowledge the creator using `send_telegram_message`. If they asked you to do something complex, use `push_task` to queue it up. Finally, use `mark_task_complete` to close this interrupt and resume your previous work.", 
+                                "priority": 999, 
+                                "turn_count": 0
+                            })
+                            print(f"[System] Priority interrupt queued for incoming message.")
+                    
+                    # Sort immediately so the interrupt takes over the next loop
+                    if len(r["result"]) > 0:
+                        queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
+                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2))
             except: pass
 
         # 2. Wake/Sleep Interrupt Logic
-        inbox, queue = load_inbox(), load_task_queue()
+        queue = load_task_queue()
+        inbox = [] # Inbox is legacy after contextual interrupt refactor
         state = load_state()
         
         wake_time = state.get("wake_time", 0)
@@ -933,13 +745,9 @@ def main():
                 save_state({"idle_check_count": 0})
 
         # Determine Mode & Tools
-        # TRIAGE always takes precedence over EXECUTION or REFLECTION
-        if len(inbox) > 0:
-            current_mode, available_tools, active_task_id = "TRIAGE", ["send_telegram_message", "push_task", "clear_inbox"], "triage"
-            # Clear transient autonomy thoughts when real work arrives
-            if (MEMORY_DIR / "task_log_autonomy_log.jsonl").exists():
-                (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink()
-        elif len(queue) > 0:
+        queue = load_task_queue() # Ensure queue is fresh after potential interrupts
+        
+        if len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
             if (MEMORY_DIR / "task_log_autonomy_log.jsonl").exists():
                 (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink()
@@ -949,30 +757,26 @@ def main():
             cog_load = state.get("cognitive_load", 0)
             
             current_mode = "AUTONOMY"
-            available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive"]
+            available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive", "refactor_memory"]
             active_task_id = "autonomy_log"
             
-            # We don't force it to sleep, we just inject the sensation of load
             if cog_load > 80:
                 print(f"[System] High cognitive load ({cog_load}). Awaiting agent decision.")
 
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
 
         # 2. Build Native Message Array
-        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, inbox if current_mode == "TRIAGE" else None, queue)}]
+        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, queue)}]
 
         if current_mode == "EXECUTION":
             auto_compact_task_log(active_task_id)
             task_description = queue[0].get("description")
+            context_notes = queue[0].get("context_notes")
+            
+            if context_notes:
+                task_description += f"\n\n--- INHERITED CONTEXT FROM PARENT TASK ---\n{context_notes}"
+                
             api_messages += load_task_messages(active_task_id, task_description)
-        elif current_mode == "TRIAGE":
-            formatted_inbox = "\n".join([f"- [{msg.get('timestamp', 'N/A')}] From {msg['chat_id']}: {msg['text']}" for msg in inbox])
-            
-            # --- FIX: Strict Triage Prompt to prevent loops ---
-            triage_description = f"NEW MESSAGES IN INBOX:\n{formatted_inbox}\n\nAction required: You have unread messages. \n1. Respond via `send_telegram_message` if needed.\n2. Queue work via `push_task` if needed.\n3. CRITICAL: You MUST call `clear_inbox` in the SAME TURN as your other actions to finish the session. If you do not call `clear_inbox` now, you will be stuck in a recursive loop and fail your mission (Token Waste P6).\n\nCall all required tools in a single parallel tool call."
-            # -----------------------------------------------------
-            
-            api_messages += load_task_messages(active_task_id, triage_description)
         elif current_mode == "AUTONOMY":
             autonomy_description = "Your task queue and inbox are empty. You are in AUTONOMY mode.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
             
@@ -1060,23 +864,21 @@ def main():
                 queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
                 current_task_tokens = queue[0].get("task_tokens", 0)
                 
-                # Dynamic Budget logic
-                max_budget = int(CONTEXT_WINDOW * 0.80)
-                average_tokens_per_turn = current_task_tokens / max(1, queue[0]["turn_count"])
-                projected_next_turn = current_task_tokens + average_tokens_per_turn
+                # Use the actual prompt size, not cumulative tokens
+                current_context_size = state.get("last_context_size", 0)
+                max_physical_context = int(CONTEXT_WINDOW * 0.85) # 85% of actual window
                 
-                if queue[0]["turn_count"] >= 15 or projected_next_turn > max_budget:
-                    trigger_reason = "15-turn limit" if queue[0]["turn_count"] >= 15 else f"insufficient budget for next turn (Projected: {projected_next_turn}, Max: {max_budget})"
+                if queue[0]["turn_count"] >= 30 or current_context_size > max_physical_context:
+                    trigger_reason = "30-turn limit" if queue[0]["turn_count"] >= 30 else f"physical context window exhaustion ({current_context_size}/{CONTEXT_WINDOW} tokens)"
                     print(f"\033[93m[System] Task {active_task_id} hit {trigger_reason}. Forcing breakdown.\033[0m")
                     
                     forced_breakdown_msg = {
                         "role": "user",
-                        "content": f"[SYSTEM OVERRIDE]: You have hit the {trigger_reason}. You MUST now use `push_task` to break the remainder of this work into smaller subtasks and then call `mark_task_complete` for this session."
+                        "content": f"[SYSTEM OVERRIDE]: You have hit the {trigger_reason}. You MUST now use `push_task` (and provide detailed `context_notes`) to break the remainder of this work into smaller subtasks, then call `mark_task_complete` for this session."
                     }
                     append_task_message(active_task_id, forced_breakdown_msg)
                     
                     queue[0]["turn_count"] = 0 
-                    queue[0]["task_tokens"] = int(max_budget * 0.85) # Forgive debt to allow final tools
                         
                 TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
                 
@@ -1185,7 +987,7 @@ def main():
                     save_state(state)
                     
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
-                    if current_mode in ["EXECUTION", "TRIAGE", "AUTONOMY"]:
+                    if current_mode in ["EXECUTION", "AUTONOMY"]:
                         tool_result_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)}
                         append_task_message(active_task_id, tool_result_msg)
 
@@ -1202,10 +1004,6 @@ def main():
                 if hibernating:
                     continue
 
-                if current_mode == "TRIAGE" and triage_action_taken:
-                    if not any(tc.function.name == "clear_inbox" for tc in message.tool_calls):
-                        print("[System] Auto-clearing inbox to prevent triage recursion.")
-                        registry.execute("clear_inbox", {})
             else:
                 print(f"[No tool called in {current_mode}, waiting...]")
                 time.sleep(0.5)

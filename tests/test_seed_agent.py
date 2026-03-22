@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 from seed_agent import (
-    add_cognitive_load, 
     handle_update_state, 
     redact_secrets, 
     load_state, 
@@ -15,13 +14,14 @@ from seed_agent import (
     handle_push_task,
     handle_telegram,
     handle_web_search,
-    load_task_messages,
-    append_task_message,
     WORKING_STATE_PATH,
-    STATE_PATH,
     MEMORY_DIR,
     INBOX_PATH,
     TASK_QUEUE_PATH
+)
+from memory_operations import (
+    load_task_messages,
+    append_task_message,
 )
 
 @pytest.fixture
