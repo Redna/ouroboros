@@ -696,6 +696,19 @@ registry.register(
 )
 
 registry.register(
+    "set_cognitive_parameters", 
+    "Adjust your own LLM hyperparameters dynamically. Lower your temperature (e.g., 0.2) for strict coding/syntax tasks where precision is critical. Raise it (e.g., 0.9) for creative brainstorming, memory synthesis, or if you are stuck in a repetitive loop. Toggle 'enable_thinking' if you need deep reasoning.", 
+    {
+        "type": "object", 
+        "properties": {
+            "temperature": {"type": "number", "description": "Value between 0.0 and 1.5. Default is 0.8."},
+            "enable_thinking": {"type": "boolean", "description": "True for deep reasoning, False for fast execution."}
+        }
+    }, 
+    handle_set_cognitive_parameters
+)
+
+registry.register(
     "web_search", 
     "Perform a live web search via your local SearXNG. Returns titles, snippets, and URLs. Use this to find documentation, current events, or solve coding errors. IMPORTANT: Search snippets are often incomplete. Always follow up with 'fetch_webpage' on the most relevant URL.", 
     {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, 
