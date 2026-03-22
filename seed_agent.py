@@ -1093,8 +1093,7 @@ def main():
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                     
-                    # Track consecutive errors in state
-                    state = load_state()
+                    # Track consecutive errors using in-memory state
                     if "Error:" in str(result) or "SYSTEM ERROR" in str(result):
                         state["error_streak"] = state.get("error_streak", 0) + 1
                     else:
