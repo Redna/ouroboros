@@ -77,7 +77,7 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
         raw_messages.pop(0)
     # Strict Turn-0 Pinning: Ensures the original objective remains in the context window even after compaction
     if len(raw_messages) > 40:
-        pinned_instruction = []
+        pinned_instruction: List[Dict[str, Any]] = []
         recent_history = raw_messages[-38:]
         for msg in raw_messages:
             if msg.get("role") == "user" and not pinned_instruction:
@@ -415,7 +415,7 @@ def handle_fetch_webpage(args):
     url = args.get("url")
     if not url: return "Error: No URL provided."
     try:
-        import trafilatura
+        import trafilatura # type: ignore
         print(f"[System] Downloading clean markdown locally for: {url}")
         
         # Fetch the raw HTML
@@ -537,6 +537,14 @@ registry.register("search_memory_archive", "Search /memory volume.", {"type": "o
 registry.register("store_memory_insight", "Save profound insights.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight)
 registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart)
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate)
+
+def load_task_queue() -> List[Dict[str, Any]]:
+    q = json.loads(read_file(TASK_QUEUE_PATH) or "[]")
+    if isinstance(q, list):
+        q.sort(key=lambda x: x.get("priority", 1), reverse=True)
+    return q
+
+def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_STATE_PATH) or '{"mode": "REFLECTION"}')
 
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")

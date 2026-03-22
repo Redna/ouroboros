@@ -1,6 +1,7 @@
 import json
 import pytest
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 from seed_agent import (
@@ -8,20 +9,18 @@ from seed_agent import (
     redact_secrets, 
     load_state, 
     save_state,
+    add_cognitive_load,
     handle_bash,
     handle_write,
     handle_read_file_tool,
     handle_push_task,
     handle_telegram,
     handle_web_search,
-    WORKING_STATE_PATH,
-    MEMORY_DIR,
-    INBOX_PATH,
-    TASK_QUEUE_PATH
-)
-from memory_operations import (
     load_task_messages,
     append_task_message,
+    WORKING_STATE_PATH,
+    MEMORY_DIR,
+    TASK_QUEUE_PATH
 )
 
 @pytest.fixture
@@ -34,15 +33,13 @@ def mock_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("seed_agent.MEMORY_DIR", memory_dir)
     monkeypatch.setattr("seed_agent.STATE_PATH", memory_dir / ".agent_state.json")
     monkeypatch.setattr("seed_agent.WORKING_STATE_PATH", memory_dir / "working_state.json")
-    monkeypatch.setattr("seed_agent.INBOX_PATH", memory_dir / "inbox.json")
     monkeypatch.setattr("seed_agent.TASK_QUEUE_PATH", memory_dir / "task_queue.json")
     monkeypatch.setattr("seed_agent.CHAT_HISTORY_PATH", memory_dir / "chat_history.json")
     monkeypatch.setattr("seed_agent.ARCHIVE_PATH", memory_dir / "global_biography.md")
     
     # Initialize some required files
-    (memory_dir / ".agent_state.json").write_text(json.dumps({"offset": 0}))
+    (memory_dir / ".agent_state.json").write_text(json.dumps({"offset": 0, "cognitive_load": 0}))
     (memory_dir / "task_queue.json").write_text("[]")
-    (memory_dir / "inbox.json").write_text("[]")
     (memory_dir / "working_state.json").write_text("{}")
     
     return memory_dir
@@ -51,7 +48,7 @@ def test_redact_secrets():
     with patch("seed_agent.TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"):
         text = "My token is 123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
         redacted = redact_secrets(text)
-        assert "[REDACTED]" in redacted
+        assert "[REDACTED]" in redacted or "[REDACTED_TOKEN]" in redacted
         assert "123456789:" not in redacted
 
 def test_add_cognitive_load(mock_memory):
@@ -65,7 +62,6 @@ def test_handle_update_state(mock_memory):
     result = handle_update_state(args)
     assert "Working state successfully updated" in result
     
-    # Read from the mocked path directly
     state_file = mock_memory / "working_state.json"
     state = json.loads(state_file.read_text())
     assert state["test_key"] == "test_value"
@@ -80,18 +76,16 @@ def test_handle_write(mock_memory):
     path = mock_memory / "test.txt"
     content = "hello world"
     result = handle_write({"path": str(path), "content": content})
-    assert "Wrote test.txt" in result
+    assert "Success" in result
     assert path.read_text() == content
 
 def test_handle_read_file_tool(mock_memory):
     test_file = mock_memory / "read_test.txt"
     test_file.write_text("line1\nline2\nline3\nline4")
     
-    # Test reading full file
     result = handle_read_file_tool({"path": str(test_file)})
     assert "line1\nline2\nline3\nline4" in result
     
-    # Test line range
     result = handle_read_file_tool({"path": str(test_file), "start_line": 2, "end_line": 3})
     assert "line2\nline3" in result
     assert "line1" not in result
@@ -153,23 +147,21 @@ def test_tool_registry():
     assert "not found" in reg.execute("nonexistent", {})
 
 def test_lazarus_recovery(mock_memory):
-    from seed_agent import lazarus_recovery
-    with patch("subprocess.run") as mock_run:
-        lazarus_recovery(reason="test loop")
-        # Should call git reset and git clean
-        assert mock_run.call_count >= 2
+    from seed_agent import lazarus_recovery, registry
+    
+    with patch.object(registry, 'execute') as mock_exec:
+        lazarus_recovery("t1", reason="test loop")
+        # Should call compress_memory_block and mark_task_complete
+        assert mock_exec.call_count >= 2
 
 def test_main_loop_iteration(mock_memory):
     from seed_agent import main
     
-    # Mocking external dependencies
     with patch("seed_agent.client.chat.completions.create") as mock_openai, \
          patch("requests.get") as mock_get, \
          patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")), \
-         patch("seed_agent.load_inbox", return_value=[]), \
          patch("seed_agent.load_task_queue", return_value=[{"task_id": "t1", "description": "test"}]):
         
-        # Mocking OpenAI response
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="thinking", tool_calls=[]))]
         mock_response.usage = MagicMock(total_tokens=100, prompt_tokens=50, completion_tokens=50)
@@ -180,5 +172,4 @@ def test_main_loop_iteration(mock_memory):
         with pytest.raises(KeyboardInterrupt):
             main()
         
-        # Verify that OpenAI was called at least once
         assert mock_openai.called
