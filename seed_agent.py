@@ -553,6 +553,11 @@ def handle_hibernate(args):
         state = load_state()
         state["wake_time"] = time.time() + duration
         state["cognitive_load"] = 0 # Reset load upon entering sleep
+        
+        # Clean up cognitive parameters to prevent state leakage
+        if "sys_temp" in state: del state["sys_temp"]
+        if "sys_think" in state: del state["sys_think"]
+        
         save_state(state)
         
         print(f"[System] Agent elected to hibernate for {duration}s. Reason: {reason}")
