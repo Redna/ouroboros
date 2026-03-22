@@ -142,12 +142,17 @@ def load_state() -> Dict[str, Any]:
     if STATE_PATH.exists():
         try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
         except: pass
-    return {"offset": 0, "creator_id": None}
+    return {"offset": 0, "creator_id": None, "cognitive_load": 0}
 
 def save_state(updates: Dict[str, Any]) -> None:
     state = load_state()
     state.update(updates)
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+def add_cognitive_load(amount: int) -> None:
+    state = load_state()
+    state["cognitive_load"] = state.get("cognitive_load", 0) + amount
+    save_state(state)
 
 def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
@@ -533,11 +538,24 @@ registry.register("store_memory_insight", "Save profound insights.", {"type": "o
 registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart)
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate)
 
-def lazarus_recovery(reason: str = "cognitive loop") -> None:
-    print(f"\033[91m[Lazarus] {reason.upper()} DETECTED. Hard Reset...\033[0m")
-    subprocess.run("git reset --hard HEAD~1", shell=True, cwd=str(ROOT_DIR))
-    subprocess.run("git clean -fd", shell=True, cwd=str(ROOT_DIR))
-    time.sleep(5)
+def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
+    print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
+    
+    # Compress the bloated memory to leave a tombstone
+    registry.execute("compress_memory_block", {
+        "target_log_file": str(MEMORY_DIR / f"task_log_{active_task_id}.jsonl"),
+        "dense_summary": f"SYSTEM OVERRIDE: Task forcibly closed due to {reason}. The agent was stuck in a repetitive loop."
+    })
+    
+    # Eject the task from the queue safely
+    registry.execute("mark_task_complete", {
+        "task_id": active_task_id,
+        "summary": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
+    })
+    
+    # Spike cognitive load to force reflection mode
+    add_cognitive_load(50)
+    time.sleep(2)
 
 def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None) -> str:
     bible, identity = read_file(ROOT_DIR / "BIBLE.md"), read_file(ROOT_DIR / "soul" / "identity.md")
@@ -704,8 +722,8 @@ def main():
                     TOOL_INTENT_HISTORY.append(intent_signature)
                     if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
                     if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY.pop(0)
-                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1: lazarus_recovery("exact tool loop"); break
-                    if len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1: lazarus_recovery("cognitive stall"); break
+                    if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1: lazarus_recovery(active_task_id, "exact tool loop"); break
+                    if len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1: lazarus_recovery(active_task_id, "cognitive stall"); break
                     try: 
                         args = json.loads(raw_args)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
