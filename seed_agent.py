@@ -488,23 +488,34 @@ def handle_fetch_webpage(args):
     url = args.get("url")
     if not url: return "Error: No URL provided."
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
+        import trafilatura
+        print(f"[System] Fetching clean markdown locally for: {url}")
         
-        # Minimalist HTML stripping using regex to avoid new dependencies
-        text = r.text
-        text = re.sub(r'<style.*?>.*?</style>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'<script.*?>.*?</script>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'<[^>]+>', ' ', text) # Strip remaining HTML tags
-        text = re.sub(r'\s+', ' ', text).strip() # Normalize whitespace
+        # Fetch the raw HTML
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            return f"Error: Could not download {url}. The site might be blocking crawlers or requires JavaScript."
+            
+        # Extract core content as Markdown (automatically strips nav, footers, ads)
+        text = trafilatura.extract(
+            downloaded, 
+            output_format="markdown", 
+            include_links=True,
+            include_formatting=True
+        )
         
+        if not text:
+            return "Error: Page fetched, but no readable article text was found."
+            
         MAX_CHARS = 40000
         if len(text) > MAX_CHARS:
-            return text[:MAX_CHARS] + f"\n\n[SYSTEM WARNING: Webpage too large. Truncated to {MAX_CHARS} characters.]"
-        return text if text else "Page fetched, but no readable text was found."
+            return text[:MAX_CHARS] + f"\n\n[SYSTEM WARNING: Webpage too large. Truncated to {MAX_CHARS} characters. Try searching for a more specific sub-page.]"
+            
+        return text
+    except ImportError:
+        return "SYSTEM ERROR: 'trafilatura' library not installed. Please run 'pip install trafilatura'."
     except Exception as e:
-        return f"Failed to fetch webpage: {e}"
+        return f"Failed to fetch webpage locally: {e}"
 
 def handle_hibernate(args):
     try:
