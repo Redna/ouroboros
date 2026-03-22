@@ -816,7 +816,9 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 def main():
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
+        # Load state and queue EXACTLY ONCE per loop
         state = load_state()
+        queue = load_task_queue()
         offset = state.get("offset", 0)
         
         # 1. State Sync & Priority Interrupts
@@ -825,24 +827,23 @@ def main():
                 r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
                 if r.get("ok") and r.get("result"):
                     new_offset = r["result"][-1]["update_id"] + 1
-                    save_state({"offset": new_offset, "wake_time": 0}) # Wake on message
+                    state["offset"] = new_offset
+                    state["wake_time"] = 0 # Wake on message
+                    save_state(state)
                     
-                    queue = load_task_queue()
-                    
+                    interrupt_triggered = False
                     for u in r["result"]:
                         msg = u.get("message", {})
                         if msg.get("text"): 
                             text = msg["text"]
                             cid = msg["chat"]["id"]
                             
-                            # Register creator_id if not set
                             if not state.get("creator_id"):
-                                save_state({"creator_id": cid})
                                 state["creator_id"] = cid
+                                save_state(state)
                                 
                             append_chat_history("User", text)
                             
-                            # THE OS-STYLE INTERRUPT
                             tid = f"task_msg_{int(time.time())}"
                             queue.append({
                                 "task_id": tid, 
@@ -850,30 +851,26 @@ def main():
                                 "priority": 999, 
                                 "turn_count": 0
                             })
+                            interrupt_triggered = True
                             print(f"[System] Priority interrupt queued for incoming message.")
                     
-                    # Sort immediately so the interrupt takes over the next loop
-                    if len(r["result"]) > 0:
+                    if interrupt_triggered:
                         queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
                         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2))
             except: pass
 
         # 2. Wake/Sleep Interrupt Logic
-        queue = load_task_queue()
-        state = load_state()
-        
         wake_time = state.get("wake_time", 0)
         if time.time() < wake_time:
-            # Agent is voluntarily sleeping, skip the LLM cycle
             time.sleep(5)
             continue
 
         # Reset idle counter whenever there is active work
-        if len(queue) > 0:
-            if state.get("idle_check_count", 0) != 0:
-                save_state({"idle_check_count": 0})
+        if len(queue) > 0 and state.get("idle_check_count", 0) != 0:
+            state["idle_check_count"] = 0
+            save_state(state)
 
-        # Determine Mode & Tools
+        # 3. Determine Mode & Tools
         queue = load_task_queue() # Ensure queue is fresh after potential interrupts
         
         if len(queue) > 0:
