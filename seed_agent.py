@@ -726,48 +726,46 @@ def main():
             if message.content: print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
                 hibernating = False
-                
-                # Check for loop BEFORE processing calls to prevent dangling responses
                 loop_detected = False
+                
+                # PHASE 1: Track all intents for THIS turn first
+                global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
+                for tc in message.tool_calls:
+                    name, raw_args = tc.function.name, tc.function.arguments
+                    TOOL_CALL_HISTORY.append(f"{name}:{raw_args}")
+                    
+                    intent = name
+                    if name in ["read_file", "write_file", "bash_command", "patch_file"]:
+                        try: intent = f"{name}:{json.loads(raw_args).get('path', '').split()[0]}"
+                        except: pass
+                    TOOL_INTENT_HISTORY.append(intent)
+                    
+                if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY = TOOL_CALL_HISTORY[-3:]
+                if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY = TOOL_INTENT_HISTORY[-6:]
+
+                # PHASE 2: Detect loops using the updated, current history
                 if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
                     loop_detected = "exact tool loop"
                 elif len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
                     loop_detected = "cognitive stall"
 
                 if loop_detected:
-                    # Heal the API state by responding to ALL tool calls in this turn with a failure
                     for tc in message.tool_calls:
                         safe_id = tc.id if (tc.id and len(tc.id) >= 9) else f"call_{int(time.time())}"
-                        append_task_message(active_task_id, {
-                            "role": "tool", 
-                            "tool_call_id": safe_id, 
-                            "name": tc.function.name, 
-                            "content": f"ABORTED: {loop_detected}."
-                        })
+                        append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_id, "name": tc.function.name, "content": f"ABORTED: {loop_detected}."})
                     lazarus_recovery(active_task_id, reason=loop_detected)
-                    continue # Skip to next while-loop cycle
+                    continue
 
+                # PHASE 3: Execute the tools
                 for tool_call in message.tool_calls:
                     name, raw_args = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
-                    tool_signature = f"{name}:{raw_args}"
-                    TOOL_CALL_HISTORY.append(tool_signature)
-                    intent_signature = name
-                    if name in ["read_file", "write_file", "bash_command", "patch_file"]:
-                        try: intent_signature = f"{name}:{json.loads(raw_args).get('path', '').split()[0]}"
-                        except: pass
-                    TOOL_INTENT_HISTORY.append(intent_signature)
-                    if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY.pop(0)
-                    if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY.pop(0)
-
                     try: 
                         args = json.loads(raw_args)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
-                    except json.JSONDecodeError: 
-                        result = "SYSTEM ERROR: Invalid JSON arguments."
+                    except json.JSONDecodeError: result = "SYSTEM ERROR: Invalid JSON arguments."
                     
-                    # Track consecutive errors safely without overwriting tool-driven state changes
                     fresh_state = load_state()
                     fresh_state["error_streak"] = (fresh_state.get("error_streak", 0) + 1) if ("Error:" in str(result) or "SYSTEM ERROR" in str(result)) else 0
                     save_state(fresh_state)
