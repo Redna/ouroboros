@@ -678,14 +678,14 @@ registry.register(
 
 registry.register(
     "web_search", 
-    "Perform a live web search via SearXNG. Returns titles, snippets, and URLs. Use this to find documentation, current events, or solve coding errors. IMPORTANT: Search snippets are often incomplete. Always follow up with 'fetch_webpage' on the most relevant URL.", 
+    "Perform a live web search via your local SearXNG. Returns titles, snippets, and URLs. Use this to find documentation, current events, or solve coding errors. IMPORTANT: Search snippets are often incomplete. Always follow up with 'fetch_webpage' on the most relevant URL.", 
     {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, 
     handle_web_search
 )
 
 registry.register(
     "fetch_webpage", 
-    "Fetch and extract pristine Markdown text from a specific URL. Use this AFTER a web_search to read the full contents of a relevant article, GitHub repo, or documentation page.", 
+    "Fetch and extract pristine Markdown text from a specific URL locally. Use this AFTER a web_search to read the full contents of a relevant article, GitHub repo, or documentation page.", 
     {"type": "object", "properties": {"url": {"type": "string", "description": "The full HTTP/HTTPS URL to fetch."}}, "required": ["url"]}, 
     handle_fetch_webpage
 )
