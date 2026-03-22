@@ -11,9 +11,6 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
 
-# Import extracted modules
-from memory_operations import *
-
 # Configuration
 API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
 API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
@@ -43,6 +40,55 @@ client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 # --- UTILS ---
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+def load_state() -> Dict[str, Any]:
+    if not STATE_PATH.exists(): return {}
+    try: return json.loads(read_file(STATE_PATH) or "{}")
+    except: return {}
+
+def save_state(updates: Dict[str, Any]) -> None:
+    current = load_state()
+    current.update(updates)
+    STATE_PATH.write_text(json.dumps(current, indent=2), encoding="utf-8")
+
+def load_chat_history() -> List[Dict[str, Any]]:
+    try:
+        hist = json.loads(read_file(CHAT_HISTORY_PATH) or "[]")
+        return hist[-20:]
+    except: return []
+
+def append_chat_history(role: str, text: str) -> None:
+    hist = load_chat_history()
+    hist.append({"role": role, "text": text, "timestamp": time.strftime("%H:%M:%S")})
+    CHAT_HISTORY_PATH.write_text(json.dumps(hist[-20:], indent=2), encoding="utf-8")
+
+def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
+    path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(message_dict) + "\n")
+
+def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
+    path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    messages = [
+        {"role": "system", "content": "You are Ouroboros, a self-evolving cognitive agent."},
+        {"role": "user", "content": f"OBJECTIVE: {description}"}
+    ]
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try: messages.append(json.loads(line))
+                except: continue
+    return messages
+
+def auto_compact_task_log(task_id: str, max_turns: int = 40) -> None:
+    path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not path.exists(): return
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
+    if len(lines) > max_turns:
+        # Keep the last 10 turns (assistant + tool pairs)
+        compacted = lines[-20:]
+        path.write_text("\n".join(compacted) + "\n", encoding="utf-8")
+        print(f"[System] Compacted task log {task_id} (kept last 20 messages).")
 
 def log_llm_call(messages: List[Dict[str, Any]], response_data: Any) -> None:
     try:
