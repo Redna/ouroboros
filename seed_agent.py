@@ -498,10 +498,17 @@ def handle_search_memory(args):
     query = args.get("query", "")
     if not query: return "Error: No query provided."
     try:
-        r = subprocess.run(f"grep -rEi \"{query}\" /memory/", shell=True, capture_output=True, text=True, timeout=30)
+        # Added explicit timeout handling
+        r = subprocess.run(
+            f"grep -rEi \"{query}\" /memory/", 
+            shell=True, capture_output=True, text=True, timeout=30
+        )
         out = redact_secrets(r.stdout + r.stderr)
         return out[:4000] if out else "No matches found in memory."
-    except Exception as e: return f"Search error: {e}"
+    except subprocess.TimeoutExpired:
+        return "Error: Memory search timed out after 30 seconds. Your query might be too broad or the memory volume is too large."
+    except Exception as e: 
+        return f"Search error: {e}"
 
 def handle_store_insight(args):
     insight, category = args.get("insight"), args.get("category", "General")
