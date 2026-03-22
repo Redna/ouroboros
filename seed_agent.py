@@ -771,7 +771,7 @@ def main():
                 
             api_messages += load_task_messages(active_task_id, task_description)
         elif current_mode == "AUTONOMY":
-            autonomy_description = "Your task queue and inbox are empty. You are in AUTONOMY mode.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
+            autonomy_description = "Your task queue is empty. You are in AUTONOMY mode.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
             
             api_messages += load_task_messages(active_task_id, autonomy_description)
 
@@ -811,11 +811,8 @@ def main():
         # --- DYNAMIC COGNITIVE PARAMETERS (System 1 vs System 2) ---
         state = load_state()
         error_streak = state.get("error_streak", 0)
-        
-        if current_mode == "TRIAGE":
-            # System 1: Fast, deterministic (Instruct Mode, No Thinking)
-            sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.7, 0.8, 1.5, False
-        elif current_mode == "AUTONOMY":
+
+        if current_mode == "AUTONOMY":
             # System 2: Deep Reasoning & Exploration (Thinking enabled)
             sys_temp, sys_top_p, sys_pres_pen, sys_think = 1.0, 0.95, 1.5, True
         else: # EXECUTION
@@ -922,21 +919,17 @@ def main():
                         # 4. Skip the rest of this cycle to allow the state machine to pivot
                         continue
             # --------------------------------
-            if current_mode in ["EXECUTION", "TRIAGE", "AUTONOMY"]:
+            if current_mode in ["EXECUTION", "AUTONOMY"]:
                 assistant_msg = message.model_dump(exclude_unset=True)
                 append_task_message(active_task_id, assistant_msg)
             if message.content:
                 print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
-                triage_action_taken = False
                 hibernating = False
                 
                 for tool_call in message.tool_calls:
                     name, raw_arguments = tool_call.function.name, tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
-                    
-                    if current_mode == "TRIAGE" and name in ["send_telegram_message", "push_task"]:
-                        triage_action_taken = True
                     
                     # --- LAZARUS TRACKING ---
                     global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
