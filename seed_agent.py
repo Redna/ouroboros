@@ -871,17 +871,13 @@ def main():
             save_state(state)
 
         # 3. Determine Mode & Tools
-        queue = load_task_queue() # Ensure queue is fresh after potential interrupts
-        
         if len(queue) > 0:
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
-            if (MEMORY_DIR / "task_log_autonomy_log.jsonl").exists():
-                (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink()
+            # Lean deletion (no existence check needed)
+            (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink(missing_ok=True)
         else:
             # --- AGENTIC AUTONOMY MODE ---
-            state = load_state()
             cog_load = state.get("cognitive_load", 0)
-            
             current_mode = "AUTONOMY"
             available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive", "refactor_memory"]
             active_task_id = "autonomy_log"
