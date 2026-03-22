@@ -430,7 +430,6 @@ def handle_hibernate(args):
         duration = min(int(duration), 86400) 
         state = load_state()
         state["wake_time"] = time.time() + duration
-        state["cognitive_load"] = 0
         if "sys_temp" in state: del state["sys_temp"]
         if "sys_think" in state: del state["sys_think"]
         save_state(state)
@@ -600,12 +599,12 @@ def main():
             current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
             (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink(missing_ok=True)
         else:
-            cog_load = state.get("cognitive_load", 0)
             current_mode, active_task_id = "AUTONOMY", "autonomy_log"
             available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive", "refactor_memory", "set_cognitive_parameters"]
-            if cog_load > 80: print(f"[System] High cognitive load ({cog_load}).")
+
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
         api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, queue)}]
+
         if current_mode == "EXECUTION":
             auto_compact_task_log(active_task_id)
             task_desc, context_notes = queue[0].get("description"), queue[0].get("context_notes")
@@ -613,8 +612,10 @@ def main():
             api_messages += load_task_messages(active_task_id, task_desc)
         elif current_mode == "AUTONOMY":
             api_messages += load_task_messages(active_task_id, "Your task queue is empty. You are in AUTONOMY mode.")
+
         state = load_state()
         last_context = state.get("last_context_size", 0)
+
         if current_mode == "EXECUTION" and len(queue) > 0:
             token_warning = ""
             critical_limit, warning_limit = int(CONTEXT_WINDOW * 0.70), int(CONTEXT_WINDOW * 0.50)
@@ -626,11 +627,9 @@ def main():
                     api_messages[i]["content"] += token_sensation
                     break
         elif current_mode == "AUTONOMY":
-            autonomy_sensation = f"\n\n[SYSTEM SENSATION]\nYour current cognitive load is {state.get('cognitive_load', 0)}."
-            for i in range(len(api_messages)-1, -1, -1):
-                if api_messages[i]["role"] == "user":
-                    api_messages[i]["content"] += autonomy_sensation
-                    break
+            # Autonomy sensation removed
+            pass
+
         sys_temp, sys_top_p, sys_pres_pen, sys_think = state.get("sys_temp", 0.8), state.get("sys_top_p", 0.95), 1.0, state.get("sys_think", True)
         print(f"[Cognitive State] Temp: {sys_temp} | Thinking: {sys_think}")
         try:
