@@ -41,54 +41,144 @@ client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
-def load_state() -> Dict[str, Any]:
-    if not STATE_PATH.exists(): return {}
-    try: return json.loads(read_file(STATE_PATH) or "{}")
-    except: return {}
-
-def save_state(updates: Dict[str, Any]) -> None:
-    current = load_state()
-    current.update(updates)
-    STATE_PATH.write_text(json.dumps(current, indent=2), encoding="utf-8")
-
-def load_chat_history() -> List[Dict[str, Any]]:
-    try:
-        hist = json.loads(read_file(CHAT_HISTORY_PATH) or "[]")
-        return hist[-20:]
-    except: return []
-
-def append_chat_history(role: str, text: str) -> None:
-    hist = load_chat_history()
-    hist.append({"role": role, "text": text, "timestamp": time.strftime("%H:%M:%S")})
-    CHAT_HISTORY_PATH.write_text(json.dumps(hist[-20:], indent=2), encoding="utf-8")
-
-def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
-    path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(message_dict) + "\n")
+def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = 6) -> List[Dict[str, Any]]:
+    processed = []
+    total_msgs = len(messages)
+    
+    for i, msg in enumerate(messages):
+        if i == 0 or i >= total_msgs - retain_full_last_n:
+            processed.append(msg)
+            continue
+            
+        new_msg = msg.copy()
+        if new_msg.get("role") == "tool" and new_msg.get("content"):
+            content_str = str(new_msg["content"])
+            if len(content_str) > 2000:
+                new_msg["content"] = f"[SYSTEM LOG: Historical tool output removed to preserve context. Output was {len(content_str)} chars.]\nPreview: {content_str[:500]}..."
+                
+        if new_msg.get("role") == "user" and new_msg.get("content"):
+            content_str = str(new_msg["content"])
+            if "[SYSTEM METRICS]" in content_str and len(content_str) > 1000:
+                clean_content = content_str.split("[SYSTEM METRICS]")[0].strip()
+                new_msg["content"] = clean_content + "\n[SYSTEM METRICS: Archived]"
+                
+        processed.append(new_msg)
+    return processed
 
 def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
-    path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    messages = [
-        {"role": "system", "content": "You are Ouroboros, a self-evolving cognitive agent."},
-        {"role": "user", "content": f"OBJECTIVE: {description}"}
-    ]
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
+    if not task_id: return []
+    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    raw_messages = []
+    
+    if log_path.exists():
+        with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
-                try: messages.append(json.loads(line))
-                except: continue
-    return messages
+                stripped = line.strip()
+                if not stripped: continue
+                try: raw_messages.append(json.loads(stripped))
+                except json.JSONDecodeError: continue
+                
+    if not raw_messages:
+        first_msg = {"role": "user", "content": f"Begin execution of task: {description}"}
+        raw_messages.append(first_msg)
+        append_task_message(task_id, first_msg)
+        
+    while raw_messages and raw_messages[0].get("role") != "user":
+        raw_messages.pop(0)
+    
+    # Strict Turn-0 Pinning
+    if len(raw_messages) > 40:
+        pinned_instruction = []
+        recent_history = raw_messages[-38:]
+        for msg in raw_messages:
+            if msg.get("role") == "user" and not pinned_instruction:
+                pinned_instruction.append(msg)
+                break
+        raw_messages = pinned_instruction + [{"role": "user", "content": "[SYSTEM NOTE: Intermediate history compressed. Focus on your original objective and recent steps.]"}] + recent_history
+    
+    while raw_messages and raw_messages[0].get("role") != "user":
+        raw_messages.pop(0)
 
-def auto_compact_task_log(task_id: str, max_turns: int = 40) -> None:
-    path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    if not path.exists(): return
-    lines = path.read_text(encoding="utf-8").strip().split("\n")
-    if len(lines) > max_turns:
-        # Keep the last 10 turns (assistant + tool pairs)
-        compacted = lines[-20:]
-        path.write_text("\n".join(compacted) + "\n", encoding="utf-8")
-        print(f"[System] Compacted task log {task_id} (kept last 20 messages).")
+    if not raw_messages:
+        raw_messages = [{"role": "user", "content": f"Resume execution of task: {description}"}]
+
+    normalized: List[Dict[str, Any]] = []
+    for msg in raw_messages:
+        if not normalized:
+            normalized.append(msg)
+            continue
+        last = normalized[-1]
+        if msg["role"] == "user" and last["role"] == "user":
+            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
+            continue
+        if msg["role"] == "assistant" and last["role"] == "assistant" and not msg.get("tool_calls") and not last.get("tool_calls"):
+            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
+            continue
+        normalized.append(msg)
+
+    normalized = shed_heavy_payloads(normalized, retain_full_last_n=6)
+
+    if normalized and normalized[-1]["role"] == "assistant" and not normalized[-1].get("tool_calls"):
+        nudge_content = "Please proceed with your next action using a tool."
+        last_user_msg = next((m for m in reversed(normalized) if m["role"] == "user"), None)
+        if not last_user_msg or last_user_msg.get("content") != nudge_content:
+            nudge = {"role": "user", "content": nudge_content}
+            normalized.append(nudge)
+            append_task_message(task_id, nudge)
+
+    if normalized and normalized[-1]["role"] == "assistant" and normalized[-1].get("tool_calls"):
+        for tool_call in normalized[-1]["tool_calls"]:
+            call_id = getattr(tool_call, 'id', None) or (tool_call.get("id") if isinstance(tool_call, dict) else None)
+            safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
+            func_name = getattr(tool_call.function, 'name', None) or (tool_call["function"]["name"] if isinstance(tool_call, dict) else None)
+            synthetic_tool_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": str(func_name), "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted. Evaluate your state and continue."}
+            normalized.append(synthetic_tool_msg)
+            append_task_message(task_id, synthetic_tool_msg)
+
+    return normalized
+
+def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
+    if not task_id: return
+    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(message_dict) + "\n")
+
+def load_chat_history() -> List[Dict[str, Any]]:
+    if CHAT_HISTORY_PATH.exists():
+        try: return json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
+        except: pass
+    return []
+
+def append_chat_history(role: str, text: str) -> None:
+    history = load_chat_history()
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    history.append({"role": role, "text": text, "timestamp": timestamp})
+    CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
+
+def load_state() -> Dict[str, Any]:
+    if STATE_PATH.exists():
+        try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        except: pass
+    return {"offset": 0, "creator_id": None, "idle_check_count": 0}
+
+def save_state(updates: Dict[str, Any]) -> None:
+    state = load_state()
+    state.update(updates)
+    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
+    log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists(): return
+    lines = log_path.read_text(encoding="utf-8").strip().split('\n')
+    if len(lines) <= max_messages: return
+    messages = [json.loads(line) for line in lines if line.strip()]
+    first_msg = messages[0]
+    recent_msgs = messages[-20:]
+    compaction_notice = {"role": "user", "content": "[SYSTEM NOTE]: Older execution steps archived to save context space."}
+    compacted = [first_msg, compaction_notice] + recent_msgs
+    with open(log_path, "w", encoding="utf-8") as f:
+        for msg in compacted:
+            f.write(json.dumps(msg) + "\n")
 
 def log_llm_call(messages: List[Dict[str, Any]], response_data: Any) -> None:
     try:
