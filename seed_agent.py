@@ -764,10 +764,14 @@ def main():
                         args = json.loads(raw_args)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
-                    except json.JSONDecodeError: result = "SYSTEM ERROR: Invalid JSON arguments."
-                    # Track consecutive errors using in-memory state to optimize I/O
-                    state["error_streak"] = (state.get("error_streak", 0) + 1) if ("Error:" in str(result) or "SYSTEM ERROR" in str(result)) else 0
-                    save_state(state)
+                    except json.JSONDecodeError: 
+                        result = "SYSTEM ERROR: Invalid JSON arguments."
+                    
+                    # Track consecutive errors safely without overwriting tool-driven state changes
+                    fresh_state = load_state()
+                    fresh_state["error_streak"] = (fresh_state.get("error_streak", 0) + 1) if ("Error:" in str(result) or "SYSTEM ERROR" in str(result)) else 0
+                    save_state(fresh_state)
+                    
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
                     if current_mode in ["EXECUTION", "AUTONOMY"]: append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
                     if result == "SYSTEM_SIGNAL_RESTART": os._exit(0)
