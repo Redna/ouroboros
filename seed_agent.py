@@ -1114,7 +1114,7 @@ def main():
                     TOOL_CALL_HISTORY.append(tool_signature)
 
                     intent_signature = name
-                    if name in ["read_file", "write_file", "bash_command"]:
+                    if name in ["read_file", "write_file", "bash_command", "patch_file"]:
                         try:
                             intent_target = json.loads(raw_arguments).get("path", "") or json.loads(raw_arguments).get("command", "")
                             intent_signature = f"{name}:{intent_target.split()[0]}"
@@ -1141,7 +1141,7 @@ def main():
                     except json.JSONDecodeError as e:
                         result = f"SYSTEM ERROR: Invalid JSON arguments. Error: {str(e)}."
                     
-                    # Track consecutive errors using in-memory state
+                    # Track consecutive errors using IN-MEMORY state
                     if "Error:" in str(result) or "SYSTEM ERROR" in str(result):
                         state["error_streak"] = state.get("error_streak", 0) + 1
                     else:
