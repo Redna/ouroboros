@@ -980,27 +980,15 @@ def main():
         # ---------------------------------
         # 3. Execute Native Tool Calling
         
-        # --- DYNAMIC COGNITIVE PARAMETERS (System 1 vs System 2) ---
-        state = load_state()
-        error_streak = state.get("error_streak", 0)
-
-        if current_mode == "AUTONOMY":
-            # System 2: Deep Reasoning & Exploration (Thinking enabled)
-            sys_temp, sys_top_p, sys_pres_pen, sys_think = 1.0, 0.95, 1.5, True
-        else: # EXECUTION
-            # System 2: Execution 
-            task_desc = queue[0].get("description", "").lower() if queue else ""
-            
-            # Metacognitive override: If flailing, lower temp to force convergence
-            if error_streak >= 3:
-                print(f"[Metacognition] High error streak ({error_streak}). Auto-tuning temperature to 0.3 for syntax precision.")
-                sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.3, 0.90, 0.0, True
-            elif any(keyword in task_desc for keyword in ["code", "script", "python", "bug", "refactor"]):
-                # Precise Coding Tasks: Lower temp, zero presence penalty for repetitive syntax
-                sys_temp, sys_top_p, sys_pres_pen, sys_think = 0.6, 0.95, 0.0, True
-            else:
-                # General Execution Tasks
-                sys_temp, sys_top_p, sys_pres_pen, sys_think = 1.0, 0.95, 1.5, True
+        # --- DYNAMIC COGNITIVE PARAMETERS (Self-Regulated) ---
+        # Retrieve self-set parameters, falling back to healthy defaults
+        sys_temp = state.get("sys_temp", 0.8)
+        sys_top_p = state.get("sys_top_p", 0.95)
+        sys_pres_pen = 1.0 # Kept static to prevent repetition loops
+        sys_think = state.get("sys_think", True)
+        
+        # Print the active state for the console
+        print(f"[Cognitive State] Temp: {sys_temp} | Thinking: {sys_think}")
         # -----------------------------------------------------------
 
         try:
