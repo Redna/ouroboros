@@ -676,7 +676,8 @@ def main():
             if context_notes: task_desc += f"\n\n--- INHERITED CONTEXT FROM PARENT TASK ---\n{context_notes}"
             api_messages += load_task_messages(active_task_id, task_desc)
         elif current_mode == "AUTONOMY":
-            api_messages += load_task_messages(active_task_id, "Your task queue is empty. You are in AUTONOMY mode.")
+            autonomy_description = "Your task queue is empty. You are in AUTONOMY mode.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
+            api_messages += load_task_messages(active_task_id, autonomy_description)
 
         last_context = state.get("last_context_size", 0)
 
