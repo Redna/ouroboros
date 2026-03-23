@@ -758,11 +758,42 @@ def main():
                 if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY = TOOL_CALL_HISTORY[-3:]
                 if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY = TOOL_INTENT_HISTORY[-6:]
 
-                # PHASE 2: Detect loops using the updated, current history
-                if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
+                # PHASE 2: Detect loops and stagnation patterns
+                loop_detected = None
+                
+                # PATTERN 1: Exact tool repetition (3 identical calls)
+                if len(TOOL_CALL_HISTORY) >= 3 and len(set(TOOL_CALL_HISTORY[-3:])) == 1:
                     loop_detected = "exact tool loop"
-                elif len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
+                
+                # PATTERN 2: Cognitive intent stall (6 identical intents)
+                elif len(TOOL_INTENT_HISTORY) >= 6 and len(set(TOOL_INTENT_HISTORY[-6:])) == 1:
                     loop_detected = "cognitive stall"
+                
+                # PATTERN 3: Stagnation - same tool on same resource with varying parameters
+                # This catches: read_file(path, 1-100), read_file(path, 101-200), read_file(path, 201-300)
+                elif len(TOOL_CALL_HISTORY) >= 4:
+                    recent_calls = TOOL_CALL_HISTORY[-4:]
+                    tool_resources = set()
+                    for call in recent_calls:
+                        # Extract "tool:resource" pattern, ignoring parameters
+                        if ':' in call:
+                            parts = call.split(':', 1)
+                            tool_name = parts[0]
+                            # For file operations, extract just the path, not line ranges
+                            resource = parts[1] if len(parts) > 1 else ""
+                            if tool_name in ["read_file", "write_file", "patch_file"]:
+                                # Remove JSON params, keep just the path
+                                try:
+                                    params = json.loads(resource)
+                                    resource = f"{tool_name}:{params.get('path', resource)}"
+                                except:
+                                    resource = f"{tool_name}:{resource.split(',')[0]}"  # First param is usually path
+                            tool_resources.add(resource)
+                    
+                    # If all recent calls are same tool on same resource, it's stagnation
+                    # (even if parameters differ - that's the whole point!)
+                    if len(tool_resources) == 1 and len(recent_calls) >= 4:
+                        loop_detected = "stagnation loop"
 
                 if loop_detected:
                     for tc in message.tool_calls:
