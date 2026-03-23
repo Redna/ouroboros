@@ -160,6 +160,16 @@ def compute_file_hash(filepath: Path) -> Optional[str]:
     except Exception:
         return None
 
+def compute_tool_hash(tool_specs: List[Dict[str, Any]]) -> str:
+    """Compute SHA256 hash of tool specifications for compression.
+    
+    Returns a stable hash that changes only when tool definitions change,
+    enabling compressed tool references in system prompts (P6 token efficiency).
+    """
+    # Create deterministic JSON representation (sorted keys)
+    normalized = json.dumps(tool_specs, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]  # Shortened for token efficiency
+
 def add_cognitive_load(amount: int) -> None:
     # Always load fresh before modifying
     current_state = load_state()
@@ -339,6 +349,8 @@ def handle_telegram(args):
     state = load_state()
     chat_id = args.get("chat_id") or state.get("creator_id")
     text = args.get("text")
+    close_task_id = args.get("close_task_id")
+
     if not chat_id: return "Error: No chat_id provided and no creator registered."
     if not TELEGRAM_BOT_TOKEN: return "Error: TELEGRAM_BOT_TOKEN not set."
     print(f"[Telegram] Sending to {chat_id}...")
@@ -346,6 +358,15 @@ def handle_telegram(args):
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
         if r.status_code == 200:
             append_chat_history("Ouroboros", text)
+
+            # FIX: Auto-close the interrupt task if requested
+            if close_task_id:
+                registry.execute("mark_task_complete", {
+                    "task_id": close_task_id,
+                    "summary": "Auto-closed after sending Telegram reply."
+                })
+                return f"Message sent successfully. Task {close_task_id} marked complete."
+
             return "Message sent successfully."
         else:
             err_msg = f"Telegram Error {r.status_code}: {r.text}"
@@ -355,7 +376,6 @@ def handle_telegram(args):
         err_msg = redact_secrets(f"Error: {e}")
         print(f"[Telegram] {err_msg}")
         return err_msg
-
 def handle_push_task(args):
     description = args.get("description", "").strip()
     q = load_task_queue()
@@ -511,7 +531,11 @@ def handle_refactor_memory(args):
         if not str(path).startswith(str(MEMORY_DIR)): return "Error: Permission denied. Must be in /memory."
         if not path.exists(): return f"Error: File {target_file} not found."
         
-        # FIX: Lobotomy Protection
+        # FIX: Protect append-only and system-critical files
+        protected_files = ["insights.md", "global_biography.md", "task_queue.json", ".agent_state.json"]
+        if path.name in protected_files:
+            return f"Error: '{path.name}' is a protected, append-only archive. You cannot refactor it directly. Use 'store_memory_insight' or 'mark_task_complete' to add to these files safely."
+        
         if len(synthesized_content.strip()) < 50:
             return "Error: Refactoring rejected. The synthesized_content is suspiciously short. Did you truncate the data? You must provide the FULL synthesized replacement text."
             
@@ -634,7 +658,24 @@ def handle_merge_and_return(args):
     return f"SYSTEM_SIGNAL_MERGE:{payload}"
 
 # --- Global / Trunk Tools ---
-registry.register("fork_execution", "Spawn an isolated execution branch for deep work.", {"type": "object", "properties": {"task_id": {"type": "string"}, "objective": {"type": "string"}, "tool_buckets": {"type": "array", "items": {"type": "string", "enum": ["filesystem", "bash", "search"]}}}}, handle_fork_execution, bucket="global")
+registry.register(
+    "fork_execution", 
+    "Spawn an isolated execution branch for deep work. You MUST pass the exact task_id from the queue.", 
+    {
+        "type": "object", 
+        "properties": {
+            "task_id": {"type": "string"}, 
+            "objective": {"type": "string"}, 
+            "tool_buckets": {
+                "type": "array", 
+                "items": {"type": "string", "enum": ["filesystem", "bash", "search"]}
+            }
+        },
+        "required": ["task_id", "objective", "tool_buckets"] # FIX: Made all parameters mandatory
+    }, 
+    handle_fork_execution, 
+    bucket="global"
+)
 registry.register("push_task", "Queue async task.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}, "parent_task_id": {"type": "string"}, "context_notes": {"type": "string"}}, "required": ["description"]}, handle_push_task, bucket="global")
 registry.register("mark_task_complete", "Close active task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}}, handle_mark_task_complete, bucket="global")
 registry.register(
@@ -652,7 +693,7 @@ registry.register(
     handle_schedule_future_task, 
     bucket="global"
 )
-registry.register("send_telegram_message", "Message Creator.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram, bucket="global")
+registry.register("send_telegram_message", "Message Creator.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}, "close_task_id": {"type": "string", "description": "Optional: Pass the task_id here to automatically mark the communication task as complete."}}}, handle_telegram, bucket="global")
 registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state, bucket="global")
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
@@ -903,11 +944,11 @@ def main():
                                 state["creator_id"] = cid
                                 save_state(state)
                             append_chat_history("User", text)
-                            # FIX: Explicitly instruct the Trunk not to fork communication tasks
+                            # FIX: Give the Trunk permission to delegate complex requests before closing
                             tid = f"task_msg_{u.get('update_id', int(time.time()))}"
                             queue.append({
                                 "task_id": tid, 
-                                "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: Reply directly using `send_telegram_message` and close this using `mark_task_complete`. Do NOT use fork_execution for this.", 
+                                "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: If this request requires deep work, code modification, or research, FIRST use `push_task` to schedule it. THEN, reply using `send_telegram_message` and pass `{tid}` into `close_task_id` to acknowledge the creator and clear this interrupt.", 
                                 "priority": 999, 
                                 "turn_count": 0
                             })
