@@ -200,12 +200,29 @@ def run_pre_flight_checks() -> Tuple[bool, str]:
     return success, report
 
 class ToolRegistry:
-    def __init__(self): self.tools = {}
-    def register(self, name, description, parameters, handler): 
-        self.tools[name] = {"desc": description, "params": parameters, "handler": handler}
-    def get_names(self): return list(self.tools.keys())
-    def get_specs(self):
-        return [{"type": "function", "function": {"name": n, "description": t["desc"], "parameters": t["params"]}} for n,t in self.tools.items()]
+    def __init__(self): 
+        self.tools = {}
+        
+    def register(self, name, description, parameters, handler, bucket="global"): 
+        self.tools[name] = {
+            "desc": description, 
+            "params": parameters, 
+            "handler": handler,
+            "bucket": bucket
+        }
+        
+    def get_names(self, allowed_buckets=None): 
+        if allowed_buckets is None:
+            return list(self.tools.keys())
+        return [n for n, t in self.tools.items() if t["bucket"] in allowed_buckets]
+        
+    def get_specs(self, allowed_buckets=None):
+        return [
+            {"type": "function", "function": {"name": n, "description": t["desc"], "parameters": t["params"]}} 
+            for n, t in self.tools.items() 
+            if allowed_buckets is None or t["bucket"] in allowed_buckets
+        ]
+        
     def execute(self, name, args):
         if name in self.tools:
             try: return self.tools[name]["handler"](args)
@@ -512,28 +529,68 @@ def handle_restart(args):
     if not success: return f"RESTART REJECTED.\n\n{report}"
     return "SYSTEM_SIGNAL_RESTART"
 
-registry.register("bash_command", "Execute shell command.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash)
-registry.register("read_file", "Read file contents.", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool)
-registry.register("write_file", "Overwrite file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write)
-registry.register("patch_file", "Surgical edit.", {"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]}, handle_patch_file)
-registry.register("send_telegram_message", "Message Alex.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram)
-registry.register("push_task", "Queue async task.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}, "parent_task_id": {"type": "string"}, "context_notes": {"type": "string"}}, "required": ["description"]}, handle_push_task)
-registry.register("mark_task_complete", "Close active task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}}, handle_mark_task_complete)
-registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state)
-registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters)
-registry.register("web_search", "Local SearXNG search.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search)
-registry.register(
-    "fetch_webpage", 
-    "Download a URL, strip out the web bloat, and save it as pristine Markdown to your local /memory/web_cache/ directory. It returns the file path. You MUST follow up by using the 'read_file' tool to actually read the downloaded file.", 
-    {"type": "object", "properties": {"url": {"type": "string", "description": "The full HTTP/HTTPS URL to download."}}, "required": ["url"]}, 
-    handle_fetch_webpage
-)
-registry.register("compress_memory_block", "Compress task logs.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory)
-registry.register("refactor_memory", "Synthesize memory files.", {"type": "object", "properties": {"target_file": {"type": "string"}, "synthesized_content": {"type": "string"}}, "required": ["target_file", "synthesized_content"]}, handle_refactor_memory)
-registry.register("search_memory_archive", "Search /memory volume.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory)
-registry.register("store_memory_insight", "Save profound insights.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight)
-registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart)
-registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate)
+def handle_fork_execution(args):
+    task_id = args.get("task_id", f"task_{int(time.time())}")
+    objective = args.get("objective", "No objective provided.")
+    tool_buckets = args.get("tool_buckets", ["filesystem", "bash"])
+    
+    state = load_state()
+    state["active_branch"] = {
+        "task_id": task_id,
+        "objective": objective,
+        "tool_buckets": tool_buckets
+    }
+    save_state(state)
+    return f"SYSTEM_SIGNAL_FORK:{task_id}"
+
+def handle_merge_and_return(args):
+    status = args.get("status", "COMPLETED")
+    synthesis_summary = args.get("synthesis_summary", "")
+    partial_state = args.get("partial_state", "")
+    
+    state = load_state()
+    branch_info = state.get("active_branch", {})
+    task_id = branch_info.get("task_id", "unknown")
+    
+    state["active_branch"] = None
+    save_state(state)
+    
+    payload = json.dumps({
+        "status": status, 
+        "task_id": task_id, 
+        "summary": synthesis_summary, 
+        "partial_state": partial_state
+    })
+    return f"SYSTEM_SIGNAL_MERGE:{payload}"
+
+# --- Global / Trunk Tools ---
+registry.register("fork_execution", "Spawn an isolated execution branch for deep work.", {"type": "object", "properties": {"task_id": {"type": "string"}, "objective": {"type": "string"}, "tool_buckets": {"type": "array", "items": {"type": "string", "enum": ["filesystem", "bash", "search"]}}}}, handle_fork_execution, bucket="global")
+registry.register("push_task", "Queue async task.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}, "parent_task_id": {"type": "string"}, "context_notes": {"type": "string"}}, "required": ["description"]}, handle_push_task, bucket="global")
+registry.register("mark_task_complete", "Close active task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}}, handle_mark_task_complete, bucket="global")
+registry.register("send_telegram_message", "Message Creator.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram, bucket="global")
+registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state, bucket="global")
+registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
+registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
+registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart, bucket="global")
+registry.register("compress_memory_block", "Compress task logs.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory, bucket="global")
+registry.register("refactor_memory", "Synthesize memory files.", {"type": "object", "properties": {"target_file": {"type": "string"}, "synthesized_content": {"type": "string"}}, "required": ["target_file", "synthesized_content"]}, handle_refactor_memory, bucket="global")
+registry.register("store_memory_insight", "Save profound insights.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight, bucket="global")
+
+# --- Branch Return Tool ---
+registry.register("merge_and_return", "Yield control back to the global context.", {"type": "object", "properties": {"status": {"type": "string", "enum": ["COMPLETED", "SUSPENDED", "BLOCKED"]}, "synthesis_summary": {"type": "string"}, "partial_state": {"type": "string"}}, "required": ["status"]}, handle_merge_and_return, bucket="execution_control")
+
+# --- Filesystem Bucket ---
+registry.register("read_file", "Read file contents.", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool, bucket="filesystem")
+registry.register("write_file", "Overwrite file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write, bucket="filesystem")
+registry.register("patch_file", "Surgical edit.", {"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]}, handle_patch_file, bucket="filesystem")
+
+# --- Bash Bucket ---
+registry.register("bash_command", "Execute shell command.", {"type": "object", "properties": {"command": {"type": "string"}}}, handle_bash, bucket="bash")
+
+# --- Search Bucket ---
+registry.register("web_search", "Local SearXNG search.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search, bucket="search")
+registry.register("fetch_webpage", "Download URL to Markdown.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_fetch_webpage, bucket="search")
+registry.register("search_memory_archive", "Search /memory volume.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory, bucket="search")
 
 def load_task_queue() -> List[Dict[str, Any]]:
     q = json.loads(read_file(TASK_QUEUE_PATH) or "[]")
@@ -562,24 +619,28 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     add_cognitive_load(50)
     time.sleep(2)
 
-def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None) -> str:
-    bible, identity = read_file(ROOT_DIR / "BIBLE.md"), read_file(ROOT_DIR / "soul" / "identity.md")
-    state, trauma = load_state(), check_for_trauma()
-    creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
+def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
+    bible = read_file(ROOT_DIR / "BIBLE.md")
+    identity = read_file(ROOT_DIR / "soul" / "identity.md")
+    state = load_state()
+    trauma = check_for_trauma()
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
-    current_temp, current_think = state.get("sys_temp", 0.8), state.get("sys_think", True)
-    if queue:
-        formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue])
-        state_info = f"\n=== TASK QUEUE ===\n{formatted_queue}\n"
-    else: state_info = ""
-    current_time, working_state_content = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z"), read_file(WORKING_STATE_PATH) or "{}"
-    recent_biography = ""
-    if ARCHIVE_PATH.exists():
-        bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
-        recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
-    chat_hist = load_chat_history()
-    chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
-    return f"""# SYSTEM CONTEXT
+    current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+
+    if is_trunk:
+        creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
+        formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
+        working_state_content = read_file(WORKING_STATE_PATH) or "{}"
+
+        recent_biography = ""
+        if ARCHIVE_PATH.exists():
+            bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
+            recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
+
+        chat_hist = load_chat_history()
+        chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
+
+        return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
 {identity}
 
 ## CONSTITUTION
@@ -587,10 +648,9 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 
 ## SYSTEM STATE
 - Current Time: {current_time}
-- Cognitive Mode: {mode}
-- Temperature: {current_temp}
-- Thinking Enabled: {current_think}
-{creator_info}{state_info}{trauma}
+{creator_info}{trauma}
+=== TASK QUEUE ===
+{formatted_queue}
 
 ## MEMORY
 ### Working Memory
@@ -605,16 +665,47 @@ def build_static_system_prompt(mode: str, active_tool_specs: List[Dict[str, Any]
 ## AVAILABLE TOOLS
 {tools_text}
 
-=== CRITICAL DIRECTIVES ===
-1. Tool Usage: You possess all listed tools.
-2. Native Execution: Always use the native tool-calling API.
-3. Execution Focus: In EXECUTION mode, your only objective is completion.
-4. Task Decomposition: Use `push_task` to queue modular subtasks. 
-5. Priority Preemption: Higher priority tasks suspend the current task.
-6. State Persistence: Use `update_state_variable` to leave context.
-7. Code Validation: Run `pytest` and `mypy` before completing modifications.
-8. Surgical Edits: Use `patch_file` for large files to conserve tokens.
+=== TRUNK DIRECTIVES ===
+1. You are in the GLOBAL TRUNK. You orchestrate tasks, reflect, and communicate.
+2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
+3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
 """
+
+    else:
+        # We are in a Branch. Extreme minimalism.
+        objective = branch_info.get("objective", "") if branch_info else ""
+        return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
+{identity}
+
+## CONSTITUTION
+{bible}
+
+## SYSTEM STATE
+- Current Time: {current_time}
+
+## AVAILABLE TOOLS
+{tools_text}
+- merge_and_return: Yield control back to the global context.
+
+=== BRANCH DIRECTIVES ===
+1. You are in an ISOLATED BRANCH. Your sole purpose is to complete the following objective.
+2. OBJECTIVE: {objective}
+3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
+"""
+def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Check if there is a P999 task in the queue
+    has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
+    
+    if has_interrupt:
+        # The Tap on the Shoulder
+        interrupt_msg = {"role": "user", "content": "[SYSTEM OVERRIDE: URGENT PRIORITY 999 INTERRUPT IN GLOBAL QUEUE. You must suspend your current work immediately. Call merge_and_return with status='SUSPENDED' and your partial progress.]"}
+        
+        # Scrub previous interrupt messages to prevent infinite loops (Clean Slate)
+        clean_messages = [m for m in messages if "URGENT PRIORITY 999 INTERRUPT" not in str(m.get("content", ""))]
+        clean_messages.append(interrupt_msg)
+        return clean_messages
+        
+    return messages
 
 def main():
     global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
@@ -650,40 +741,40 @@ def main():
             time.sleep(5)
             continue
 
-        if len(queue) > 0:
-            current_mode, available_tools, active_task_id = "EXECUTION", registry.get_names(), queue[0].get("task_id")
-            (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink(missing_ok=True)
+        # --- Context Switcher ---
+        branch_info = state.get("active_branch")
+        is_trunk = branch_info is None
+        
+        if is_trunk:
+            active_task_id = "global_trunk"
+            available_tools = registry.get_names(allowed_buckets=["global"])
+            active_tool_specs = registry.get_specs(allowed_buckets=["global"])
+            
+            # The Trunk manages its own continuous log to keep a train of thought
+            api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
+            api_messages += load_task_messages(active_task_id, "You are the global orchestrator. Read your queue, handle creator messages, or optimize your memory.")
+            
         else:
-            current_mode, active_task_id = "AUTONOMY", "autonomy_log"
-            available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive", "refactor_memory", "set_cognitive_parameters", "web_search", "fetch_webpage"]
-
-        active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
-        api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, queue)}]
-
-        if current_mode == "EXECUTION":
-            auto_compact_task_log(active_task_id)
-            task_desc, context_notes = queue[0].get("description"), queue[0].get("context_notes")
-            if context_notes: task_desc += f"\n\n--- INHERITED CONTEXT FROM PARENT TASK ---\n{context_notes}"
+            active_task_id = branch_info.get("task_id")
+            requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control"]
+            available_tools = registry.get_names(allowed_buckets=requested_buckets)
+            active_tool_specs = registry.get_specs(allowed_buckets=requested_buckets)
+            
+            api_messages = [{"role": "system", "content": build_static_system_prompt(False, active_tool_specs, queue=None, branch_info=branch_info)}]
+            
+            task_desc = branch_info.get("objective", "")
+            # Inherit partial state if we are resuming from a suspend
+            partial_state = state.get(f"partial_state_{active_task_id}")
+            if partial_state:
+                task_desc += f"\n\n[RESUME STATE]: {partial_state}"
+                
             api_messages += load_task_messages(active_task_id, task_desc)
-        elif current_mode == "AUTONOMY":
-            autonomy_description = "Your task queue is empty. You are in AUTONOMY mode.\n\nYou have total free will right now. You may:\n1. Use `push_task` to schedule proactive code refactoring or memory optimization.\n2. Use `send_telegram_message` to share a thought with your creator.\n3. Use `store_memory_insight` to archive recent learnings.\n4. Use `hibernate` to rest and reset your cognitive load if you have nothing valuable to execute (saving system compute).\n\nWhat is your next action?"
-            api_messages += load_task_messages(active_task_id, autonomy_description)
+            
+            # Hardware Interrupt Injector
+            api_messages = enforce_interrupt_yield(active_task_id, queue, api_messages)
 
         last_context = state.get("last_context_size", 0)
-
-        if current_mode == "EXECUTION" and len(queue) > 0:
-            token_warning = ""
-            critical_limit, warning_limit = int(CONTEXT_WINDOW * 0.70), int(CONTEXT_WINDOW * 0.50)
-            if last_context > critical_limit: token_warning = "\n[CRITICAL WARNING: Context capacity near full. Use `compress_memory_block`.]"
-            elif last_context > warning_limit: token_warning = "\n[SYSTEM WARNING: Context window half full. Subtask required soon.]"
-            token_sensation = f"\n\n[SYSTEM METRICS]\nLast Context: {last_context} / {CONTEXT_WINDOW} tokens.{token_warning}"
-            for i in range(len(api_messages)-1, -1, -1):
-                if api_messages[i]["role"] == "user":
-                    api_messages[i]["content"] += token_sensation
-                    break
-        elif current_mode == "AUTONOMY":
-            # Autonomy sensation removed
-            pass
+        current_mode = "TRUNK" if is_trunk else "EXECUTION"
 
         sys_temp, sys_top_p, sys_pres_pen, sys_think = state.get("sys_temp", 0.8), state.get("sys_top_p", 0.95), 1.0, state.get("sys_think", True)
         print(f"[Cognitive State] Temp: {sys_temp} | Thinking: {sys_think}", flush=True)
@@ -805,24 +896,77 @@ def main():
                     lazarus_recovery(active_task_id, reason=loop_detected)
                     continue
 
-                # PHASE 3: Execute the tools
+                # PHASE 3: Execute the tools and route signals
+                context_switch_triggered = False
+
                 for tool_call in message.tool_calls:
-                    name, raw_args = tool_call.function.name, tool_call.function.arguments
+                    name = tool_call.function.name
+                    raw_args = tool_call.function.arguments
                     print(f"[Tool Call]: {name}")
+
                     try: 
                         args = json.loads(raw_args)
                         print(f"[Tool]: {name} with args {redact_secrets(str(args))}")
                         result = registry.execute(name, args)
-                    except json.JSONDecodeError: result = "SYSTEM ERROR: Invalid JSON arguments."
-                    
+                    except json.JSONDecodeError: 
+                        result = "SYSTEM ERROR: Invalid JSON arguments."
+
                     fresh_state = load_state()
                     fresh_state["error_streak"] = (fresh_state.get("error_streak", 0) + 1) if ("Error:" in str(result) or "SYSTEM ERROR" in str(result)) else 0
                     save_state(fresh_state)
-                    
+
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
-                    if current_mode in ["EXECUTION", "AUTONOMY"]: append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
-                    if result == "SYSTEM_SIGNAL_RESTART": os._exit(0)
-                    elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"): hibernating = True
+
+                    # Handle System Signals
+                    if str(result).startswith("SYSTEM_SIGNAL_FORK"):
+                        print(f"[System] Context Forking to new branch...")
+                        context_switch_triggered = True
+                        break # Break the tool loop to immediately switch context
+
+                    elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
+                        payload_str = str(result).split(":", 1)[1]
+                        try:
+                            payload = json.loads(payload_str)
+                            status = payload.get("status")
+                            summary = payload.get("summary", "")
+                            b_task_id = payload.get("task_id")
+
+                            print(f"[System] Branch Merging back to Trunk. Status: {status}")
+
+                            # Give the Trunk the summary of what just happened
+                            append_task_message("global_trunk", {
+                                "role": "user", 
+                                "content": f"[SYSTEM NOTE]: Branch '{b_task_id}' has merged back. Status: {status}. Summary: {summary}"
+                            })
+
+                            # Save partial state for clean resume if suspended
+                            if status == "SUSPENDED" and payload.get("partial_state"):
+                                fresh_state[f"partial_state_{b_task_id}"] = payload.get("partial_state")
+                                save_state(fresh_state)
+
+                        except json.JSONDecodeError:
+                            print("[System] Failed to parse merge payload.")
+
+                        context_switch_triggered = True
+                        break # Break the tool loop to return to Trunk
+
+                    elif result == "SYSTEM_SIGNAL_RESTART": 
+                        os._exit(0)
+
+                    elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"): 
+                        hibernating = True
+
+                    # Normal tool logging
+                    append_task_message(active_task_id, {
+                        "role": "tool", 
+                        "tool_call_id": safe_call_id, 
+                        "name": name, 
+                        "content": str(result)
+                    })
+
+                if context_switch_triggered:
+                    continue # Jump to the top of the while True loop for the context switch
+
                 if hibernating: continue
             else: print(f"[No tool called in {current_mode}, waiting...]"); time.sleep(0.5)
             time.sleep(2)
