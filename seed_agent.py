@@ -21,12 +21,11 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 CONTEXT_WINDOW = int(os.environ.get("OUROBOROS_CONTEXT_WINDOW", "65536"))
 ROOT_DIR = Path(__file__).parent.resolve()
-MEMORY_DIR = Path("/memory")
+MEMORY_DIR = Path(os.environ.get("MEMORY_DIR", "/memory"))
 
 WORKING_STATE_PATH = MEMORY_DIR / "working_state.json"
 TASK_QUEUE_PATH = MEMORY_DIR / "task_queue.json"
 STATE_PATH = MEMORY_DIR / ".agent_state.json"
-LLM_LOG_DIR = MEMORY_DIR / "llm_logs"
 ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
@@ -168,16 +167,6 @@ def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
     with open(log_path, "w", encoding="utf-8") as f:
         for msg in compacted:
             f.write(json.dumps(msg) + "\n")
-
-def log_llm_call(messages: List[Dict[str, Any]], response_data: Any) -> None:
-    try:
-        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        log_file = LLM_LOG_DIR / f"call-{timestamp}-{int(time.time())}.json"
-        log_data = {"timestamp": timestamp, "model": MODEL, "messages": messages, "response": response_data}
-        log_file.write_text(json.dumps(log_data, indent=2, default=str), encoding="utf-8")
-    except Exception as e: 
-        print(f"[System] LLM Log Error: {e}")
 
 def redact_secrets(text: str) -> str:
     if not text: return text
@@ -709,7 +698,6 @@ def main():
                 extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": sys_think}}
             )
             message = response.choices[0].message
-            log_llm_call(api_messages, message.model_dump())
             if current_mode == "EXECUTION" and len(queue) > 0:
                 queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
                 current_context_size, max_physical_context = state.get("last_context_size", 0), int(CONTEXT_WINDOW * 0.85)
