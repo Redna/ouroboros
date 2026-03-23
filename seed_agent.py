@@ -8,6 +8,7 @@ import re
 import ast
 import tempfile
 import shutil
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
@@ -30,8 +31,8 @@ ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 
-TOOL_CALL_HISTORY = []
-TOOL_INTENT_HISTORY = []
+TOOL_CALL_HISTORY: List[Dict[str, Any]] = []
+TOOL_INTENT_HISTORY: List[Dict[str, Any]] = []
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
@@ -147,6 +148,16 @@ def load_state() -> Dict[str, Any]:
 def save_state(state_dict: Dict[str, Any]) -> None:
     # Pure overwrite. This allows keys to be deleted safely.
     STATE_PATH.write_text(json.dumps(state_dict, indent=2), encoding="utf-8")
+
+def compute_file_hash(filepath: Path) -> Optional[str]:
+    """Compute SHA256 hash of file contents for cache invalidation."""
+    try:
+        if not filepath.exists():
+            return None
+        content = filepath.read_bytes()
+        return hashlib.sha256(content).hexdigest()
+    except Exception:
+        return None
 
 def add_cognitive_load(amount: int) -> None:
     # Always load fresh before modifying
@@ -590,7 +601,15 @@ registry.register("send_telegram_message", "Message Creator.", {"type": "object"
 registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state, bucket="global")
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
-registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart, bucket="global")
+
+# --- System Control Bucket (Available to both Trunk and Branch) ---
+registry.register(
+    "request_restart", 
+    "Apply code updates. This automatically runs MyPy and PyTest. If tests fail, the restart is rejected and you will receive the error log to fix your code. Call this BEFORE merging if you modified Python files.", 
+    {"type": "object", "properties": {}}, 
+    handle_restart, 
+    bucket="system_control"
+)
 
 # --- Memory Access Bucket (For Trunk Reflection) ---
 # FIX: Moving memory management tools into a dedicated bucket
@@ -653,14 +672,28 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     
     time.sleep(2)
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
+    """Build system prompt with cache for token efficiency (P6)."""
+    # Compute cache key components
+    bible_hash = compute_file_hash(ROOT_DIR / "BIBLE.md") or ""
+    identity_hash = compute_file_hash(ROOT_DIR / "soul" / "identity.md") or ""
+    tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
+    tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
+    
+    # Build composite cache key (static components only - time varies each call)
+    cache_key = f"prompt_v1_{is_trunk}_{bible_hash[:16]}_{identity_hash[:16]}_{tools_hash}"
+    
+    state = load_state()
+    cached_prompt = state.get("cached_prompts", {}).get(cache_key)
+    
+    # Read core files (always needed, but only fully process if cache miss)
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
-    state = load_state()
     trauma = check_for_trauma()
-    tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
 
     if is_trunk:
+        # Trunk prompts are mostly dynamic (queue, chat history, etc.) - skip caching
+        # Cache only for branches where identity/bible/tools dominate
         creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         working_state_content = read_file(WORKING_STATE_PATH) or "{}"
@@ -703,18 +736,24 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
 3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
 """
+    elif cached_prompt:
+        # Branch cache hit - use cached prompt but update time
+        return cached_prompt.replace("{CURRENT_TIME}", current_time)
 
     else:
         # We are in a Branch. Extreme minimalism.
         objective = branch_info.get("objective", "") if branch_info else ""
-        return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
+        objective_hash = hashlib.sha256(objective.encode()).hexdigest()[:16]
+        
+        # Build branch prompt with placeholder for time (enables caching)
+        branch_prompt = f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
 {identity}
 
 ## CONSTITUTION
 {bible}
 
 ## SYSTEM STATE
-- Current Time: {current_time}
+- Current Time: {{CURRENT_TIME}}
 
 ## AVAILABLE TOOLS
 {tools_text}
@@ -725,6 +764,29 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 2. OBJECTIVE: {objective}
 3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
 """
+        # Update cache key with objective (branches are objective-specific)
+        branch_cache_key = f"prompt_v1_{is_trunk}_{bible_hash[:16]}_{identity_hash[:16]}_{tools_hash}_{objective_hash}"
+        
+        # Check if we already have this branch prompt cached
+        cached_branch_prompt = state.get("cached_prompts", {}).get(branch_cache_key)
+        if cached_branch_prompt:
+            return cached_branch_prompt.replace("{CURRENT_TIME}", current_time)
+        
+        # Cache the new prompt with size limit (max 10 entries to prevent bloat)
+        if "cached_prompts" not in state:
+            state["cached_prompts"] = {}
+        
+        # Prune old entries if cache is too large
+        if len(state["cached_prompts"]) >= 10:
+            # Remove oldest entries (first 3 to make room)
+            keys_to_remove = list(state["cached_prompts"].keys())[:3]
+            for key in keys_to_remove:
+                del state["cached_prompts"][key]
+        
+        state["cached_prompts"][branch_cache_key] = branch_prompt
+        save_state(state)
+        
+        return branch_prompt.replace("{CURRENT_TIME}", current_time)
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # FIX: Ignore the interrupt if the active task IS the interrupt task
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
@@ -785,8 +847,11 @@ def main():
         
         if is_trunk:
             active_task_id = "global_trunk"
-            available_tools = registry.get_names(allowed_buckets=["global", "memory_access"])
-            active_tool_specs = registry.get_specs(allowed_buckets=["global", "memory_access"])
+            
+            # FIX: Add system_control so Trunk can restart
+            allowed_trunk_buckets = ["global", "memory_access", "system_control"]
+            available_tools = registry.get_names(allowed_buckets=allowed_trunk_buckets)
+            active_tool_specs = registry.get_specs(allowed_buckets=allowed_trunk_buckets)
             
             # The Trunk manages its own continuous log to keep a train of thought
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
@@ -802,7 +867,8 @@ def main():
             
         else:
             active_task_id = branch_info.get("task_id")
-            requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control"]
+            # FIX: Add system_control so the Branch can test its own code
+            requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control"]
             available_tools = registry.get_names(allowed_buckets=requested_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=requested_buckets)
             
