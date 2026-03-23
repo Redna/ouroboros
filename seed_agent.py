@@ -769,31 +769,42 @@ def main():
                 elif len(TOOL_INTENT_HISTORY) >= 6 and len(set(TOOL_INTENT_HISTORY[-6:])) == 1:
                     loop_detected = "cognitive stall"
                 
-                # PATTERN 3: Stagnation - same tool on same resource with varying parameters
-                # This catches: read_file(path, 1-100), read_file(path, 101-200), read_file(path, 201-300)
-                elif len(TOOL_CALL_HISTORY) >= 4:
-                    recent_calls = TOOL_CALL_HISTORY[-4:]
-                    tool_resources = set()
-                    for call in recent_calls:
-                        # Extract "tool:resource" pattern, ignoring parameters
-                        if ':' in call:
-                            parts = call.split(':', 1)
-                            tool_name = parts[0]
-                            # For file operations, extract just the path, not line ranges
-                            resource = parts[1] if len(parts) > 1 else ""
-                            if tool_name in ["read_file", "write_file", "patch_file"]:
-                                # Remove JSON params, keep just the path
-                                try:
-                                    params = json.loads(resource)
-                                    resource = f"{tool_name}:{params.get('path', resource)}"
-                                except:
-                                    resource = f"{tool_name}:{resource.split(',')[0]}"  # First param is usually path
-                            tool_resources.add(resource)
+                # PATTERN 3: True stagnation - same action repeated without meaningful variation
+                # Key insight: varying parameters (e.g., different line ranges) is EXPLORATION, not stagnation
+                # Only flag as loop if we're doing the EXACT same thing or cycling through same limited set
+                elif len(TOOL_CALL_HISTORY) >= 5:
+                    recent_calls = TOOL_CALL_HISTORY[-5:]
                     
-                    # If all recent calls are same tool on same resource, it's stagnation
-                    # (even if parameters differ - that's the whole point!)
-                    if len(tool_resources) == 1 and len(recent_calls) >= 4:
-                        loop_detected = "stagnation loop"
+                    # Check if we're repeating the exact same parameter combinations (true loop)
+                    # vs systematically varying parameters (legitimate exploration)
+                    unique_calls_in_window = len(set(recent_calls))
+                    
+                    # True stagnation: 4+ calls in last 5 are identical OR only 2 unique patterns cycling
+                    # This allows: read_file(path, 1-100), read_file(path, 101-200), read_file(path, 201-300) ✓
+                    # But catches: read_file(path, 1-100), read_file(path, 1-100), read_file(path, 1-100) ❌
+                    if unique_calls_in_window <= 2 and len(recent_calls) >= 4:
+                        # Verify it's not just different files (which would be exploration)
+                        file_operations = [c for c in recent_calls if c.startswith(('read_file:', 'write_file:', 'patch_file:'))]
+                        if file_operations:
+                            paths = set()
+                            for op in file_operations:
+                                # Extract path from JSON args
+                                try:
+                                    if ':' in op:
+                                        args_part = op.split(':', 1)[1]
+                                    else:
+                                        continue
+                                    params = json.loads(args_part) if args_part.startswith('{') else {}
+                                    path = params.get('path', '')
+                                    if path:
+                                        paths.add(path)
+                                except (json.JSONDecodeError, KeyError, IndexError):
+                                    pass  # Skip malformed entries
+                            # Only stagnation if we're stuck on the SAME file with same/similar params
+                            if len(paths) == 1:
+                                loop_detected = "stagnation loop (repeating same file+params)"
+                        else:
+                            loop_detected = "stagnation loop (tool repetition)"
 
                 if loop_detected:
                     for tc in message.tool_calls:
