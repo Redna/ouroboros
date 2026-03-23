@@ -549,7 +549,12 @@ def handle_store_insight(args):
 
 def handle_restart(args):
     success, report = run_pre_flight_checks()
-    if not success: return f"RESTART REJECTED.\n\n{report}"
+    if not success:
+        # Record the failure for dashboard observability
+        state = load_state()
+        state["preflight_failures"] = state.get("preflight_failures", 0) + 1
+        save_state(state)
+        return f"RESTART REJECTED.\n\n{report}"
     return "SYSTEM_SIGNAL_RESTART"
 
 def handle_fork_execution(args):
