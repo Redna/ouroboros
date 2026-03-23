@@ -771,7 +771,14 @@ def main():
             # The Trunk manages its own continuous log to keep a train of thought
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
             auto_compact_task_log(active_task_id) # FIX: Re-enable log compaction
-            api_messages += load_task_messages(active_task_id, "You are the global orchestrator. Read your queue, handle creator messages, or optimize your memory.")
+            
+            # FIX: Explicitly trigger reflection when the queue is empty
+            if len(queue) > 0:
+                trunk_objective = "You are the global orchestrator. Read your queue and fork the highest priority task."
+            else:
+                trunk_objective = "Your task queue is empty. Initiate P9 (Cognitive Synthesis). Read your recent logs, extract higher-order wisdom using `store_memory_insight`, synthesize files using `refactor_memory`, or `hibernate` if your mind is fully optimized."
+                
+            api_messages += load_task_messages(active_task_id, trunk_objective)
             
         else:
             active_task_id = branch_info.get("task_id")
