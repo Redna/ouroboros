@@ -762,9 +762,14 @@ def main():
                                 state["creator_id"] = cid
                                 save_state(state)
                             append_chat_history("User", text)
-                            # Use Telegram's unique update_id to prevent collision
+                            # FIX: Explicitly instruct the Trunk not to fork communication tasks
                             tid = f"task_msg_{u.get('update_id', int(time.time()))}"
-                            queue.append({"task_id": tid, "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: Acknowledge the message and then call `mark_task_complete` to resume.", "priority": 999, "turn_count": 0})
+                            queue.append({
+                                "task_id": tid, 
+                                "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: Reply directly using `send_telegram_message` and close this using `mark_task_complete`. Do NOT use fork_execution for this.", 
+                                "priority": 999, 
+                                "turn_count": 0
+                            })
                             interrupt_triggered = True
                     if interrupt_triggered:
                         queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
@@ -787,9 +792,9 @@ def main():
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
             auto_compact_task_log(active_task_id) # FIX: Re-enable log compaction
             
-            # FIX: Explicitly trigger reflection when the queue is empty
+            # FIX: Smart Routing Objective
             if len(queue) > 0:
-                trunk_objective = "You are the global orchestrator. Read your queue and fork the highest priority task."
+                trunk_objective = "You are the global orchestrator. Read your queue. If the top task is communication (e.g., a P999 creator message) or administrative, handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. If the top task requires deep work (file editing, bash, searching), use `fork_execution` to spawn a branch."
             else:
                 trunk_objective = "Your task queue is empty. Initiate P9 (Cognitive Synthesis). Read your recent logs using `read_file`, extract higher-order wisdom using `store_memory_insight`, synthesize dense files using `refactor_memory`, or `hibernate` if your mind is fully optimized."
                 
