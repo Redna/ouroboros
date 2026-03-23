@@ -602,23 +602,28 @@ def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_
 
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
-    
+
     # Compress the bloated memory to leave a tombstone
     registry.execute("compress_memory_block", {
         "target_log_file": str(MEMORY_DIR / f"task_log_{active_task_id}.jsonl"),
         "dense_summary": f"SYSTEM OVERRIDE: Task forcibly closed due to {reason}. The agent was stuck in a repetitive loop."
     })
-    
+
     # Eject the task from the queue safely
     registry.execute("mark_task_complete", {
         "task_id": active_task_id,
         "summary": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
     })
-    
-    # Spike cognitive load to force reflection mode
-    add_cognitive_load(50)
-    time.sleep(2)
 
+    # FIX: Clear Ghost Branches
+    state = load_state()
+    if state.get("active_branch") and state["active_branch"].get("task_id") == active_task_id:
+        state["active_branch"] = None
+
+    # Spike cognitive load to force reflection
+    state["cognitive_load"] = state.get("cognitive_load", 0) + 50
+    save_state(state)
+    time.sleep(2)
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
@@ -752,6 +757,7 @@ def main():
             
             # The Trunk manages its own continuous log to keep a train of thought
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
+            auto_compact_task_log(active_task_id) # FIX: Re-enable log compaction
             api_messages += load_task_messages(active_task_id, "You are the global orchestrator. Read your queue, handle creator messages, or optimize your memory.")
             
         else:
@@ -768,6 +774,7 @@ def main():
             if partial_state:
                 task_desc += f"\n\n[RESUME STATE]: {partial_state}"
                 
+            auto_compact_task_log(active_task_id) # FIX: Re-enable log compaction
             api_messages += load_task_messages(active_task_id, task_desc)
             
             # Hardware Interrupt Injector
@@ -796,7 +803,11 @@ def main():
                     current_context_size, max_physical_context = state.get("last_context_size", 0), int(CONTEXT_WINDOW * 0.85)
                     if queue[task_idx]["turn_count"] >= 30 or current_context_size > max_physical_context:
                         trigger_reason = "30-turn limit" if queue[task_idx]["turn_count"] >= 30 else f"physical context exhaustion ({current_context_size}/{CONTEXT_WINDOW})"
-                        append_task_message(active_task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. Use `push_task` to break work down."})
+                        
+                        # FIX: Context-aware override instruction
+                        action_prompt = "Use `push_task` to break work down." if is_trunk else "You MUST call `merge_and_return` with status='SUSPENDED' so the Trunk can manage your context size."
+                        
+                        append_task_message(active_task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. {action_prompt}"})
                         queue[task_idx]["turn_count"] = 0
                     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             if hasattr(response, 'usage') and response.usage:
@@ -925,6 +936,8 @@ def main():
                     # Handle System Signals
                     if str(result).startswith("SYSTEM_SIGNAL_FORK"):
                         print(f"[System] Context Forking to new branch...")
+                        # FIX: Append the tool response before breaking
+                        append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
                         TOOL_CALL_HISTORY.clear()
                         TOOL_INTENT_HISTORY.clear()
                         context_switch_triggered = True
@@ -954,10 +967,13 @@ def main():
                         except json.JSONDecodeError:
                             print("[System] Failed to parse merge payload.")
 
+                        # FIX: Append the tool response before breaking
+                        append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": "SYSTEM_SIGNAL_MERGE_ACKNOWLEDGED"})
                         TOOL_CALL_HISTORY.clear()
                         TOOL_INTENT_HISTORY.clear()
                         context_switch_triggered = True
                         break # Break the tool loop to return to Trunk
+
                     elif result == "SYSTEM_SIGNAL_RESTART": 
                         os._exit(0)
 
