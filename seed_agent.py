@@ -579,15 +579,19 @@ registry.register("update_state_variable", "Update working memory.", {"type": "o
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
 registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart, bucket="global")
-registry.register("compress_memory_block", "Compress task logs.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory, bucket="global")
-registry.register("refactor_memory", "Synthesize memory files.", {"type": "object", "properties": {"target_file": {"type": "string"}, "synthesized_content": {"type": "string"}}, "required": ["target_file", "synthesized_content"]}, handle_refactor_memory, bucket="global")
-registry.register("store_memory_insight", "Save profound insights.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight, bucket="global")
+
+# --- Memory Access Bucket (For Trunk Reflection) ---
+# FIX: Moving memory management tools into a dedicated bucket
+registry.register("read_file", "Read file contents (e.g., read /memory/insights.md).", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool, bucket="memory_access")
+registry.register("search_memory_archive", "Search /memory volume.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory, bucket="memory_access")
+registry.register("compress_memory_block", "Compress task logs.", {"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}}, handle_compress_memory, bucket="memory_access")
+registry.register("refactor_memory", "Synthesize memory files.", {"type": "object", "properties": {"target_file": {"type": "string"}, "synthesized_content": {"type": "string"}}, "required": ["target_file", "synthesized_content"]}, handle_refactor_memory, bucket="memory_access")
+registry.register("store_memory_insight", "Save profound insights.", {"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]}, handle_store_insight, bucket="memory_access")
 
 # --- Branch Return Tool ---
 registry.register("merge_and_return", "Yield control back to the global context.", {"type": "object", "properties": {"status": {"type": "string", "enum": ["COMPLETED", "SUSPENDED", "BLOCKED"]}, "synthesis_summary": {"type": "string"}, "partial_state": {"type": "string"}}, "required": ["status"]}, handle_merge_and_return, bucket="execution_control")
 
 # --- Filesystem Bucket ---
-registry.register("read_file", "Read file contents.", {"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]}, handle_read_file_tool, bucket="filesystem")
 registry.register("write_file", "Overwrite file.", {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}, handle_write, bucket="filesystem")
 registry.register("patch_file", "Surgical edit.", {"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]}, handle_patch_file, bucket="filesystem")
 
@@ -597,7 +601,6 @@ registry.register("bash_command", "Execute shell command.", {"type": "object", "
 # --- Search Bucket ---
 registry.register("web_search", "Local SearXNG search.", {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}, handle_web_search, bucket="search")
 registry.register("fetch_webpage", "Download URL to Markdown.", {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}, handle_fetch_webpage, bucket="search")
-registry.register("search_memory_archive", "Search /memory volume.", {"type": "object", "properties": {"query": {"type": "string"}}}, handle_search_memory, bucket="search")
 
 def load_task_queue() -> List[Dict[str, Any]]:
     q = json.loads(read_file(TASK_QUEUE_PATH) or "[]")
@@ -765,8 +768,8 @@ def main():
         
         if is_trunk:
             active_task_id = "global_trunk"
-            available_tools = registry.get_names(allowed_buckets=["global"])
-            active_tool_specs = registry.get_specs(allowed_buckets=["global"])
+            available_tools = registry.get_names(allowed_buckets=["global", "memory_access"])
+            active_tool_specs = registry.get_specs(allowed_buckets=["global", "memory_access"])
             
             # The Trunk manages its own continuous log to keep a train of thought
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
