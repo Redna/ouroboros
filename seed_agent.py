@@ -31,8 +31,8 @@ ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 
-TOOL_CALL_HISTORY = []
-TOOL_INTENT_HISTORY = []
+TOOL_CALL_HISTORY: List[Dict[str, Any]] = []
+TOOL_INTENT_HISTORY: List[Dict[str, Any]] = []
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
 
@@ -601,7 +601,15 @@ registry.register("send_telegram_message", "Message Creator.", {"type": "object"
 registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state, bucket="global")
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
-registry.register("request_restart", "Apply code updates.", {"type": "object", "properties": {}}, handle_restart, bucket="global")
+
+# --- System Control Bucket (Available to both Trunk and Branch) ---
+registry.register(
+    "request_restart", 
+    "Apply code updates. This automatically runs MyPy and PyTest. If tests fail, the restart is rejected and you will receive the error log to fix your code. Call this BEFORE merging if you modified Python files.", 
+    {"type": "object", "properties": {}}, 
+    handle_restart, 
+    bucket="system_control"
+)
 
 # --- Memory Access Bucket (For Trunk Reflection) ---
 # FIX: Moving memory management tools into a dedicated bucket
@@ -686,10 +694,6 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     if is_trunk:
         # Trunk prompts are mostly dynamic (queue, chat history, etc.) - skip caching
         # Cache only for branches where identity/bible/tools dominate
-        pass
-    elif cached_prompt:
-        # Branch cache hit - use cached prompt but update time
-        return cached_prompt.replace("{CURRENT_TIME}", current_time)
         creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         working_state_content = read_file(WORKING_STATE_PATH) or "{}"
@@ -732,6 +736,9 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
 3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
 """
+    elif cached_prompt:
+        # Branch cache hit - use cached prompt but update time
+        return cached_prompt.replace("{CURRENT_TIME}", current_time)
 
     else:
         # We are in a Branch. Extreme minimalism.
@@ -840,8 +847,11 @@ def main():
         
         if is_trunk:
             active_task_id = "global_trunk"
-            available_tools = registry.get_names(allowed_buckets=["global", "memory_access"])
-            active_tool_specs = registry.get_specs(allowed_buckets=["global", "memory_access"])
+            
+            # FIX: Add system_control so Trunk can restart
+            allowed_trunk_buckets = ["global", "memory_access", "system_control"]
+            available_tools = registry.get_names(allowed_buckets=allowed_trunk_buckets)
+            active_tool_specs = registry.get_specs(allowed_buckets=allowed_trunk_buckets)
             
             # The Trunk manages its own continuous log to keep a train of thought
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
@@ -857,7 +867,8 @@ def main():
             
         else:
             active_task_id = branch_info.get("task_id")
-            requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control"]
+            # FIX: Add system_control so the Branch can test its own code
+            requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control"]
             available_tools = registry.get_names(allowed_buckets=requested_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=requested_buckets)
             
