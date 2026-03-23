@@ -26,6 +26,7 @@ MEMORY_DIR = Path(os.environ.get("MEMORY_DIR", "/memory"))
 
 WORKING_STATE_PATH = MEMORY_DIR / "working_state.json"
 TASK_QUEUE_PATH = MEMORY_DIR / "task_queue.json"
+SCHEDULED_TASKS_PATH = MEMORY_DIR / "scheduled_tasks.json"
 STATE_PATH = MEMORY_DIR / ".agent_state.json"
 ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
@@ -571,6 +572,40 @@ def handle_fork_execution(args):
     save_state(state)
     return f"SYSTEM_SIGNAL_FORK:{task_id}"
 
+def handle_schedule_future_task(args):
+    description = args.get("description", "").strip()
+    run_after = args.get("run_after_timestamp")
+    priority = args.get("priority", 2)
+
+    if not description or not run_after:
+        return "Error: 'description' and 'run_after_timestamp' are required."
+
+    try:
+        run_after = float(run_after)
+    except ValueError:
+        return "Error: 'run_after_timestamp' must be a valid UNIX timestamp."
+
+    scheduled = []
+    if SCHEDULED_TASKS_PATH.exists():
+        try: 
+            content = SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
+            if content: scheduled = json.loads(content)
+        except Exception: 
+            pass
+
+    tid = f"task_future_{int(time.time())}"
+    scheduled.append({
+        "task_id": tid,
+        "description": description,
+        "priority": priority,
+        "run_after": run_after,
+        "turn_count": 0
+    })
+
+    SCHEDULED_TASKS_PATH.write_text(json.dumps(scheduled, indent=2), encoding="utf-8")
+    time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(run_after))
+    return f"Success: Task '{tid}' scheduled to become active after {time_str}."
+
 def handle_merge_and_return(args):
     status = args.get("status", "COMPLETED")
     synthesis_summary = args.get("synthesis_summary", "")
@@ -602,6 +637,21 @@ def handle_merge_and_return(args):
 registry.register("fork_execution", "Spawn an isolated execution branch for deep work.", {"type": "object", "properties": {"task_id": {"type": "string"}, "objective": {"type": "string"}, "tool_buckets": {"type": "array", "items": {"type": "string", "enum": ["filesystem", "bash", "search"]}}}}, handle_fork_execution, bucket="global")
 registry.register("push_task", "Queue async task.", {"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}, "parent_task_id": {"type": "string"}, "context_notes": {"type": "string"}}, "required": ["description"]}, handle_push_task, bucket="global")
 registry.register("mark_task_complete", "Close active task.", {"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}}, handle_mark_task_complete, bucket="global")
+registry.register(
+    "schedule_future_task", 
+    "Schedule a task to be executed at a specific future UNIX timestamp. Useful for recurring checks, reminders, or delayed actions.", 
+    {
+        "type": "object", 
+        "properties": {
+            "description": {"type": "string"}, 
+            "run_after_timestamp": {"type": "number", "description": "UNIX timestamp (seconds since epoch) when this task should wake up."}, 
+            "priority": {"type": "integer"}
+        }, 
+        "required": ["description", "run_after_timestamp"]
+    }, 
+    handle_schedule_future_task, 
+    bucket="global"
+)
 registry.register("send_telegram_message", "Message Creator.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}}, handle_telegram, bucket="global")
 registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state, bucket="global")
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
@@ -813,6 +863,30 @@ def main():
     while True:
         state, queue = load_state(), load_task_queue()
         offset = state.get("offset", 0)
+        
+        # --- Temporal Scheduler (Background Cron) ---
+        if SCHEDULED_TASKS_PATH.exists():
+            try:
+                content = SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
+                if content:
+                    scheduled = json.loads(content)
+                    now = time.time()
+                    due_tasks = [t for t in scheduled if now >= t.get("run_after", 0)]
+                    
+                    if due_tasks:
+                        pending_tasks = [t for t in scheduled if now < t.get("run_after", 0)]
+                        SCHEDULED_TASKS_PATH.write_text(json.dumps(pending_tasks, indent=2), encoding="utf-8")
+                        
+                        for t in due_tasks:
+                            t.pop("run_after", None) # Strip the timestamp
+                            queue.append(t)
+                            
+                        queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
+                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                        print(f"[Scheduler] Temporal shift: {len(due_tasks)} scheduled tasks moved to active queue.")
+            except Exception as e:
+                print(f"[Scheduler Error]: {e}")
+
         if TELEGRAM_BOT_TOKEN:
             try:
                 r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
