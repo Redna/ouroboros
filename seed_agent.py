@@ -666,7 +666,7 @@ def main():
             (MEMORY_DIR / "task_log_autonomy_log.jsonl").unlink(missing_ok=True)
         else:
             current_mode, active_task_id = "AUTONOMY", "autonomy_log"
-            available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive", "refactor_memory", "set_cognitive_parameters"]
+            available_tools = ["push_task", "send_telegram_message", "hibernate", "store_memory_insight", "update_state_variable", "read_file", "search_memory_archive", "refactor_memory", "set_cognitive_parameters", "web_search", "fetch_webpage"]
 
         active_tool_specs = [t for t in registry.get_specs() if t['function']['name'] in available_tools]
         api_messages = [{"role": "system", "content": build_static_system_prompt(current_mode, active_tool_specs, queue)}]
