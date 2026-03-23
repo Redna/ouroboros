@@ -128,24 +128,42 @@ def test_build_static_system_prompt(mock_memory):
         (mock_memory / "BIBLE.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
         (mock_memory / "soul" / "identity.md").write_text("Identity Content")
-        
-        prompt = build_static_system_prompt("EXECUTION", [{"function": {"name": "test_tool", "description": "desc"}}])
-        assert "Constitution Content" in prompt
-        assert "Identity Content" in prompt
-        assert "EXECUTION" in prompt
-        assert "test_tool" in prompt
 
-def test_tool_registry():
+        # Test Trunk mode
+        trunk_prompt = build_static_system_prompt(is_trunk=True, active_tool_specs=[{"function": {"name": "test_tool", "description": "desc"}}])
+        assert "Constitution Content" in trunk_prompt
+        assert "Identity Content" in trunk_prompt
+        assert "GLOBAL TRUNK" in trunk_prompt
+        assert "test_tool" in trunk_prompt
+
+        # Test Branch mode
+        branch_prompt = build_static_system_prompt(is_trunk=False, active_tool_specs=[], branch_info={"objective": "Test Objective"})
+        assert "EXECUTION BRANCH" in branch_prompt
+        assert "Test Objective" in branch_prompt
+def test_tool_registry_buckets():
     from seed_agent import ToolRegistry
+    from unittest.mock import MagicMock
+
     reg = ToolRegistry()
     handler = MagicMock(return_value="success")
-    reg.register("test", "desc", {}, handler)
-    
-    assert "test" in reg.get_names()
-    assert reg.execute("test", {"arg": 1}) == "success"
-    handler.assert_called_once_with({"arg": 1})
-    assert "not found" in reg.execute("nonexistent", {})
 
+    # Register tools in different buckets
+    reg.register("global_tool", "desc", {}, handler, bucket="global")
+    reg.register("fs_tool", "desc", {}, handler, bucket="filesystem")
+
+    # Test bucket filtering
+    global_tools = reg.get_names(allowed_buckets=["global"])
+    assert "global_tool" in global_tools
+    assert "fs_tool" not in global_tools
+
+    # Test multiple buckets
+    all_tools = reg.get_names(allowed_buckets=["global", "filesystem"])
+    assert "global_tool" in all_tools
+    assert "fs_tool" in all_tools
+
+    # Test execution
+    assert reg.execute("global_tool", {"arg": 1}) == "success"
+    handler.assert_called_once_with({"arg": 1})
 def test_lazarus_recovery(mock_memory):
     from seed_agent import lazarus_recovery, registry
     
@@ -173,3 +191,86 @@ def test_main_loop_iteration(mock_memory):
             main()
         
         assert mock_openai.called
+
+def test_handle_fork_execution(mock_memory):
+    from seed_agent import handle_fork_execution, load_state
+    
+    args = {
+        "task_id": "task_fork_test_1", 
+        "objective": "Rewrite database schema", 
+        "tool_buckets": ["filesystem"]
+    }
+    
+    result = handle_fork_execution(args)
+    
+    # Check the return signal
+    assert result == "SYSTEM_SIGNAL_FORK:task_fork_test_1"
+    
+    # Verify the state mutated correctly
+    state = load_state()
+    assert state["active_branch"]["task_id"] == "task_fork_test_1"
+    assert state["active_branch"]["objective"] == "Rewrite database schema"
+    assert state["active_branch"]["tool_buckets"] == ["filesystem"]
+
+def test_handle_merge_and_return(mock_memory):
+    from seed_agent import handle_merge_and_return, save_state, load_state
+    import json
+    
+    # Setup an active branch first
+    save_state({
+        "active_branch": {
+            "task_id": "task_merge_test_1", 
+            "objective": "test", 
+            "tool_buckets": []
+        }
+    })
+    
+    args = {
+        "status": "SUSPENDED", 
+        "synthesis_summary": "I hit a blocker", 
+        "partial_state": "Files downloaded, but not parsed"
+    }
+    
+    result = handle_merge_and_return(args)
+    
+    # Check the state is cleared
+    state = load_state()
+    assert state.get("active_branch") is None
+    
+    # Check the payload formatting
+    assert result.startswith("SYSTEM_SIGNAL_MERGE:")
+    payload_str = result.split(":", 1)[1]
+    payload = json.loads(payload_str)
+    
+    assert payload["status"] == "SUSPENDED"
+    assert payload["task_id"] == "task_merge_test_1"
+    assert payload["summary"] == "I hit a blocker"
+    assert payload["partial_state"] == "Files downloaded, but not parsed"
+
+def test_enforce_interrupt_yield():
+    from seed_agent import enforce_interrupt_yield
+    
+    queue_normal = [{"task_id": "t1", "priority": 1}]
+    queue_interrupt = [{"task_id": "t1", "priority": 1}, {"task_id": "t2", "priority": 999}]
+    
+    messages = [{"role": "user", "content": "Doing regular work."}]
+    
+    # Test 1: No interrupt in queue
+    result_normal = enforce_interrupt_yield("task_1", queue_normal, messages)
+    assert len(result_normal) == 1
+    
+    # Test 2: Interrupt in queue injects message
+    result_interrupt = enforce_interrupt_yield("task_1", queue_interrupt, messages)
+    assert len(result_interrupt) == 2
+    assert "URGENT PRIORITY 999 INTERRUPT" in result_interrupt[1]["content"]
+    
+    # Test 3: Scrubbing old interrupts
+    messages_with_old_interrupt = [
+        {"role": "user", "content": "Doing regular work."},
+        {"role": "user", "content": "[SYSTEM OVERRIDE: URGENT PRIORITY 999 INTERRUPT IN GLOBAL QUEUE. You must suspend...]"}
+    ]
+    
+    result_scrubbed = enforce_interrupt_yield("task_1", queue_interrupt, messages_with_old_interrupt)
+    # It should strip the old one and append the new one, resulting in exactly 2 messages
+    assert len(result_scrubbed) == 2
+
