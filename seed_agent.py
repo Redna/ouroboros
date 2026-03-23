@@ -492,13 +492,25 @@ def handle_compress_memory(args):
 
 def handle_refactor_memory(args):
     try:
-        target_file, synthesized_content = args.get("target_file", ""), args.get("synthesized_content", "")
+        target_file = args.get("target_file", "")
+        synthesized_content = args.get("synthesized_content", "")
+        
         path = Path(target_file).resolve()
-        if not str(path).startswith(str(MEMORY_DIR)): return "Error: Permission denied."
+        if not str(path).startswith(str(MEMORY_DIR)): return "Error: Permission denied. Must be in /memory."
         if not path.exists(): return f"Error: File {target_file} not found."
+        
+        # FIX: Lobotomy Protection
+        if len(synthesized_content.strip()) < 50:
+            return "Error: Refactoring rejected. The synthesized_content is suspiciously short. Did you truncate the data? You must provide the FULL synthesized replacement text."
+            
+        # Backup original before overwrite just in case
+        backup_path = path.with_suffix(path.suffix + ".bak")
+        shutil.copy2(path, backup_path)
+        
         path.write_text(synthesized_content, encoding="utf-8")
-        return f"Success: Memory file {path.name} has been synthesized into higher-order thoughts."
-    except Exception as e: return f"Error refactoring memory: {e}"
+        return f"Success: Memory file {path.name} has been synthesized into higher-order thoughts. (Backup saved to .bak)"
+    except Exception as e: 
+        return f"Error refactoring memory: {e}"
 
 def handle_search_memory(args):
     query = args.get("query", "")
