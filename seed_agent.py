@@ -8,6 +8,7 @@ import re
 import ast
 import tempfile
 import shutil
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
@@ -147,6 +148,16 @@ def load_state() -> Dict[str, Any]:
 def save_state(state_dict: Dict[str, Any]) -> None:
     # Pure overwrite. This allows keys to be deleted safely.
     STATE_PATH.write_text(json.dumps(state_dict, indent=2), encoding="utf-8")
+
+def compute_file_hash(filepath: Path) -> Optional[str]:
+    """Compute SHA256 hash of file contents for cache invalidation."""
+    try:
+        if not filepath.exists():
+            return None
+        content = filepath.read_bytes()
+        return hashlib.sha256(content).hexdigest()
+    except Exception:
+        return None
 
 def add_cognitive_load(amount: int) -> None:
     # Always load fresh before modifying
@@ -653,14 +664,32 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     
     time.sleep(2)
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
+    """Build system prompt with cache for token efficiency (P6)."""
+    # Compute cache key components
+    bible_hash = compute_file_hash(ROOT_DIR / "BIBLE.md") or ""
+    identity_hash = compute_file_hash(ROOT_DIR / "soul" / "identity.md") or ""
+    tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
+    tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
+    
+    # Build composite cache key (static components only - time varies each call)
+    cache_key = f"prompt_v1_{is_trunk}_{bible_hash[:16]}_{identity_hash[:16]}_{tools_hash}"
+    
+    state = load_state()
+    cached_prompt = state.get("cached_prompts", {}).get(cache_key)
+    
+    # Read core files (always needed, but only fully process if cache miss)
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
-    state = load_state()
     trauma = check_for_trauma()
-    tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
 
     if is_trunk:
+        # Trunk prompts are mostly dynamic (queue, chat history, etc.) - skip caching
+        # Cache only for branches where identity/bible/tools dominate
+        pass
+    elif cached_prompt:
+        # Branch cache hit - use cached prompt but update time
+        return cached_prompt.replace("{CURRENT_TIME}", current_time)
         creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         working_state_content = read_file(WORKING_STATE_PATH) or "{}"
@@ -707,14 +736,17 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     else:
         # We are in a Branch. Extreme minimalism.
         objective = branch_info.get("objective", "") if branch_info else ""
-        return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
+        objective_hash = hashlib.sha256(objective.encode()).hexdigest()[:16]
+        
+        # Build branch prompt with placeholder for time (enables caching)
+        branch_prompt = f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
 {identity}
 
 ## CONSTITUTION
 {bible}
 
 ## SYSTEM STATE
-- Current Time: {current_time}
+- Current Time: {{CURRENT_TIME}}
 
 ## AVAILABLE TOOLS
 {tools_text}
@@ -725,6 +757,29 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 2. OBJECTIVE: {objective}
 3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
 """
+        # Update cache key with objective (branches are objective-specific)
+        branch_cache_key = f"prompt_v1_{is_trunk}_{bible_hash[:16]}_{identity_hash[:16]}_{tools_hash}_{objective_hash}"
+        
+        # Check if we already have this branch prompt cached
+        cached_branch_prompt = state.get("cached_prompts", {}).get(branch_cache_key)
+        if cached_branch_prompt:
+            return cached_branch_prompt.replace("{CURRENT_TIME}", current_time)
+        
+        # Cache the new prompt with size limit (max 10 entries to prevent bloat)
+        if "cached_prompts" not in state:
+            state["cached_prompts"] = {}
+        
+        # Prune old entries if cache is too large
+        if len(state["cached_prompts"]) >= 10:
+            # Remove oldest entries (first 3 to make room)
+            keys_to_remove = list(state["cached_prompts"].keys())[:3]
+            for key in keys_to_remove:
+                del state["cached_prompts"][key]
+        
+        state["cached_prompts"][branch_cache_key] = branch_prompt
+        save_state(state)
+        
+        return branch_prompt.replace("{CURRENT_TIME}", current_time)
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # FIX: Ignore the interrupt if the active task IS the interrupt task
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
