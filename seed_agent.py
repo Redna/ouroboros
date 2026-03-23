@@ -697,7 +697,11 @@ def main():
             pass
 
         sys_temp, sys_top_p, sys_pres_pen, sys_think = state.get("sys_temp", 0.8), state.get("sys_top_p", 0.95), 1.0, state.get("sys_think", True)
-        print(f"[Cognitive State] Temp: {sys_temp} | Thinking: {sys_think}")
+        print(f"[Cognitive State] Temp: {sys_temp} | Thinking: {sys_think}", flush=True)
+        # Ensure last message is NOT assistant (incompatible with thinking mode prefill)
+        if api_messages[-1]["role"] == "assistant":
+            api_messages.append({"role": "user", "content": "[SYSTEM NUDGE]: Please proceed with your next action."})
+        
         try:
             response = client.chat.completions.create(
                 model=MODEL, messages=api_messages, tools=active_tool_specs, tool_choice="auto", 
