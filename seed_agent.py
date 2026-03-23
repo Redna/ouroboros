@@ -842,9 +842,16 @@ def main():
                         queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
                         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             except: pass
+        # --- Hibernation Check & Early Wakeup ---
         if time.time() < state.get("wake_time", 0):
-            time.sleep(5)
-            continue
+            # FIX: If work enters the queue (e.g., a P999 interrupt), abort hibernation instantly!
+            if len(queue) > 0:
+                print("\n[System] Work detected in queue. Adrenaline spike: breaking hibernation early!")
+                state["wake_time"] = 0
+                save_state(state)
+            else:
+                time.sleep(5)
+                continue
 
         # --- Context Switcher ---
         branch_info = state.get("active_branch")
@@ -1106,6 +1113,7 @@ def main():
             else: print(f"[No tool called in {current_mode}, waiting...]"); time.sleep(0.5)
             time.sleep(2)
         except Exception as e:
+            print(f"[CRITICAL ERROR]: {e}")
             if any(x in str(e) for x in ["500", "400", "template"]): sys.exit(1)
             time.sleep(0.5)
 
