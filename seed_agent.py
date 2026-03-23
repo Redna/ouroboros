@@ -555,6 +555,13 @@ def handle_merge_and_return(args):
     state["active_branch"] = None
     save_state(state)
     
+    # FIX: Auto-close the task if it successfully completed to keep the queue clean
+    if status == "COMPLETED" and task_id != "unknown":
+        registry.execute("mark_task_complete", {
+            "task_id": task_id,
+            "summary": f"Auto-closed upon branch merge. Synthesis: {synthesis_summary}"
+        })
+    
     payload = json.dumps({
         "status": status, 
         "task_id": task_id, 
@@ -623,6 +630,12 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     # Spike cognitive load to force reflection
     state["cognitive_load"] = state.get("cognitive_load", 0) + 50
     save_state(state)
+    
+    # FIX: Wipe dirty loop tracking histories to prevent Lazarus death spirals
+    global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
+    TOOL_CALL_HISTORY.clear()
+    TOOL_INTENT_HISTORY.clear()
+    
     time.sleep(2)
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
     bible = read_file(ROOT_DIR / "BIBLE.md")
@@ -698,8 +711,8 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
 """
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Check if there is a P999 task in the queue
-    has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
+    # FIX: Ignore the interrupt if the active task IS the interrupt task
+    has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
     
     if has_interrupt:
         # The Tap on the Shoulder
