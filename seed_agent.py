@@ -715,7 +715,14 @@ def main():
                     queue[0]["turn_count"] = 0 
                 TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             if hasattr(response, 'usage') and response.usage:
-                state.update({"global_tokens_consumed": state.get("global_tokens_consumed", 0) + response.usage.total_tokens, "last_context_size": response.usage.total_tokens})
+                state.update({
+                    "global_tokens_consumed": state.get("global_tokens_consumed", 0) + response.usage.total_tokens,
+                    "global_input_tokens": state.get("global_input_tokens", 0) + response.usage.prompt_tokens,
+                    "global_output_tokens": state.get("global_output_tokens", 0) + response.usage.completion_tokens,
+                    "last_context_size": response.usage.total_tokens,
+                    "last_input_tokens": response.usage.prompt_tokens,
+                    "last_output_tokens": response.usage.completion_tokens
+                })
                 save_state(state)
                 if current_mode == "EXECUTION" and len(queue) > 0:
                     queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + response.usage.total_tokens
@@ -736,8 +743,15 @@ def main():
                     TOOL_CALL_HISTORY.append(f"{name}:{raw_args}")
                     
                     intent = name
-                    if name in ["read_file", "write_file", "bash_command", "patch_file"]:
-                        try: intent = f"{name}:{json.loads(raw_args).get('path', '').split()[0]}"
+                    if name in ["read_file", "write_file", "patch_file"]:
+                        try: 
+                            params = json.loads(raw_args)
+                            intent = f"{name}:{params.get('path', '')}"  # Full path for distinction
+                        except: pass
+                    elif name == "bash_command":
+                        try:
+                            cmd = json.loads(raw_args).get('command', '')
+                            intent = f"bash:{cmd[:50]}"  # Command context, length-limited
                         except: pass
                     TOOL_INTENT_HISTORY.append(intent)
                     
