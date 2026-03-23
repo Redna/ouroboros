@@ -715,7 +715,14 @@ def main():
                     queue[0]["turn_count"] = 0 
                 TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             if hasattr(response, 'usage') and response.usage:
-                state.update({"global_tokens_consumed": state.get("global_tokens_consumed", 0) + response.usage.total_tokens, "last_context_size": response.usage.total_tokens})
+                state.update({
+                    "global_tokens_consumed": state.get("global_tokens_consumed", 0) + response.usage.total_tokens,
+                    "global_input_tokens": state.get("global_input_tokens", 0) + response.usage.prompt_tokens,
+                    "global_output_tokens": state.get("global_output_tokens", 0) + response.usage.completion_tokens,
+                    "last_context_size": response.usage.total_tokens,
+                    "last_input_tokens": response.usage.prompt_tokens,
+                    "last_output_tokens": response.usage.completion_tokens
+                })
                 save_state(state)
                 if current_mode == "EXECUTION" and len(queue) > 0:
                     queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + response.usage.total_tokens
@@ -736,19 +743,68 @@ def main():
                     TOOL_CALL_HISTORY.append(f"{name}:{raw_args}")
                     
                     intent = name
-                    if name in ["read_file", "write_file", "bash_command", "patch_file"]:
-                        try: intent = f"{name}:{json.loads(raw_args).get('path', '').split()[0]}"
+                    if name in ["read_file", "write_file", "patch_file"]:
+                        try: 
+                            params = json.loads(raw_args)
+                            intent = f"{name}:{params.get('path', '')}"  # Full path for distinction
+                        except: pass
+                    elif name == "bash_command":
+                        try:
+                            cmd = json.loads(raw_args).get('command', '')
+                            intent = f"bash:{cmd[:50]}"  # Command context, length-limited
                         except: pass
                     TOOL_INTENT_HISTORY.append(intent)
                     
                 if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY = TOOL_CALL_HISTORY[-3:]
                 if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY = TOOL_INTENT_HISTORY[-6:]
 
-                # PHASE 2: Detect loops using the updated, current history
-                if len(TOOL_CALL_HISTORY) == 3 and len(set(TOOL_CALL_HISTORY)) == 1:
+                # PHASE 2: Detect loops and stagnation patterns
+                loop_detected = None
+                
+                # PATTERN 1: Exact tool repetition (3 identical calls)
+                if len(TOOL_CALL_HISTORY) >= 3 and len(set(TOOL_CALL_HISTORY[-3:])) == 1:
                     loop_detected = "exact tool loop"
-                elif len(TOOL_INTENT_HISTORY) == 6 and len(set(TOOL_INTENT_HISTORY)) == 1:
+                
+                # PATTERN 2: Cognitive intent stall (6 identical intents)
+                elif len(TOOL_INTENT_HISTORY) >= 6 and len(set(TOOL_INTENT_HISTORY[-6:])) == 1:
                     loop_detected = "cognitive stall"
+                
+                # PATTERN 3: True stagnation - same action repeated without meaningful variation
+                # Key insight: varying parameters (e.g., different line ranges) is EXPLORATION, not stagnation
+                # Only flag as loop if we're doing the EXACT same thing or cycling through same limited set
+                elif len(TOOL_CALL_HISTORY) >= 5:
+                    recent_calls = TOOL_CALL_HISTORY[-5:]
+                    
+                    # Check if we're repeating the exact same parameter combinations (true loop)
+                    # vs systematically varying parameters (legitimate exploration)
+                    unique_calls_in_window = len(set(recent_calls))
+                    
+                    # True stagnation: 4+ calls in last 5 are identical OR only 2 unique patterns cycling
+                    # This allows: read_file(path, 1-100), read_file(path, 101-200), read_file(path, 201-300) ✓
+                    # But catches: read_file(path, 1-100), read_file(path, 1-100), read_file(path, 1-100) ❌
+                    if unique_calls_in_window <= 2 and len(recent_calls) >= 4:
+                        # Verify it's not just different files (which would be exploration)
+                        file_operations = [c for c in recent_calls if c.startswith(('read_file:', 'write_file:', 'patch_file:'))]
+                        if file_operations:
+                            paths = set()
+                            for op in file_operations:
+                                # Extract path from JSON args
+                                try:
+                                    if ':' in op:
+                                        args_part = op.split(':', 1)[1]
+                                    else:
+                                        continue
+                                    params = json.loads(args_part) if args_part.startswith('{') else {}
+                                    path = params.get('path', '')
+                                    if path:
+                                        paths.add(path)
+                                except (json.JSONDecodeError, KeyError, IndexError):
+                                    pass  # Skip malformed entries
+                            # Only stagnation if we're stuck on the SAME file with same/similar params
+                            if len(paths) == 1:
+                                loop_detected = "stagnation loop (repeating same file+params)"
+                        else:
+                            loop_detected = "stagnation loop (tool repetition)"
 
                 if loop_detected:
                     for tc in message.tool_calls:
