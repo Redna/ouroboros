@@ -790,13 +790,15 @@ def main():
             )
             message = response.choices[0].message
             if current_mode == "EXECUTION" and len(queue) > 0:
-                queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
-                current_context_size, max_physical_context = state.get("last_context_size", 0), int(CONTEXT_WINDOW * 0.85)
-                if queue[0]["turn_count"] >= 30 or current_context_size > max_physical_context:
-                    trigger_reason = "30-turn limit" if queue[0]["turn_count"] >= 30 else f"physical context exhaustion ({current_context_size}/{CONTEXT_WINDOW})"
-                    append_task_message(active_task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. Use `push_task` to break work down."})
-                    queue[0]["turn_count"] = 0 
-                TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                task_idx = next((i for i, t in enumerate(queue) if t.get("task_id") == active_task_id), -1)
+                if task_idx >= 0:
+                    queue[task_idx]["turn_count"] = queue[task_idx].get("turn_count", 0) + 1
+                    current_context_size, max_physical_context = state.get("last_context_size", 0), int(CONTEXT_WINDOW * 0.85)
+                    if queue[task_idx]["turn_count"] >= 30 or current_context_size > max_physical_context:
+                        trigger_reason = "30-turn limit" if queue[task_idx]["turn_count"] >= 30 else f"physical context exhaustion ({current_context_size}/{CONTEXT_WINDOW})"
+                        append_task_message(active_task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. Use `push_task` to break work down."})
+                        queue[task_idx]["turn_count"] = 0
+                    TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             if hasattr(response, 'usage') and response.usage:
                 state.update({
                     "global_tokens_consumed": state.get("global_tokens_consumed", 0) + response.usage.total_tokens,
@@ -808,12 +810,15 @@ def main():
                 })
                 save_state(state)
                 if current_mode == "EXECUTION" and len(queue) > 0:
-                    queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + response.usage.total_tokens
-                    TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-                    if queue[0]["task_tokens"] >= int(CONTEXT_WINDOW * 1.5):
-                        registry.execute("mark_task_complete", {"task_id": active_task_id, "summary": "FAILED: Token limit exceeded."})
-                        continue
-            if current_mode in ["EXECUTION", "AUTONOMY"]: append_task_message(active_task_id, message.model_dump(exclude_unset=True))
+                    task_idx = next((i for i, t in enumerate(queue) if t.get("task_id") == active_task_id), -1)
+                    if task_idx >= 0:
+                        queue[task_idx]["task_tokens"] = queue[task_idx].get("task_tokens", 0) + response.usage.total_tokens
+                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                        if queue[task_idx]["task_tokens"] >= int(CONTEXT_WINDOW * 1.5):
+                            registry.execute("mark_task_complete", {"task_id": active_task_id, "summary": "FAILED: Token limit exceeded."})
+                            continue            # Save the LLM's response to the active context (Trunk or Branch)
+            append_task_message(active_task_id, message.model_dump(exclude_unset=True))
+            
             if message.content: print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
                 hibernating = False
@@ -920,6 +925,8 @@ def main():
                     # Handle System Signals
                     if str(result).startswith("SYSTEM_SIGNAL_FORK"):
                         print(f"[System] Context Forking to new branch...")
+                        TOOL_CALL_HISTORY.clear()
+                        TOOL_INTENT_HISTORY.clear()
                         context_switch_triggered = True
                         break # Break the tool loop to immediately switch context
 
@@ -947,9 +954,10 @@ def main():
                         except json.JSONDecodeError:
                             print("[System] Failed to parse merge payload.")
 
+                        TOOL_CALL_HISTORY.clear()
+                        TOOL_INTENT_HISTORY.clear()
                         context_switch_triggered = True
                         break # Break the tool loop to return to Trunk
-
                     elif result == "SYSTEM_SIGNAL_RESTART": 
                         os._exit(0)
 
