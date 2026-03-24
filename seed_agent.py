@@ -14,7 +14,8 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
 
 API_BASE = "http://gate:4000/v1"
-MODEL = os.environ.get("OUROBOROS_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
+MODEL = os.environ.get("OUROBOROS_MODEL", DEFAULT_MODEL)
 ENABLE_THINKING = os.environ.get("OUROBOROS_ENABLE_THINKING", "0") == "1"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -33,8 +34,30 @@ CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 
 TOOL_CALL_HISTORY: List[Dict[str, Any]] = []
 TOOL_INTENT_HISTORY: List[Dict[str, Any]] = []
+IS_FIRST_CALL = True
 
 client = OpenAI(base_url=API_BASE, api_key="sk-not-required", timeout=600.0)
+
+def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
+    global IS_FIRST_CALL
+    active_model = requested_model if requested_model else DEFAULT_MODEL
+    try:
+        response = client.chat.completions.create(
+            model=active_model,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            top_p=top_p,
+            presence_penalty=presence_penalty,
+            extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": think}}
+        )
+        IS_FIRST_CALL = False
+        return response
+    except Exception as e:
+        if IS_FIRST_CALL:
+            print(f"FATAL: DEFAULT_MODEL is unreachable. Shutting down. Error: {e}")
+            sys.exit(1)
+        raise e
 
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
@@ -1024,15 +1047,18 @@ def main():
         
         try:
             # Check for model override in active branch
-            active_model = MODEL
-            if branch_info and branch_info.get("model_id"):
-                active_model = branch_info["model_id"]
-                print(f"[Metacognition] Model Override Active: {active_model}")
+            requested_model = branch_info.get("model_id") if branch_info else None
+            if requested_model:
+                print(f"[Metacognition] Model Override Active: {requested_model}")
 
-            response = client.chat.completions.create(
-                model=active_model, messages=api_messages, tools=active_tool_specs, tool_choice="auto", 
-                temperature=sys_temp, top_p=sys_top_p, presence_penalty=sys_pres_pen,
-                extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": sys_think}}
+            response = call_llm(
+                messages=api_messages, 
+                tools=active_tool_specs, 
+                requested_model=requested_model,
+                temperature=sys_temp, 
+                top_p=sys_top_p, 
+                presence_penalty=sys_pres_pen,
+                think=sys_think
             )
             message = response.choices[0].message
             if current_mode == "EXECUTION" and len(queue) > 0:
