@@ -168,7 +168,7 @@ def append_chat_history(role: str, text: str) -> None:
     CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
 def load_state() -> Dict[str, Any]:
-    state = {"offset": 0, "creator_id": None, "cognitive_load": 0, "certified_models": [MODEL]}
+    state = {"offset": 0, "creator_id": None, "cognitive_load": 0}
     if STATE_PATH.exists():
         try: 
             loaded = json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -597,30 +597,15 @@ def handle_restart(args):
         return f"RESTART REJECTED.\n\n{report}"
     return "SYSTEM_SIGNAL_RESTART"
 
-def handle_discover_models(args):
+def handle_check_environment(args):
     try:
-        r = requests.get(f"{API_BASE.replace('/v1', '')}/v1/models", timeout=15)
+        r = requests.get(f"{API_BASE.replace('/v1', '')}/v1/environment", timeout=15)
         if r.status_code == 200:
-            models = r.json().get("data", [])
-            if not models: return "No models discovered."
-            lines = [f"- {m['id']} (owned by: {m.get('owned_by', 'unknown')})" for m in models]
-            return "Available Models Discovery:\n" + "\n".join(lines)
+            return json.dumps(r.json(), indent=2)
         else:
-            return f"Error discovering models: {r.status_code} - {r.text}"
+            return f"Error checking environment: {r.status_code} - {r.text}"
     except Exception as e:
-        return f"Discovery failed: {e}"
-
-def handle_certify_model(args):
-    model_id = args.get("model_id")
-    if not model_id: return "Error: No model_id provided."
-    state = load_state()
-    certified = state.get("certified_models", [])
-    if model_id not in certified:
-        certified.append(model_id)
-        state["certified_models"] = certified
-        save_state(state)
-        return f"Model '{model_id}' has been added to the Certification Registry."
-    return f"Model '{model_id}' is already certified."
+        return f"Check environment failed: {e}"
 
 def handle_fork_execution(args):
     task_id = args.get("task_id", f"task_{int(time.time())}")
@@ -742,6 +727,8 @@ registry.register("update_state_variable", "Update working memory.", {"type": "o
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
 
+registry.register("check_environment", "Query the gateway to discover available local and external cognitive engines and check the financial budget.", {"type": "object", "properties": {}}, handle_check_environment, bucket="global")
+
 # --- System Control Bucket (Available to both Trunk and Branch) ---
 registry.register(
     "request_restart", 
@@ -750,10 +737,6 @@ registry.register(
     handle_restart, 
     bucket="system_control"
 )
-
-# --- Metacognition Bucket ---
-registry.register("discover_models", "Query the gateway to discover available local and external cognitive engines.", {"type": "object", "properties": {}}, handle_discover_models, bucket="metacognition")
-registry.register("certify_model", "Add a successfully tested model ID to the Certification Registry in the agent's state.", {"type": "object", "properties": {"model_id": {"type": "string"}}, "required": ["model_id"]}, handle_certify_model, bucket="metacognition")
 
 # --- Memory Access Bucket (For Trunk Reflection) ---
 # FIX: Moving memory management tools into a dedicated bucket
@@ -1000,7 +983,7 @@ def main():
         
         if is_trunk:
             active_task_id = "global_trunk"
-            allowed_trunk_buckets = ["global", "memory_access", "system_control", "metacognition"]
+            allowed_trunk_buckets = ["global", "memory_access", "system_control"]
             available_tools = registry.get_names(allowed_buckets=allowed_trunk_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=allowed_trunk_buckets)
             

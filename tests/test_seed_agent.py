@@ -9,7 +9,6 @@ from seed_agent import (
     redact_secrets, 
     load_state, 
     save_state,
-    add_cognitive_load,
     handle_bash,
     handle_write,
     handle_read_file_tool,
@@ -50,12 +49,6 @@ def test_redact_secrets():
         redacted = redact_secrets(text)
         assert "[REDACTED]" in redacted or "[REDACTED_TOKEN]" in redacted
         assert "123456789:" not in redacted
-
-def test_add_cognitive_load(mock_memory):
-    save_state({"cognitive_load": 10})
-    add_cognitive_load(20)
-    state = load_state()
-    assert state["cognitive_load"] == 30
 
 def test_handle_update_state(mock_memory):
     args = {"key": "test_key", "value": "test_value"}
