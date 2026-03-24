@@ -773,7 +773,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     state = load_state()
     cached_prompt = state.get("cached_prompts", {}).get(cache_key)
     
-    bible = read_file(ROOT_DIR / "BIBLE.md")
+    constitution = read_file(ROOT_DIR / "CONSTITUTION.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     trauma = check_for_trauma()
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
@@ -794,7 +794,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 {identity}
 
 ## CONSTITUTION
-{bible}
+{constitution}
 
 ## SYSTEM STATE
 - Current Time: {current_time}
@@ -831,7 +831,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 {identity}
 
 ## CONSTITUTION
-{bible}
+{constitution}
 
 ## SYSTEM STATE
 - Current Time: {{CURRENT_TIME}}

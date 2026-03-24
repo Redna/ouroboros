@@ -125,7 +125,7 @@ def test_handle_store_insight(mock_memory):
 def test_build_static_system_prompt(mock_memory):
     from seed_agent import build_static_system_prompt
     with patch("seed_agent.ROOT_DIR", mock_memory):
-        (mock_memory / "BIBLE.md").write_text("Constitution Content")
+        (mock_memory / "CONSTITUTION.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
         (mock_memory / "soul" / "identity.md").write_text("Identity Content")
 

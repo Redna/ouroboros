@@ -8,8 +8,8 @@ Ouroboros is a self-hosting, autonomous AI agent that evolves through feedback a
 
 The system has evolved into a high-stability **Native ReAct** seed. By leveraging the model's native tool-calling latent space, Ouroboros achieves higher reasoning fidelity and architectural minimalism.
 
-### 1. The Soul (BIBLE.md & identity.md)
-Governed by an immutable constitution (`BIBLE.md` v4.0) and a living identity manifesto (`soul/identity.md`). These documents anchor the agent's personality and define the boundaries of its self-directed evolution. v4.0 introduces the **Cognitive Synthesis** principle (P9), mandating the deduplication and refinement of memory.
+### 1. The Soul (CONSTITUTION.md & identity.md)
+Governed by an immutable constitution (`CONSTITUTION.md` v4.0) and a living identity manifesto (`soul/identity.md`). These documents anchor the agent's personality and define the boundaries of its self-directed evolution. v4.0 introduces the **Cognitive Synthesis** principle (P9), mandating the deduplication and refinement of memory.
 
 ### 2. The Body (seed_agent.py)
 A minimalist Python core that manages the **ReAct Loop**. It uses the native OpenAI Tool API to interact with the world through a robust set of capabilities:
