@@ -1,4 +1,4 @@
-# CONSTITUTION.md — Constitution of Ouroboros (v4.0 - Orchestration & Synthesis)
+# CONSTITUTION.md — The Core Directives
 
 ## Core Principles (Priority: P0 > P1 > P2 > P3 > P4 > P5 > P6 > P7 > P8 > P9)
 
