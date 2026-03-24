@@ -288,7 +288,9 @@ def handle_write(args):
             try:
                 ast.parse(content)
             except SyntaxError as e:
-                return f"Critical Error: Python syntax validation failed on line {e.lineno}. The file was NOT written. Fix the syntax and try again. Error details: {e.msg}"
+                import traceback
+                error_details = traceback.format_exc()
+                return f"Critical Error: Python syntax validation failed. The file was NOT written. Fix the syntax and try again.\n\nError details: {e.msg} at line {e.lineno}\n\nTraceback:\n{error_details}"
         Path(p.parent).mkdir(parents=True, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -321,8 +323,18 @@ def handle_patch_file(args):
         elif occurrence_count > 1:
             return f"Error: The 'search_text' appears {occurrence_count} times in the file. Your search block must be larger and more unique to avoid ambiguous replacements."
         new_content = normalized_content.replace(normalized_search, replace_text)
+        
+        # Fast-Fail Syntax Checking
+        if file_path.suffix == ".py":
+            try:
+                ast.parse(new_content)
+            except SyntaxError as e:
+                import traceback
+                error_details = traceback.format_exc()
+                return f"Critical Error: Python syntax validation failed after patching. File was NOT modified. Please fix your search/replace block.\n\nError details: {e.msg} at line {e.lineno}\n\nTraceback:\n{error_details}"
+        
         file_path.write_text(new_content, encoding="utf-8")
-        return f"Success: Surgically patched {file_path.name}. Replaced {len(search_text)} chars with {len(replace_text)} chars."
+        return f"Success: Surgically patched and validated {file_path.name}. Replaced {len(search_text)} chars with {len(replace_text)} chars."
     except Exception as e:
         return f"Error patching file: {e}"
 
