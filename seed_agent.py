@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from openai import OpenAI
 
-API_BASE = os.environ.get("VLLM_BASE_URL", "http://llamacpp:8080/v1")
-API_KEY = os.environ.get("VLLM_API_KEY", "local-vllm-key")
+API_BASE = "http://gate:4000/v1"
 MODEL = os.environ.get("OUROBOROS_MODEL", "mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf")
 ENABLE_THINKING = os.environ.get("OUROBOROS_ENABLE_THINKING", "0") == "1"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -35,7 +34,7 @@ CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 TOOL_CALL_HISTORY: List[Dict[str, Any]] = []
 TOOL_INTENT_HISTORY: List[Dict[str, Any]] = []
 
-client = OpenAI(base_url=API_BASE, api_key=API_KEY, timeout=600.0)
+client = OpenAI(base_url=API_BASE, api_key="sk-not-required", timeout=600.0)
 
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
