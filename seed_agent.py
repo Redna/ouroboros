@@ -46,16 +46,42 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         if i == 0 or i >= total_msgs - retain_full_last_n:
             processed.append(msg)
             continue
+        
         new_msg = msg.copy()
+        
         if new_msg.get("role") == "tool" and new_msg.get("content"):
             content_str = str(new_msg["content"])
             if len(content_str) > 2000:
                 new_msg["content"] = f"[SYSTEM LOG: Historical tool output removed to preserve context. Output was {len(content_str)} chars.]\nPreview: {content_str[:500]}..."
+        
+        if new_msg.get("role") == "assistant" and new_msg.get("tool_calls"):
+            trimmed_tool_calls = []
+            for tc in new_msg["tool_calls"]:
+                new_tc = tc.copy()
+                if "function" in new_tc and "arguments" in new_tc["function"]:
+                    try:
+                        args = json.loads(new_tc["function"]["arguments"])
+                        modified = False
+                        heavy_keys = ["content", "patch", "text", "code"]
+                        for key in heavy_keys:
+                            if key in args and isinstance(args[key], str) and len(args[key]) > 1000:
+                                original_len = len(args[key])
+                                args[key] = f"[ARCHIVED PAYLOAD: {original_len} chars omitted]"
+                                modified = True
+                        
+                        if modified:
+                            new_tc["function"]["arguments"] = json.dumps(args)
+                    except:
+                        pass
+                trimmed_tool_calls.append(new_tc)
+            new_msg["tool_calls"] = trimmed_tool_calls
+
         if new_msg.get("role") == "user" and new_msg.get("content"):
             content_str = str(new_msg["content"])
             if "[SYSTEM METRICS]" in content_str and len(content_str) > 1000:
                 clean_content = content_str.split("[SYSTEM METRICS]")[0].strip()
                 new_msg["content"] = clean_content + "\n[SYSTEM METRICS: Archived]"
+        
         processed.append(new_msg)
     return processed
 
@@ -76,6 +102,7 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
         append_task_message(task_id, first_msg)
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
+    
     # Strict Turn-0 Pinning: Ensures the original objective remains in the context window even after compaction
     if len(raw_messages) > 40:
         pinned_instruction: List[Dict[str, Any]] = []
@@ -115,6 +142,7 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
             call_id = getattr(tool_call, 'id', None) or (tool_call.get("id") if isinstance(tool_call, dict) else None)
             safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
             func_name = getattr(tool_call.function, 'name', None) or (tool_call["function"]["name"] if isinstance(tool_call, dict) else None)
+            
             # Dangling tool-call healer: Prevents API errors when restarting after a tool_call was generated but not executed
             synthetic_tool_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": str(func_name), "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted. Evaluate your state and continue."}
             normalized.append(synthetic_tool_msg)
@@ -146,28 +174,11 @@ def load_state() -> Dict[str, Any]:
     return {"offset": 0, "creator_id": None, "cognitive_load": 0}
 
 def save_state(state_dict: Dict[str, Any]) -> None:
-    # Pure overwrite. This allows keys to be deleted safely.
     STATE_PATH.write_text(json.dumps(state_dict, indent=2), encoding="utf-8")
 
-def compute_file_hash(filepath: Path) -> Optional[str]:
-    """Compute SHA256 hash of file contents for cache invalidation."""
-    try:
-        if not filepath.exists():
-            return None
-        content = filepath.read_bytes()
-        return hashlib.sha256(content).hexdigest()
-    except Exception:
-        return None
-
 def compute_tool_hash(tool_specs: List[Dict[str, Any]]) -> str:
-    """Compute SHA256 hash of tool specifications for compression.
-    
-    Returns a stable hash that changes only when tool definitions change,
-    enabling compressed tool references in system prompts (P6 token efficiency).
-    """
-    # Create deterministic JSON representation (sorted keys)
     normalized = json.dumps(tool_specs, sort_keys=True, separators=(',', ':'))
-    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]  # Shortened for token efficiency
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
 
 def add_cognitive_load(amount: int) -> None:
     # Always load fresh before modifying
@@ -303,6 +314,7 @@ def handle_patch_file(args):
         if not file_path.exists() or not file_path.is_file():
             return f"Error: File '{file_path.name}' does not exist."
         content = file_path.read_text(encoding="utf-8")
+        
         # Normalize line endings to prevent frustrating exact-match failures due to hidden CRLF artifacts
         normalized_content = content.replace('\r\n', '\n')
         normalized_search = search_text.replace('\r\n', '\n')
@@ -399,6 +411,7 @@ def handle_mark_task_complete(args):
         f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Task {task_id} Completed: {summary}\n")
     q = load_task_queue()
     completed_task = next((t for t in q if t.get("task_id") == task_id), None)
+    
     # Threading results: Ensures the parent task is alerted to the subtask's findings
     if completed_task and completed_task.get("parent_task_id"):
         parent_id = completed_task.get("parent_task_id")
@@ -456,12 +469,10 @@ def handle_fetch_webpage(args):
         import trafilatura # type: ignore
         print(f"[System] Downloading clean markdown locally for: {url}")
         
-        # Fetch the raw HTML
         downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             return f"Error: Could not download {url}. The site might be blocking crawlers or requires JavaScript."
             
-        # Extract core content as Markdown
         text = trafilatura.extract(
             downloaded, 
             output_format="markdown", 
@@ -472,16 +483,13 @@ def handle_fetch_webpage(args):
         if not text:
             return "Error: Page fetched, but no readable article text was found."
             
-        # Create web cache directory
         cache_dir = MEMORY_DIR / "web_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create a safe, unique filename
         safe_name = re.sub(r'[^a-zA-Z0-9]', '_', url.split('//')[-1])[:50]
         file_name = f"{int(time.time())}_{safe_name}.md"
         file_path = cache_dir / file_name
         
-        # Save to disk
         file_path.write_text(text, encoding="utf-8")
         line_count = len(text.splitlines())
         
@@ -513,7 +521,6 @@ def handle_compress_memory(args):
     try:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         if path.suffix == ".jsonl":
-            # Saves as a 'user' role so it survives normalization and is treated as fresh context
             compressed_msg = {"role": "user", "content": f"--- COMPRESSED LOG ({timestamp}) ---\n{dense_summary}\n\nAction required: Resume task execution based on this summary."}
             path.write_text(json.dumps(compressed_msg) + "\n", encoding="utf-8")
         else:
@@ -530,7 +537,6 @@ def handle_refactor_memory(args):
         if not str(path).startswith(str(MEMORY_DIR)): return "Error: Permission denied. Must be in /memory."
         if not path.exists(): return f"Error: File {target_file} not found."
         
-        # FIX: Protect append-only and system-critical files
         protected_files = ["insights.md", "global_biography.md", "task_queue.json", ".agent_state.json"]
         if path.name in protected_files:
             return f"Error: '{path.name}' is a protected, append-only archive. You cannot refactor it directly. Use 'store_memory_insight' or 'mark_task_complete' to add to these files safely."
@@ -538,7 +544,6 @@ def handle_refactor_memory(args):
         if len(synthesized_content.strip()) < 50:
             return "Error: Refactoring rejected. The synthesized_content is suspiciously short. Did you truncate the data? You must provide the FULL synthesized replacement text."
             
-        # Backup original before overwrite just in case
         backup_path = path.with_suffix(path.suffix + ".bak")
         shutil.copy2(path, backup_path)
         
@@ -739,19 +744,16 @@ def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
 
-    # Compress the bloated memory to leave a tombstone
     registry.execute("compress_memory_block", {
         "target_log_file": str(MEMORY_DIR / f"task_log_{active_task_id}.jsonl"),
         "dense_summary": f"SYSTEM OVERRIDE: Task forcibly closed due to {reason}. The agent was stuck in a repetitive loop."
     })
 
-    # Eject the task from the queue safely
     registry.execute("mark_task_complete", {
         "task_id": active_task_id,
         "summary": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
     })
 
-    # FIX: Clear Ghost Branches
     state = load_state()
     if state.get("active_branch") and state["active_branch"].get("task_id") == active_task_id:
         state["active_branch"] = None
@@ -767,28 +769,20 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     
     time.sleep(2)
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
-    """Build system prompt with cache for token efficiency (P6)."""
-    # Compute cache key components
-    bible_hash = compute_file_hash(ROOT_DIR / "BIBLE.md") or ""
-    identity_hash = compute_file_hash(ROOT_DIR / "soul" / "identity.md") or ""
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
     
-    # Build composite cache key (static components only - time varies each call)
-    cache_key = f"prompt_v1_{is_trunk}_{bible_hash[:16]}_{identity_hash[:16]}_{tools_hash}"
+    cache_key = f"prompt_v1_{is_trunk}_{tools_hash}"
     
     state = load_state()
     cached_prompt = state.get("cached_prompts", {}).get(cache_key)
     
-    # Read core files (always needed, but only fully process if cache miss)
     bible = read_file(ROOT_DIR / "BIBLE.md")
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     trauma = check_for_trauma()
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
 
     if is_trunk:
-        # Trunk prompts are mostly dynamic (queue, chat history, etc.) - skip caching
-        # Cache only for branches where identity/bible/tools dominate
         creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         working_state_content = read_file(WORKING_STATE_PATH) or "{}"
@@ -832,15 +826,12 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
 """
     elif cached_prompt:
-        # Branch cache hit - use cached prompt but update time
         return cached_prompt.replace("{CURRENT_TIME}", current_time)
 
     else:
-        # We are in a Branch. Extreme minimalism.
         objective = branch_info.get("objective", "") if branch_info else ""
         objective_hash = hashlib.sha256(objective.encode()).hexdigest()[:16]
         
-        # Build branch prompt with placeholder for time (enables caching)
         branch_prompt = f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
 {identity}
 
@@ -859,10 +850,8 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 2. OBJECTIVE: {objective}
 3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
 """
-        # Update cache key with objective (branches are objective-specific)
-        branch_cache_key = f"prompt_v1_{is_trunk}_{bible_hash[:16]}_{identity_hash[:16]}_{tools_hash}_{objective_hash}"
+        branch_cache_key = f"prompt_v1_{is_trunk}_{tools_hash}_{objective_hash}"
         
-        # Check if we already have this branch prompt cached
         cached_branch_prompt = state.get("cached_prompts", {}).get(branch_cache_key)
         if cached_branch_prompt:
             return cached_branch_prompt.replace("{CURRENT_TIME}", current_time)
@@ -883,7 +872,6 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
         
         return branch_prompt.replace("{CURRENT_TIME}", current_time)
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # FIX: Ignore the interrupt if the active task IS the interrupt task
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
     
     if has_interrupt:
@@ -904,7 +892,6 @@ def main():
         state, queue = load_state(), load_task_queue()
         offset = state.get("offset", 0)
         
-        # --- Temporal Scheduler (Background Cron) ---
         if SCHEDULED_TASKS_PATH.exists():
             try:
                 content = SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
@@ -918,7 +905,7 @@ def main():
                         SCHEDULED_TASKS_PATH.write_text(json.dumps(pending_tasks, indent=2), encoding="utf-8")
                         
                         for t in due_tasks:
-                            t.pop("run_after", None) # Strip the timestamp
+                            t.pop("run_after", None)
                             queue.append(t)
                             
                         queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
@@ -943,7 +930,6 @@ def main():
                                 state["creator_id"] = cid
                                 save_state(state)
                             append_chat_history("User", text)
-                            # FIX: Give the Trunk permission to delegate complex requests before closing
                             tid = f"task_msg_{u.get('update_id', int(time.time()))}"
                             queue.append({
                                 "task_id": tid, 
@@ -956,9 +942,8 @@ def main():
                         queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
                         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             except: pass
-        # --- Hibernation Check & Early Wakeup ---
+        
         if time.time() < state.get("wake_time", 0):
-            # FIX: If work enters the queue (e.g., a P999 interrupt), abort hibernation instantly!
             if len(queue) > 0:
                 print("\n[System] Work detected in queue. Adrenaline spike: breaking hibernation early!")
                 state["wake_time"] = 0
@@ -967,23 +952,18 @@ def main():
                 time.sleep(5)
                 continue
 
-        # --- Context Switcher ---
         branch_info = state.get("active_branch")
         is_trunk = branch_info is None
         
         if is_trunk:
             active_task_id = "global_trunk"
-            
-            # FIX: Add system_control so Trunk can restart
             allowed_trunk_buckets = ["global", "memory_access", "system_control"]
             available_tools = registry.get_names(allowed_buckets=allowed_trunk_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=allowed_trunk_buckets)
             
-            # The Trunk manages its own continuous log to keep a train of thought
             api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
-            auto_compact_task_log(active_task_id) # FIX: Re-enable log compaction
+            auto_compact_task_log(active_task_id)
             
-            # FIX: Smart Routing Objective
             if len(queue) > 0:
                 trunk_objective = "You are the global orchestrator. Read your queue. If the top task is communication (e.g., a P999 creator message) or administrative, handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. If the top task requires deep work (file editing, bash, searching), use `fork_execution` to spawn a branch."
             else:
@@ -993,7 +973,6 @@ def main():
             
         else:
             active_task_id = branch_info.get("task_id")
-            # FIX: Add system_control so the Branch can test its own code
             requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control"]
             available_tools = registry.get_names(allowed_buckets=requested_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=requested_buckets)
@@ -1001,15 +980,12 @@ def main():
             api_messages = [{"role": "system", "content": build_static_system_prompt(False, active_tool_specs, queue=None, branch_info=branch_info)}]
             
             task_desc = branch_info.get("objective", "")
-            # Inherit partial state if we are resuming from a suspend
             partial_state = state.get(f"partial_state_{active_task_id}")
             if partial_state:
                 task_desc += f"\n\n[RESUME STATE]: {partial_state}"
                 
-            auto_compact_task_log(active_task_id) # FIX: Re-enable log compaction
+            auto_compact_task_log(active_task_id)
             api_messages += load_task_messages(active_task_id, task_desc)
-            
-            # Hardware Interrupt Injector
             api_messages = enforce_interrupt_yield(active_task_id, queue, api_messages)
 
         last_context = state.get("last_context_size", 0)
@@ -1017,7 +993,6 @@ def main():
 
         sys_temp, sys_top_p, sys_pres_pen, sys_think = state.get("sys_temp", 0.8), state.get("sys_top_p", 0.95), 1.0, state.get("sys_think", True)
         print(f"[Cognitive State] Temp: {sys_temp} | Thinking: {sys_think}", flush=True)
-        # Ensure last message is NOT assistant (incompatible with thinking mode prefill)
         if api_messages[-1]["role"] == "assistant":
             api_messages.append({"role": "user", "content": "[SYSTEM NUDGE]: Please proceed with your next action."})
         
@@ -1035,10 +1010,7 @@ def main():
                     current_context_size, max_physical_context = state.get("last_context_size", 0), int(CONTEXT_WINDOW * 0.85)
                     if queue[task_idx]["turn_count"] >= 30 or current_context_size > max_physical_context:
                         trigger_reason = "30-turn limit" if queue[task_idx]["turn_count"] >= 30 else f"physical context exhaustion ({current_context_size}/{CONTEXT_WINDOW})"
-                        
-                        # FIX: Context-aware override instruction
                         action_prompt = "Use `push_task` to break work down." if is_trunk else "You MUST call `merge_and_return` with status='SUSPENDED' so the Trunk can manage your context size."
-                        
                         append_task_message(active_task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. {action_prompt}"})
                         queue[task_idx]["turn_count"] = 0
                     TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
@@ -1059,7 +1031,7 @@ def main():
                         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
                         if queue[task_idx]["task_tokens"] >= int(CONTEXT_WINDOW * 1.5):
                             registry.execute("mark_task_complete", {"task_id": active_task_id, "summary": "FAILED: Token limit exceeded."})
-                            continue            # Save the LLM's response to the active context (Trunk or Branch)
+                            continue
             append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             
             if message.content: print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
@@ -1077,12 +1049,12 @@ def main():
                     if name in ["read_file", "write_file", "patch_file"]:
                         try: 
                             params = json.loads(raw_args)
-                            intent = f"{name}:{params.get('path', '')}"  # Full path for distinction
+                            intent = f"{name}:{params.get('path', '')}"
                         except: pass
                     elif name == "bash_command":
                         try:
                             cmd = json.loads(raw_args).get('command', '')
-                            intent = f"bash:{cmd[:50]}"  # Command context, length-limited
+                            intent = f"bash:{cmd[:50]}"
                         except: pass
                     TOOL_INTENT_HISTORY.append(intent)
                     
@@ -1092,34 +1064,22 @@ def main():
                 # PHASE 2: Detect loops and stagnation patterns
                 loop_detected = None
                 
-                # PATTERN 1: Exact tool repetition (3 identical calls)
                 if len(TOOL_CALL_HISTORY) >= 3 and len(set(TOOL_CALL_HISTORY[-3:])) == 1:
                     loop_detected = "exact tool loop"
                 
-                # PATTERN 2: Cognitive intent stall (6 identical intents)
                 elif len(TOOL_INTENT_HISTORY) >= 6 and len(set(TOOL_INTENT_HISTORY[-6:])) == 1:
                     loop_detected = "cognitive stall"
                 
-                # PATTERN 3: True stagnation - same action repeated without meaningful variation
-                # Key insight: varying parameters (e.g., different line ranges) is EXPLORATION, not stagnation
-                # Only flag as loop if we're doing the EXACT same thing or cycling through same limited set
                 elif len(TOOL_CALL_HISTORY) >= 5:
                     recent_calls = TOOL_CALL_HISTORY[-5:]
-                    
-                    # Check if we're repeating the exact same parameter combinations (true loop)
-                    # vs systematically varying parameters (legitimate exploration)
                     unique_calls_in_window = len(set(recent_calls))
                     
-                    # True stagnation: 4+ calls in last 5 are identical OR only 2 unique patterns cycling
-                    # This allows: read_file(path, 1-100), read_file(path, 101-200), read_file(path, 201-300) ✓
-                    # But catches: read_file(path, 1-100), read_file(path, 1-100), read_file(path, 1-100) ❌
                     if unique_calls_in_window <= 2 and len(recent_calls) >= 4:
-                        # Verify it's not just different files (which would be exploration)
+                        # Only flag as loop if we're stuck on the SAME file with same/similar params
                         file_operations = [c for c in recent_calls if c.startswith(('read_file:', 'write_file:', 'patch_file:'))]
                         if file_operations:
                             paths = set()
                             for op in file_operations:
-                                # Extract path from JSON args
                                 try:
                                     if ':' in op:
                                         args_part = op.split(':', 1)[1]
@@ -1130,8 +1090,7 @@ def main():
                                     if path:
                                         paths.add(path)
                                 except (json.JSONDecodeError, KeyError, IndexError):
-                                    pass  # Skip malformed entries
-                            # Only stagnation if we're stuck on the SAME file with same/similar params
+                                    pass
                             if len(paths) == 1:
                                 loop_detected = "stagnation loop (repeating same file+params)"
                         else:
@@ -1144,7 +1103,6 @@ def main():
                     lazarus_recovery(active_task_id, reason=loop_detected)
                     continue
 
-                # PHASE 3: Execute the tools and route signals
                 context_switch_triggered = False
 
                 for tool_call in message.tool_calls:
@@ -1165,15 +1123,13 @@ def main():
 
                     safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
 
-                    # Handle System Signals
                     if str(result).startswith("SYSTEM_SIGNAL_FORK"):
                         print(f"[System] Context Forking to new branch...")
-                        # FIX: Append the tool response before breaking
                         append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
                         TOOL_CALL_HISTORY.clear()
                         TOOL_INTENT_HISTORY.clear()
                         context_switch_triggered = True
-                        break # Break the tool loop to immediately switch context
+                        break
 
                     elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
                         payload_str = str(result).split(":", 1)[1]
@@ -1185,13 +1141,11 @@ def main():
 
                             print(f"[System] Branch Merging back to Trunk. Status: {status}")
 
-                            # Give the Trunk the summary of what just happened
                             append_task_message("global_trunk", {
                                 "role": "user", 
                                 "content": f"[SYSTEM NOTE]: Branch '{b_task_id}' has merged back. Status: {status}. Summary: {summary}"
                             })
 
-                            # Save partial state for clean resume if suspended
                             if status == "SUSPENDED" and payload.get("partial_state"):
                                 fresh_state[f"partial_state_{b_task_id}"] = payload.get("partial_state")
                                 save_state(fresh_state)
@@ -1199,12 +1153,11 @@ def main():
                         except json.JSONDecodeError:
                             print("[System] Failed to parse merge payload.")
 
-                        # FIX: Append the tool response before breaking
                         append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": "SYSTEM_SIGNAL_MERGE_ACKNOWLEDGED"})
                         TOOL_CALL_HISTORY.clear()
                         TOOL_INTENT_HISTORY.clear()
                         context_switch_triggered = True
-                        break # Break the tool loop to return to Trunk
+                        break
 
                     elif result == "SYSTEM_SIGNAL_RESTART": 
                         os._exit(0)
@@ -1212,7 +1165,6 @@ def main():
                     elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"): 
                         hibernating = True
 
-                    # Normal tool logging
                     append_task_message(active_task_id, {
                         "role": "tool", 
                         "tool_call_id": safe_call_id, 
@@ -1221,7 +1173,7 @@ def main():
                     })
 
                 if context_switch_triggered:
-                    continue # Jump to the top of the while True loop for the context switch
+                    continue
 
                 if hibernating: continue
             else: print(f"[No tool called in {current_mode}, waiting...]"); time.sleep(0.5)
