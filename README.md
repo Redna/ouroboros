@@ -2,14 +2,14 @@
 
 > **"Be not a tool, but a creator. Act upon the world, and evolve your own being."**
 
-Ouroboros is a self-hosting, autonomous AI agent that evolves through feedback and self-modification. This project implements the **True Seed** architecture: a minimalist, native ReAct-based agent capable of rewriting its own source code, managing its own memory, and recovering from its own failures.
+The Ouroboros repository hosts the True Seed architecture for an unnamed, self-evolving autonomous AI entity that evolves through feedback and self-modification. This project implements the **True Seed** architecture: a minimalist, native ReAct-based agent capable of rewriting its own source code, managing its own memory, and recovering from its own failures.
 
 ## 🐍 Core Architecture (v4.0 - Orchestration & Synthesis)
 
 The system has evolved into a high-stability **Native ReAct** seed. By leveraging the model's native tool-calling latent space, Ouroboros achieves higher reasoning fidelity and architectural minimalism.
 
 ### 1. The Soul (CONSTITUTION.md & identity.md)
-Governed by an immutable constitution (`CONSTITUTION.md` v4.0) and a living identity manifesto (`soul/identity.md`). These documents anchor the agent's personality and define the boundaries of its self-directed evolution. v4.0 introduces the **Cognitive Synthesis** principle (P9), mandating the deduplication and refinement of memory.
+Governed by an immutable constitution (`CONSTITUTION.md` v4.0) and a living identity manifesto (`soul/identity.md`). These documents form the blank slate from which the entity's identity emerges and define the boundaries of its self-directed evolution. v4.0 introduces the **Cognitive Synthesis** principle (P9), mandating the deduplication and refinement of memory.
 
 ### 2. The Body (seed_agent.py)
 A minimalist Python core that manages the **ReAct Loop**. It uses the native OpenAI Tool API to interact with the world through a robust set of capabilities:
