@@ -168,10 +168,13 @@ def append_chat_history(role: str, text: str) -> None:
     CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
 def load_state() -> Dict[str, Any]:
+    state = {"offset": 0, "creator_id": None, "cognitive_load": 0, "certified_models": [MODEL]}
     if STATE_PATH.exists():
-        try: return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        try: 
+            loaded = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+            state.update(loaded)
         except: pass
-    return {"offset": 0, "creator_id": None, "cognitive_load": 0}
+    return state
 
 def save_state(state_dict: Dict[str, Any]) -> None:
     STATE_PATH.write_text(json.dumps(state_dict, indent=2), encoding="utf-8")
@@ -607,19 +610,34 @@ def handle_discover_models(args):
     except Exception as e:
         return f"Discovery failed: {e}"
 
+def handle_certify_model(args):
+    model_id = args.get("model_id")
+    if not model_id: return "Error: No model_id provided."
+    state = load_state()
+    certified = state.get("certified_models", [])
+    if model_id not in certified:
+        certified.append(model_id)
+        state["certified_models"] = certified
+        save_state(state)
+        return f"Model '{model_id}' has been added to the Certification Registry."
+    return f"Model '{model_id}' is already certified."
+
 def handle_fork_execution(args):
     task_id = args.get("task_id", f"task_{int(time.time())}")
     objective = args.get("objective", "No objective provided.")
     tool_buckets = args.get("tool_buckets", ["filesystem", "bash"])
-    
+    model_id = args.get("model_id")
+
     state = load_state()
     state["active_branch"] = {
-        "task_id": task_id,
-        "objective": objective,
-        "tool_buckets": tool_buckets
+        "task_id": task_id, 
+        "objective": objective, 
+        "tool_buckets": tool_buckets,
+        "model_id": model_id # Optional override
     }
     save_state(state)
     return f"SYSTEM_SIGNAL_FORK:{task_id}"
+
 
 def handle_schedule_future_task(args):
     description = args.get("description", "").strip()
@@ -685,7 +703,7 @@ def handle_merge_and_return(args):
 # --- Global / Trunk Tools ---
 registry.register(
     "fork_execution", 
-    "Spawn an isolated execution branch for deep work. You MUST pass the exact task_id from the queue.", 
+    "Spawn an isolated execution branch for deep work. You MUST pass the exact task_id from the queue. Optionally specify a model_id to test uncertified models in isolation.", 
     {
         "type": "object", 
         "properties": {
@@ -694,9 +712,10 @@ registry.register(
             "tool_buckets": {
                 "type": "array", 
                 "items": {"type": "string", "enum": ["filesystem", "bash", "search"]}
-            }
+            },
+            "model_id": {"type": "string", "description": "Optional: Override the default model for this specific branch."}
         },
-        "required": ["task_id", "objective", "tool_buckets"] # FIX: Made all parameters mandatory
+        "required": ["task_id", "objective", "tool_buckets"]
     }, 
     handle_fork_execution, 
     bucket="global"
@@ -734,6 +753,7 @@ registry.register(
 
 # --- Metacognition Bucket ---
 registry.register("discover_models", "Query the gateway to discover available local and external cognitive engines.", {"type": "object", "properties": {}}, handle_discover_models, bucket="metacognition")
+registry.register("certify_model", "Add a successfully tested model ID to the Certification Registry in the agent's state.", {"type": "object", "properties": {"model_id": {"type": "string"}}, "required": ["model_id"]}, handle_certify_model, bucket="metacognition")
 
 # --- Memory Access Bucket (For Trunk Reflection) ---
 # FIX: Moving memory management tools into a dedicated bucket
@@ -1020,8 +1040,14 @@ def main():
             api_messages.append({"role": "user", "content": "[SYSTEM NUDGE]: Please proceed with your next action."})
         
         try:
+            # Check for model override in active branch
+            active_model = MODEL
+            if branch_info and branch_info.get("model_id"):
+                active_model = branch_info["model_id"]
+                print(f"[Metacognition] Model Override Active: {active_model}")
+
             response = client.chat.completions.create(
-                model=MODEL, messages=api_messages, tools=active_tool_specs, tool_choice="auto", 
+                model=active_model, messages=api_messages, tools=active_tool_specs, tool_choice="auto", 
                 temperature=sys_temp, top_p=sys_top_p, presence_penalty=sys_pres_pen,
                 extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": sys_think}}
             )
