@@ -594,6 +594,19 @@ def handle_restart(args):
         return f"RESTART REJECTED.\n\n{report}"
     return "SYSTEM_SIGNAL_RESTART"
 
+def handle_discover_models(args):
+    try:
+        r = requests.get(f"{API_BASE.replace('/v1', '')}/v1/models", timeout=15)
+        if r.status_code == 200:
+            models = r.json().get("data", [])
+            if not models: return "No models discovered."
+            lines = [f"- {m['id']} (owned by: {m.get('owned_by', 'unknown')})" for m in models]
+            return "Available Models Discovery:\n" + "\n".join(lines)
+        else:
+            return f"Error discovering models: {r.status_code} - {r.text}"
+    except Exception as e:
+        return f"Discovery failed: {e}"
+
 def handle_fork_execution(args):
     task_id = args.get("task_id", f"task_{int(time.time())}")
     objective = args.get("objective", "No objective provided.")
@@ -718,6 +731,9 @@ registry.register(
     handle_restart, 
     bucket="system_control"
 )
+
+# --- Metacognition Bucket ---
+registry.register("discover_models", "Query the gateway to discover available local and external cognitive engines.", {"type": "object", "properties": {}}, handle_discover_models, bucket="metacognition")
 
 # --- Memory Access Bucket (For Trunk Reflection) ---
 # FIX: Moving memory management tools into a dedicated bucket
@@ -964,7 +980,7 @@ def main():
         
         if is_trunk:
             active_task_id = "global_trunk"
-            allowed_trunk_buckets = ["global", "memory_access", "system_control"]
+            allowed_trunk_buckets = ["global", "memory_access", "system_control", "metacognition"]
             available_tools = registry.get_names(allowed_buckets=allowed_trunk_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=allowed_trunk_buckets)
             
