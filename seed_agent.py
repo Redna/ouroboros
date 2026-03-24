@@ -180,12 +180,6 @@ def compute_tool_hash(tool_specs: List[Dict[str, Any]]) -> str:
     normalized = json.dumps(tool_specs, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]
 
-def add_cognitive_load(amount: int) -> None:
-    # Always load fresh before modifying
-    current_state = load_state()
-    current_state["cognitive_load"] = current_state.get("cognitive_load", 0) + amount
-    save_state(current_state)
-
 def auto_compact_task_log(task_id: str, max_messages: int = 40) -> None:
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists(): return
