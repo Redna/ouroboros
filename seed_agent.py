@@ -779,7 +779,6 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
 
     if is_trunk:
-        creator_info = f"CREATOR CHAT_ID: {state.get('creator_id')}\n" if state.get('creator_id') else "CREATOR: Not yet registered.\n"
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         working_state_content = read_file(WORKING_STATE_PATH) or "{}"
 
@@ -799,7 +798,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 
 ## SYSTEM STATE
 - Current Time: {current_time}
-{creator_info}{trauma}
+{trauma}
 === TASK QUEUE ===
 {formatted_queue}
 
