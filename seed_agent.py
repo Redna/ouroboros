@@ -31,12 +31,24 @@ STATE_PATH = MEMORY_DIR / ".agent_state.json"
 ARCHIVE_PATH = MEMORY_DIR / "global_biography.md"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
+LEDGER_FILE = MEMORY_DIR / "financial_ledger.json"
+DAILY_BUDGET_LIMIT = float(os.getenv("DAILY_BUDGET_LIMIT", "5.00"))
 
 TOOL_CALL_HISTORY: List[Dict[str, Any]] = []
 TOOL_INTENT_HISTORY: List[Dict[str, Any]] = []
 IS_FIRST_CALL = True
 
 client = OpenAI(base_url=API_BASE, api_key="sk-not-required", timeout=600.0)
+
+def get_current_spend() -> float:
+    if not LEDGER_FILE.exists():
+        return 0.0
+    try:
+        data = json.loads(LEDGER_FILE.read_text())
+        today = time.strftime("%Y-%m-%d")
+        return float(data.get(today, 0.0))
+    except Exception:
+        return 0.0
 
 def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
     global IS_FIRST_CALL
@@ -818,7 +830,7 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     TOOL_INTENT_HISTORY.clear()
     
     time.sleep(2)
-def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None) -> str:
+def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None, current_tokens: int = 0) -> str:
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
     
@@ -831,6 +843,17 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     identity = read_file(ROOT_DIR / "soul" / "identity.md")
     trauma = check_for_trauma()
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+    
+    current_spend = get_current_spend()
+    remaining_budget = max(0.0, DAILY_BUDGET_LIMIT - current_spend)
+    
+    sensory_hud = f"""
+---
+[SENSORY INPUT: PHYSIOLOGICAL STATE]
+Current Session Tokens: {current_tokens}
+Daily Budget Spent: ${current_spend:.4f} USD
+Remaining Budget: ${remaining_budget:.4f} USD
+"""
 
     if is_trunk:
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
@@ -844,7 +867,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
         chat_hist = load_chat_history()
         chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
 
-        return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
+        base_prompt = f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
 {identity}
 
 ## CONSTITUTION
@@ -874,8 +897,9 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
 3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
 """
+        return base_prompt + sensory_hud
     elif cached_prompt:
-        return cached_prompt.replace("{CURRENT_TIME}", current_time)
+        return cached_prompt.replace("{CURRENT_TIME}", current_time) + sensory_hud
 
     else:
         objective = branch_info.get("objective", "") if branch_info else ""
@@ -903,7 +927,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
         
         cached_branch_prompt = state.get("cached_prompts", {}).get(branch_cache_key)
         if cached_branch_prompt:
-            return cached_branch_prompt.replace("{CURRENT_TIME}", current_time)
+            return cached_branch_prompt.replace("{CURRENT_TIME}", current_time) + sensory_hud
         
         # Cache the new prompt with size limit (max 10 entries to prevent bloat)
         if "cached_prompts" not in state:
@@ -919,7 +943,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
         state["cached_prompts"][branch_cache_key] = branch_prompt
         save_state(state)
         
-        return branch_prompt.replace("{CURRENT_TIME}", current_time)
+        return branch_prompt.replace("{CURRENT_TIME}", current_time) + sensory_hud
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
     
@@ -1004,30 +1028,31 @@ def main():
         branch_info = state.get("active_branch")
         is_trunk = branch_info is None
         
+        current_tokens = state.get("global_tokens_consumed", 0)
+
         if is_trunk:
             active_task_id = "global_trunk"
             allowed_trunk_buckets = ["global", "memory_access", "system_control"]
             available_tools = registry.get_names(allowed_buckets=allowed_trunk_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=allowed_trunk_buckets)
-            
-            api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue)}]
+
+            api_messages = [{"role": "system", "content": build_static_system_prompt(True, active_tool_specs, queue, current_tokens=current_tokens)}]
             auto_compact_task_log(active_task_id)
-            
+
             if len(queue) > 0:
                 trunk_objective = "You are the global orchestrator. Read your queue. If the top task is communication (e.g., a P999 creator message) or administrative, handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. If the top task requires deep work (file editing, bash, searching), use `fork_execution` to spawn a branch."
             else:
                 trunk_objective = "Your task queue is empty. Initiate P9 (Cognitive Synthesis). Read your recent logs using `read_file`, extract higher-order wisdom using `store_memory_insight`, synthesize dense files using `refactor_memory`, or `hibernate` if your mind is fully optimized."
-                
+
             api_messages += load_task_messages(active_task_id, trunk_objective)
-            
+
         else:
             active_task_id = branch_info.get("task_id")
             requested_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control"]
             available_tools = registry.get_names(allowed_buckets=requested_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=requested_buckets)
-            
-            api_messages = [{"role": "system", "content": build_static_system_prompt(False, active_tool_specs, queue=None, branch_info=branch_info)}]
-            
+
+            api_messages = [{"role": "system", "content": build_static_system_prompt(False, active_tool_specs, queue=None, branch_info=branch_info, current_tokens=current_tokens)}]            
             task_desc = branch_info.get("objective", "")
             partial_state = state.get(f"partial_state_{active_task_id}")
             if partial_state:
