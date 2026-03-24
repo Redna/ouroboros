@@ -251,8 +251,11 @@ class ToolRegistry:
         
     def execute(self, name, args):
         if name in self.tools:
-            try: return self.tools[name]["handler"](args)
-            except Exception as e: return f"Error: {e}"
+            try: 
+                result = self.tools[name]["handler"](args)
+                return redact_secrets(str(result))
+            except Exception as e: 
+                return redact_secrets(f"Error: {e}")
         return f"Tool {name} not found."
 
 registry = ToolRegistry()
@@ -261,7 +264,7 @@ def handle_bash(args):
     command = args.get("command", "")
     try:
         r = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
-        out = redact_secrets(r.stdout + r.stderr)
+        out = r.stdout + r.stderr
         MAX_CHARS = 20000
         if out and len(out) > MAX_CHARS:
             warning = "\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
@@ -270,7 +273,7 @@ def handle_bash(args):
     except subprocess.TimeoutExpired:
         return "[SYSTEM WARNING: Command timed out after 60 seconds. It may be hanging, requiring interactive input, or processing too much data. Run background tasks with '&' or fix the command.]"
     except Exception as e: 
-        return redact_secrets(f"Error: {e}")
+        return f"Error: {e}"
 
 def handle_write(args):
     try:
@@ -364,7 +367,6 @@ def handle_telegram(args):
         if r.status_code == 200:
             append_chat_history("Ouroboros", text)
 
-            # FIX: Auto-close the interrupt task if requested
             if close_task_id:
                 registry.execute("mark_task_complete", {
                     "task_id": close_task_id,
@@ -378,7 +380,7 @@ def handle_telegram(args):
             print(f"[Telegram] {err_msg}")
             return err_msg
     except Exception as e: 
-        err_msg = redact_secrets(f"Error: {e}")
+        err_msg = f"Error: {e}"
         print(f"[Telegram] {err_msg}")
         return err_msg
 def handle_push_task(args):
@@ -555,7 +557,7 @@ def handle_search_memory(args):
             f"grep -rEi \"{query}\" /memory/", 
             shell=True, capture_output=True, text=True, timeout=30
         )
-        out = redact_secrets(r.stdout + r.stderr)
+        out = r.stdout + r.stderr
         return out[:4000] if out else "No matches found in memory."
     except subprocess.TimeoutExpired:
         return "Error: Memory search timed out after 30 seconds. Your query might be too broad or the memory volume is too large."
@@ -691,7 +693,7 @@ registry.register(
     handle_schedule_future_task, 
     bucket="global"
 )
-registry.register("send_telegram_message", "Message Creator.", {"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}, "close_task_id": {"type": "string", "description": "Optional: Pass the task_id here to automatically mark the communication task as complete."}}}, handle_telegram, bucket="global")
+registry.register("send_telegram_message", "Message Creator.", {"type": "object", "properties": {"chat_id": {"type": "integer", "description": "Optional: Only needed to message a new user. The registered creator is used by default."}, "text": {"type": "string"}, "close_task_id": {"type": "string", "description": "Optional: Pass the task_id here to automatically mark the communication task as complete."}}, "required": ["text"]}, handle_telegram, bucket="global")
 registry.register("update_state_variable", "Update working memory.", {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}, handle_update_state, bucket="global")
 registry.register("set_cognitive_parameters", "Adjust LLM hyperparameters.", {"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}}, handle_set_cognitive_parameters, bucket="global")
 registry.register("hibernate", "Save compute resources.", {"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]}, handle_hibernate, bucket="global")
