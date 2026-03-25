@@ -114,9 +114,9 @@ def test_tool_registry_buckets():
     reg = ToolRegistry()
     handler = MagicMock(return_value="success")
 
-    # Register tools in different buckets
-    reg.register("global_tool", "desc", {}, handler, bucket="global")
-    reg.register("fs_tool", "desc", {}, handler, bucket="filesystem")
+    # Register tools in different buckets using decorator
+    reg.tool("global_tool", "desc", {}, bucket="global")(handler)
+    reg.tool("fs_tool", "desc", {}, bucket="filesystem")(handler)
 
     # Test bucket filtering
     global_tools = reg.get_names(allowed_buckets=["global"])
@@ -134,7 +134,7 @@ def test_tool_registry_execution():
     reg = ToolRegistry()
     handler = MagicMock(return_value="success")
 
-    reg.register("test_tool", "desc", {}, handler)
+    reg.tool("test_tool", "desc", {})(handler)
     result = reg.execute("test_tool", {"arg": 1})
     assert result == "success"
     handler.assert_called_once_with({"arg": 1})
