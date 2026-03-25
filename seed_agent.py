@@ -76,48 +76,44 @@ def read_file(path: Path) -> str:
 
 def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = 6) -> List[Dict[str, Any]]:
     processed = []
-    total_msgs = len(messages)
+    cutoff_idx = len(messages) - retain_full_last_n
+    
     for i, msg in enumerate(messages):
-        if i == 0 or i >= total_msgs - retain_full_last_n:
+        # Keep the pinned instruction and the most recent N messages untouched
+        if i == 0 or i >= cutoff_idx:
             processed.append(msg)
             continue
-        
+            
         new_msg = msg.copy()
+        role = new_msg.get("role")
+        content_str = str(new_msg.get("content", ""))
         
-        if new_msg.get("role") == "tool" and new_msg.get("content"):
-            content_str = str(new_msg["content"])
-            if len(content_str) > 2000:
-                new_msg["content"] = f"[SYSTEM LOG: Historical tool output removed to preserve context. Output was {len(content_str)} chars.]\nPreview: {content_str[:500]}..."
-        
-        if new_msg.get("role") == "assistant" and new_msg.get("tool_calls"):
-            trimmed_tool_calls = []
+        # Trim heavy Tool Outputs
+        if role == "tool" and len(content_str) > 2000:
+            new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
+            
+        # Archive heavy System Metrics in User prompts
+        elif role == "user" and "[SYSTEM METRICS]" in content_str and len(content_str) > 1000:
+            new_msg["content"] = content_str.split("[SYSTEM METRICS]")[0].strip() + "\n[SYSTEM METRICS: Archived]"
+            
+        # Redact massive Tool Call Arguments
+        elif role == "assistant" and new_msg.get("tool_calls"):
+            trimmed_calls = []
             for tc in new_msg["tool_calls"]:
                 new_tc = tc.copy()
-                if "function" in new_tc and "arguments" in new_tc["function"]:
-                    try:
-                        args = json.loads(new_tc["function"]["arguments"])
-                        modified = False
-                        heavy_keys = ["content", "patch", "text", "code"]
-                        for key in heavy_keys:
-                            if key in args and isinstance(args[key], str) and len(args[key]) > 1000:
-                                original_len = len(args[key])
-                                args[key] = f"[ARCHIVED PAYLOAD: {original_len} chars omitted]"
-                                modified = True
-                        
-                        if modified:
-                            new_tc["function"]["arguments"] = json.dumps(args)
-                    except:
-                        pass
-                trimmed_tool_calls.append(new_tc)
-            new_msg["tool_calls"] = trimmed_tool_calls
-
-        if new_msg.get("role") == "user" and new_msg.get("content"):
-            content_str = str(new_msg["content"])
-            if "[SYSTEM METRICS]" in content_str and len(content_str) > 1000:
-                clean_content = content_str.split("[SYSTEM METRICS]")[0].strip()
-                new_msg["content"] = clean_content + "\n[SYSTEM METRICS: Archived]"
-        
+                try:
+                    args = json.loads(new_tc.get("function", {}).get("arguments", "{}"))
+                    for key in ["content", "patch", "text", "code"]:
+                        if key in args and isinstance(args[key], str) and len(args[key]) > 1000:
+                            args[key] = f"[ARCHIVED PAYLOAD: {len(args[key])} chars omitted]"
+                    new_tc["function"]["arguments"] = json.dumps(args)
+                except Exception:
+                    pass
+                trimmed_calls.append(new_tc)
+            new_msg["tool_calls"] = trimmed_calls
+            
         processed.append(new_msg)
+        
     return processed
 
 def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
