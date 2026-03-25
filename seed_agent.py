@@ -1164,7 +1164,7 @@ def main():
             available_tools = registry.get_names(allowed_buckets=requested_buckets)
             active_tool_specs = registry.get_specs(allowed_buckets=requested_buckets)
 
-            api_messages = [{"role": "system", "content": build_static_system_prompt(False, active_tool_specs, queue=None, branch_info=branch_info, current_tokens=current_tokens)}]            
+            api_messages = [{"role": "system", "content": build_system_prompt(False, active_tool_specs, queue=None, branch_info=branch_info, current_tokens=current_tokens)}]            
             task_desc = branch_info.get("objective", "")
             partial_state = state.get(f"partial_state_{active_task_id}")
             if partial_state:
