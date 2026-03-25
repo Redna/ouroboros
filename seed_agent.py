@@ -966,6 +966,39 @@ def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages:
         
     return messages
 
+def queue_creator_message(new_message: str, update_id: int):
+    """
+    Safely adds a creator message to the queue. 
+    If a P999 task is already pending, it appends the message to prevent fragmentation.
+    """
+    queue = load_task_queue()
+    
+    # Look for an existing, unstarted Priority 999 task
+    existing_p999 = None
+    for task in queue:
+        if task.get("priority") == 999:
+            existing_p999 = task
+            break
+            
+    if existing_p999:
+        # Coalesce the messages
+        timestamp = time.strftime("%H:%M:%S")
+        existing_p999["description"] += f"\n\n[Follow-up at {timestamp}]: {new_message}"
+        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        print("[HAL] Coalesced new message into existing P999 task.")
+    else:
+        # No pending P999 task, create a new one
+        tid = f"task_msg_{update_id}"
+        queue.append({
+            "task_id": tid, 
+            "description": f"URGENT CREATOR MESSAGE: '{new_message}'\n\nAction Required: If this request requires deep work, code modification, or research, FIRST use `push_task` to schedule it. THEN, reply using `send_telegram_message` and pass `{tid}` into `close_task_id` to acknowledge the creator and clear this interrupt.", 
+            "priority": 999, 
+            "turn_count": 0
+        })
+        queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
+        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        print("[HAL] Queued new P999 creator interrupt.")
+
 def main():
     global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
@@ -1011,17 +1044,12 @@ def main():
                                 state["creator_id"] = cid
                                 save_state(state)
                             append_chat_history("User", text)
-                            tid = f"task_msg_{u.get('update_id', int(time.time()))}"
-                            queue.append({
-                                "task_id": tid, 
-                                "description": f"URGENT CREATOR MESSAGE: '{text}'\n\nAction Required: If this request requires deep work, code modification, or research, FIRST use `push_task` to schedule it. THEN, reply using `send_telegram_message` and pass `{tid}` into `close_task_id` to acknowledge the creator and clear this interrupt.", 
-                                "priority": 999, 
-                                "turn_count": 0
-                            })
+                            update_id = u.get('update_id', int(time.time()))
+                            queue_creator_message(text, update_id)
                             interrupt_triggered = True
                     if interrupt_triggered:
-                        queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
-                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                        # Refresh local queue variable after file update in queue_creator_message
+                        queue = load_task_queue()
             except: pass
         
         if time.time() < state.get("wake_time", 0):
