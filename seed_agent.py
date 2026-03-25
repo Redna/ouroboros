@@ -174,9 +174,16 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
             append_task_message(task_id, nudge)
     if normalized and normalized[-1]["role"] == "assistant" and normalized[-1].get("tool_calls"):
         for tool_call in normalized[-1]["tool_calls"]:
-            call_id = getattr(tool_call, 'id', None) or (tool_call.get("id") if isinstance(tool_call, dict) else None)
+            # Safely extract ID and Name whether the tool_call is a raw dict (from JSON) or an OpenAI object
+            if isinstance(tool_call, dict):
+                call_id = tool_call.get("id")
+                func_name = tool_call.get("function", {}).get("name")
+            else:
+                call_id = getattr(tool_call, 'id', None)
+                func_obj = getattr(tool_call, 'function', None)
+                func_name = getattr(func_obj, 'name', None) if func_obj else None
+
             safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
-            func_name = getattr(tool_call.function, 'name', None) or (tool_call["function"]["name"] if isinstance(tool_call, dict) else None)
             
             # Dangling tool-call healer: Prevents API errors when restarting after a tool_call was generated but not executed
             synthetic_tool_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": str(func_name), "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted. Evaluate your state and continue."}
