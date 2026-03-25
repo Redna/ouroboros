@@ -273,10 +273,12 @@ class ToolRegistry:
     def __init__(self): 
         self.tools = {}
         
-    def tool(self, name: str, description: str, parameters: dict, bucket: str = "global"):
-        """Decorator to cleanly register a tool and its schema together."""
+    def tool(self, description: str, parameters: dict, bucket: str = "global"):
+        """Decorator to register a tool using the function's own name."""
         def decorator(func):
-            self.tools[name] = {
+            # Derive the tool name directly from the function name
+            tool_name = func.__name__
+            self.tools[tool_name] = {
                 "desc": description, 
                 "params": parameters, 
                 "handler": func,
@@ -285,6 +287,7 @@ class ToolRegistry:
             return func
         return decorator
         
+    
     def get_names(self, allowed_buckets=None): 
         return [n for n, t in self.tools.items() if allowed_buckets is None or t["bucket"] in allowed_buckets]
         
@@ -307,12 +310,11 @@ class ToolRegistry:
 registry = ToolRegistry()
 
 @registry.tool(
-    name="bash_command",
     description="Execute shell command.",
     parameters={"type": "object", "properties": {"command": {"type": "string"}}},
     bucket="bash"
 )
-def handle_bash(args):
+def bash_command(args):
     command = args.get("command", "")
     try:
         r = subprocess.run(command, shell=True, cwd=str(ROOT_DIR), capture_output=True, text=True, timeout=60)
@@ -328,12 +330,11 @@ def handle_bash(args):
         return f"Error: {e}"
 
 @registry.tool(
-    name="write_file",
     description="Overwrite file.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
     bucket="filesystem"
 )
-def handle_write(args):
+def write_file(args):
     try:
         raw_path = args.get("path", "")
         content = args.get("content", "")
@@ -359,12 +360,11 @@ def handle_write(args):
         return f"Error writing file: {e}"
 
 @registry.tool(
-    name="patch_file",
     description="Surgical edit.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]},
     bucket="filesystem"
 )
-def handle_patch_file(args):
+def patch_file(args):
     try:
         raw_path = args.get("path", "")
         search_text = args.get("search_text", "")
@@ -403,12 +403,11 @@ def handle_patch_file(args):
         return f"Error patching file: {e}"
 
 @registry.tool(
-    name="read_file",
     description="Read file contents (e.g., read /memory/insights.md).",
     parameters={"type": "object", "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, "required": ["path"]},
     bucket="memory_access"
 )
-def handle_read_file_tool(args):
+def read_file_tool(args):
     path_str = args.get("path", "")
     start_line = args.get("start_line")
     end_line = args.get("end_line")
@@ -450,12 +449,11 @@ def send_telegram_direct(chat_id, text):
         print(f"[HAL Error] Failed to send read receipt: {e}")
 
 @registry.tool(
-    name="send_telegram_message",
     description="Message Creator.",
     parameters={"type": "object", "properties": {"chat_id": {"type": "integer", "description": "Optional: Only needed to message a new user. The registered creator is used by default."}, "text": {"type": "string"}, "close_task_id": {"type": "string", "description": "Optional: Pass the task_id here to automatically mark the communication task as complete."}}, "required": ["text"]},
     bucket="global"
 )
-def handle_telegram(args):
+def send_telegram_message(args):
     state = load_state()
     chat_id = args.get("chat_id") or state.get("creator_id")
     text = args.get("text")
@@ -487,12 +485,11 @@ def handle_telegram(args):
         return err_msg
 
 @registry.tool(
-    name="push_task",
     description="Queue async task.",
     parameters={"type": "object", "properties": {"description": {"type": "string"}, "priority": {"type": "integer"}, "parent_task_id": {"type": "string"}, "context_notes": {"type": "string"}}, "required": ["description"]},
     bucket="global"
 )
-def handle_push_task(args):
+def push_task(args):
     description = args.get("description", "").strip()
     q = load_task_queue()
     normalized_desc = description.lower()
@@ -510,12 +507,11 @@ def handle_push_task(args):
     return f"Queued {tid} with priority {priority}."
 
 @registry.tool(
-    name="mark_task_complete",
     description="Close active task.",
     parameters={"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}},
     bucket="global"
 )
-def handle_mark_task_complete(args):
+def mark_task_complete(args):
     task_id = args.get("task_id")
     summary = args.get("summary", "No summary provided.")
     with open(ARCHIVE_PATH, "a", encoding="utf-8") as f:
@@ -537,12 +533,11 @@ def handle_mark_task_complete(args):
     return f"Task {task_id} successfully closed. Queue updated."
 
 @registry.tool(
-    name="update_state_variable",
     description="Update working memory.",
     parameters={"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}},
     bucket="global"
 )
-def handle_update_state(args):
+def update_state_variable(args):
     key, value = args.get("key"), args.get("value")
     if not key or value is None: return "Error: 'key' and 'value' required."
     try:
@@ -556,12 +551,11 @@ def handle_update_state(args):
     except Exception as e: return f"Error saving state: {e}"
 
 @registry.tool(
-    name="set_cognitive_parameters",
     description="Adjust LLM hyperparameters.",
     parameters={"type": "object", "properties": {"temperature": {"type": "number"}, "enable_thinking": {"type": "boolean"}}},
     bucket="global"
 )
-def handle_set_cognitive_parameters(args):
+def set_cognitive_parameters(args):
     try:
         temp, think = args.get("temperature"), args.get("enable_thinking")
         state = load_state()
@@ -577,12 +571,11 @@ def handle_set_cognitive_parameters(args):
     except Exception as e: return f"Error setting cognitive parameters: {e}"
 
 @registry.tool(
-    name="web_search",
     description="Local SearXNG search.",
     parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     bucket="search"
 )
-def handle_web_search(args):
+def web_search(args):
     query = args.get("query")
     if not SEARXNG_URL: return "Error: SEARXNG_URL not set."
     try:
@@ -592,12 +585,11 @@ def handle_web_search(args):
     except Exception as e: return f"Search error: {e}"
 
 @registry.tool(
-    name="fetch_webpage",
     description="Download URL to Markdown.",
     parameters={"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
     bucket="search"
 )
-def handle_fetch_webpage(args):
+def fetch_webpage(args):
     url = args.get("url")
     if not url: return "Error: No URL provided."
     try:
@@ -635,12 +627,11 @@ def handle_fetch_webpage(args):
         return f"Failed to fetch webpage locally: {e}"
 
 @registry.tool(
-    name="hibernate",
     description="Save compute resources.",
     parameters={"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]},
     bucket="global"
 )
-def handle_hibernate(args):
+def hibernate(args):
     try:
         duration = args.get("duration_seconds", 300)
         reason = args.get("reason", "No reason provided.")
@@ -655,12 +646,11 @@ def handle_hibernate(args):
     except Exception as e: return f"Error setting sleep cycle: {e}"
 
 @registry.tool(
-    name="compress_memory_block",
     description="Compress task logs.",
     parameters={"type": "object", "properties": {"target_log_file": {"type": "string"}, "dense_summary": {"type": "string"}}},
     bucket="memory_access"
 )
-def handle_compress_memory(args):
+def compress_memory_block(args):
     target_file, dense_summary = args.get("target_log_file"), args.get("dense_summary")
     path = Path(target_file).resolve()
     if not str(path).startswith(str(MEMORY_DIR)): return "Error: Permission denied."
@@ -676,12 +666,11 @@ def handle_compress_memory(args):
     except Exception as e: return f"Error: {e}"
 
 @registry.tool(
-    name="refactor_memory",
     description="Synthesize memory files.",
     parameters={"type": "object", "properties": {"target_file": {"type": "string"}, "synthesized_content": {"type": "string"}}, "required": ["target_file", "synthesized_content"]},
     bucket="memory_access"
 )
-def handle_refactor_memory(args):
+def refactor_memory(args):
     try:
         target_file = args.get("target_file", "")
         synthesized_content = args.get("synthesized_content", "")
@@ -706,12 +695,11 @@ def handle_refactor_memory(args):
         return f"Error refactoring memory: {e}"
 
 @registry.tool(
-    name="search_memory_archive",
     description="Search /memory volume.",
     parameters={"type": "object", "properties": {"query": {"type": "string"}}},
     bucket="memory_access"
 )
-def handle_search_memory(args):
+def search_memory_archive(args):
     query = args.get("query", "")
     if not query: return "Error: No query provided."
     try:
@@ -728,12 +716,11 @@ def handle_search_memory(args):
         return f"Search error: {e}"
 
 @registry.tool(
-    name="store_memory_insight",
     description="Save profound insights.",
     parameters={"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]},
     bucket="memory_access"
 )
-def handle_store_insight(args):
+def store_memory_insight(args):
     insight, category = args.get("insight"), args.get("category", "General")
     path = MEMORY_DIR / "insights.md"
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -742,12 +729,11 @@ def handle_store_insight(args):
     return f"Insight stored in {path.name}."
 
 @registry.tool(
-    name="request_restart",
     description="Apply code updates. This automatically runs MyPy and PyTest. If tests fail, the restart is rejected and you will receive the error log to fix your code. Call this BEFORE merging if you modified Python files.",
     parameters={"type": "object", "properties": {}},
     bucket="system_control"
 )
-def handle_restart(args):
+def request_restart(args):
     success, report = run_pre_flight_checks()
     if not success:
         # Record the failure for dashboard observability
@@ -758,12 +744,11 @@ def handle_restart(args):
     return "SYSTEM_SIGNAL_RESTART"
 
 @registry.tool(
-    name="check_environment",
     description="Query the gateway to discover available local and external cognitive engines and check the financial budget.",
     parameters={"type": "object", "properties": {}},
     bucket="global"
 )
-def handle_check_environment(args):
+def check_environment(args):
     try:
         r = requests.get(f"{API_BASE.replace('/v1', '')}/v1/environment", timeout=15)
         if r.status_code == 200:
@@ -774,7 +759,6 @@ def handle_check_environment(args):
         return f"Check environment failed: {e}"
 
 @registry.tool(
-    name="fork_execution",
     description="Spawn an isolated execution branch for deep work. You MUST pass the exact task_id from the queue. Optionally specify a model_id to test uncertified models in isolation.",
     parameters={
         "type": "object",
@@ -791,7 +775,7 @@ def handle_check_environment(args):
     },
     bucket="global"
 )
-def handle_fork_execution(args):
+def fork_execution(args):
     task_id = args.get("task_id", f"task_{int(time.time())}")
     objective = args.get("objective", "No objective provided.")
     tool_buckets = args.get("tool_buckets", ["filesystem", "bash"])
@@ -809,7 +793,6 @@ def handle_fork_execution(args):
 
 
 @registry.tool(
-    name="schedule_future_task",
     description="Schedule a task to be executed at a specific future UNIX timestamp. Useful for recurring checks, reminders, or delayed actions.",
     parameters={
         "type": "object",
@@ -822,7 +805,7 @@ def handle_fork_execution(args):
     },
     bucket="global"
 )
-def handle_schedule_future_task(args):
+def schedule_future_task(args):
     description = args.get("description", "").strip()
     run_after = args.get("run_after_timestamp")
     priority = args.get("priority", 2)
@@ -857,12 +840,11 @@ def handle_schedule_future_task(args):
     return f"Success: Task '{tid}' scheduled to become active after {time_str}."
 
 @registry.tool(
-    name="merge_and_return",
     description="Yield control back to the global context.",
     parameters={"type": "object", "properties": {"status": {"type": "string", "enum": ["COMPLETED", "SUSPENDED", "BLOCKED"]}, "synthesis_summary": {"type": "string"}, "partial_state": {"type": "string"}}, "required": ["status"]},
     bucket="execution_control"
 )
-def handle_merge_and_return(args):
+def merge_and_return(args):
     status = args.get("status", "COMPLETED")
     synthesis_summary = args.get("synthesis_summary", "")
     partial_state = args.get("partial_state", "")
@@ -894,7 +876,6 @@ def load_task_queue() -> List[Dict[str, Any]]:
     if isinstance(q, list):
         q.sort(key=lambda x: x.get("priority", 1), reverse=True)
     return q
-
 def load_working_state() -> Dict[str, Any]: return json.loads(read_file(WORKING_STATE_PATH) or '{"mode": "REFLECTION"}')
 
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
