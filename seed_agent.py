@@ -174,12 +174,11 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
             append_task_message(task_id, nudge)
     if normalized and normalized[-1]["role"] == "assistant" and normalized[-1].get("tool_calls"):
         for tool_call in normalized[-1]["tool_calls"]:
+            # Safely extract ID and Name whether the tool_call is a raw dict (from JSON) or an OpenAI object
             if isinstance(tool_call, dict):
-                # It was loaded from JSON memory
                 call_id = tool_call.get("id")
                 func_name = tool_call.get("function", {}).get("name")
             else:
-                # It is a raw object from the OpenAI client
                 call_id = getattr(tool_call, 'id', None)
                 func_obj = getattr(tool_call, 'function', None)
                 func_name = getattr(func_obj, 'name', None) if func_obj else None
