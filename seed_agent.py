@@ -122,75 +122,78 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
 
 def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     if not task_id: return []
+
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
     raw_messages = []
+
+    # 1. Load Raw Memory
     if log_path.exists():
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
-                stripped = line.strip()
-                if not stripped: continue
-                try: raw_messages.append(json.loads(stripped))
-                except json.JSONDecodeError: continue
+                if line.strip():
+                    try: raw_messages.append(json.loads(line.strip()))
+                    except json.JSONDecodeError: continue
+
+    # 2. Bootstrap if Empty
     if not raw_messages:
-        first_msg = {"role": "user", "content": f"Begin execution of task: {description}"}
-        raw_messages.append(first_msg)
-        append_task_message(task_id, first_msg)
+        msg = {"role": "user", "content": f"Begin execution of task: {description}"}
+        append_task_message(task_id, msg)
+        return [msg]
+
+    # 3. Enforce User Start
     while raw_messages and raw_messages[0].get("role") != "user":
         raw_messages.pop(0)
-    
-    # Strict Turn-0 Pinning: Ensures the original objective remains in the context window even after compaction
-    if len(raw_messages) > 40:
-        pinned_instruction: List[Dict[str, Any]] = []
-        recent_history = raw_messages[-38:]
-        for msg in raw_messages:
-            if msg.get("role") == "user" and not pinned_instruction:
-                pinned_instruction.append(msg)
-                break
-        raw_messages = pinned_instruction + [{"role": "user", "content": "[SYSTEM NOTE: Intermediate history compressed. Focus on your original objective and recent steps.]"}] + recent_history
-    while raw_messages and raw_messages[0].get("role") != "user":
-        raw_messages.pop(0)
+
     if not raw_messages:
-        raw_messages = [{"role": "user", "content": f"Resume execution of task: {description}"}]
+        return [{"role": "user", "content": f"Resume execution of task: {description}"}]
+
+    # 4. Strict Normalization (Merge adjacent non-tool messages)
     normalized: List[Dict[str, Any]] = []
     for msg in raw_messages:
         if not normalized:
             normalized.append(msg)
             continue
+
         last = normalized[-1]
-        if msg["role"] == "user" and last["role"] == "user":
-            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
+        role, last_role = msg.get("role"), last.get("role")
+
+        # Merge consecutive users, or consecutive assistants that lack tool calls
+        if role == last_role and role in ["user", "assistant"] and not msg.get("tool_calls") and not last.get("tool_calls"):
+            last["content"] = f"{last.get('content', '')}\n{msg.get('content', '')}".strip()
             continue
-        if msg["role"] == "assistant" and last["role"] == "assistant" and not msg.get("tool_calls") and not last.get("tool_calls"):
-            last["content"] = (last.get("content") or "") + "\n" + (msg.get("content") or "")
-            continue
+
         normalized.append(msg)
-    normalized = shed_heavy_payloads(normalized, retain_full_last_n=6)
-    if normalized and normalized[-1]["role"] == "assistant" and not normalized[-1].get("tool_calls"):
-        nudge_content = "Please proceed with your next action using a tool."
-        last_user_msg = next((m for m in reversed(normalized) if m["role"] == "user"), None)
-        if not last_user_msg or last_user_msg.get("content") != nudge_content:
-            nudge = {"role": "user", "content": nudge_content}
+
+    # 5. Heal Dangling States
+    last_msg = normalized[-1]
+    if last_msg["role"] == "assistant":
+        if not last_msg.get("tool_calls"):
+            # Nudge an idle assistant
+            nudge = {"role": "user", "content": "Please proceed with your next action using a tool."}
             normalized.append(nudge)
             append_task_message(task_id, nudge)
-    if normalized and normalized[-1]["role"] == "assistant" and normalized[-1].get("tool_calls"):
-        for tool_call in normalized[-1]["tool_calls"]:
-            # Safely extract ID and Name whether the tool_call is a raw dict (from JSON) or an OpenAI object
-            if isinstance(tool_call, dict):
-                call_id = tool_call.get("id")
-                func_name = tool_call.get("function", {}).get("name")
-            else:
-                call_id = getattr(tool_call, 'id', None)
-                func_obj = getattr(tool_call, 'function', None)
-                func_name = getattr(func_obj, 'name', None) if func_obj else None
+        else:
+            # Heal a crashed tool sequence
+            for tc in last_msg["tool_calls"]:
+                call_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", f"call_recv_{int(time.time())}")
+                func_name = tc.get("function", {}).get("name") if isinstance(tc, dict) else getattr(getattr(tc, "function", None), "name", "unknown")
 
-            safe_call_id = call_id if (call_id and len(call_id) >= 9) else f"call_recv_{int(time.time())}"
-            
-            # Dangling tool-call healer: Prevents API errors when restarting after a tool_call was generated but not executed
-            synthetic_tool_msg = {"role": "tool", "tool_call_id": safe_call_id, "name": str(func_name), "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted. Evaluate your state and continue."}
-            normalized.append(synthetic_tool_msg)
-            append_task_message(task_id, synthetic_tool_msg)
-    return normalized
+                recovery_msg = {
+                    "role": "tool", 
+                    "tool_call_id": call_id, 
+                    "name": str(func_name), 
+                    "content": "SYSTEM RESTART RECOVERY: Previous execution was interrupted. Evaluate your state and continue."
+                }
+                normalized.append(recovery_msg)
+                append_task_message(task_id, recovery_msg)
 
+    # 6. Apply Pinning & Compression
+    if len(normalized) > 40:
+        pinned_instruction = [normalized[0]]
+        recent_history = normalized[-38:]
+        normalized = pinned_instruction + [{"role": "user", "content": "[SYSTEM NOTE: Intermediate history compressed. Focus on your original objective and recent steps.]"}] + recent_history
+
+    return shed_heavy_payloads(normalized, retain_full_last_n=6)
 def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
     if not task_id: return
     log_path = MEMORY_DIR / f"task_log_{task_id}.jsonl"
