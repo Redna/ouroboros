@@ -411,6 +411,20 @@ def handle_read_file_tool(args):
     except Exception as e:
         return f"Error reading file: {e}"
 
+def send_telegram_direct(chat_id, text):
+    """Sends a Telegram message directly from the runtime (HAL)."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+            timeout=10
+        )
+        append_chat_history("Ouroboros", text)
+    except Exception as e:
+        print(f"[HAL Error] Failed to send read receipt: {e}")
+
 def handle_telegram(args):
     state = load_state()
     chat_id = args.get("chat_id") or state.get("creator_id")
@@ -1076,6 +1090,19 @@ def main():
             auto_compact_task_log(active_task_id)
 
             if len(queue) > 0:
+                top_task = queue[0]
+                # --- NEW: Automated Read Receipt ---
+                if top_task.get("priority") == 999 and not top_task.get("read_receipt_sent"):
+                    print("[HAL] P999 Interrupt detected. Notifying creator...")
+                    chat_id = state.get("creator_id")
+                    receipt_text = "👀 *System: Attention shifted. Processing your message...*"
+                    send_telegram_direct(chat_id, receipt_text)
+                    
+                    # Mark as sent and update queue file
+                    top_task["read_receipt_sent"] = True
+                    TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                # -----------------------------------
+                
                 trunk_objective = "You are the global orchestrator. Read your queue. If the top task is communication (e.g., a P999 creator message) or administrative, handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. If the top task requires deep work (file editing, bash, searching), use `fork_execution` to spawn a branch."
             else:
                 trunk_objective = "Your task queue is empty. Initiate P9 (Cognitive Synthesis). Read your recent logs using `read_file`, extract higher-order wisdom using `store_memory_insight`, synthesize dense files using `refactor_memory`, or `hibernate` if your mind is fully optimized."
