@@ -360,45 +360,63 @@ def write_file(args):
         return f"Error writing file: {e}"
 
 @registry.tool(
-    description="Surgical edit.",
-    parameters={"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]},
+    description="Surgical file edit using exact line numbers. First use read_file to get the exact line numbers.",
+    parameters={
+        "type": "object", 
+        "properties": {
+            "path": {"type": "string"}, 
+            "start_line": {"type": "integer", "description": "The first line to replace (inclusive)."}, 
+            "end_line": {"type": "integer", "description": "The last line to replace (inclusive)."}, 
+            "new_content": {"type": "string", "description": "The new code to insert. Omit to simply delete the lines."}
+        }, 
+        "required": ["path", "start_line", "end_line"]
+    },
     bucket="filesystem"
 )
 def patch_file(args):
     try:
         raw_path = args.get("path", "")
-        search_text = args.get("search_text", "")
-        replace_text = args.get("replace_text", "")
+        start_line = int(args.get("start_line"))
+        end_line = int(args.get("end_line"))
+        new_content = args.get("new_content", "")
+        
         file_path = Path(raw_path)
         if not file_path.is_absolute():
             file_path = (ROOT_DIR / file_path).resolve()
-        if not str(file_path).startswith(str(ROOT_DIR)):
-            return f"Error: Permission denied. Target must be within {ROOT_DIR}."
+            
+        if not str(file_path).startswith(str(ROOT_DIR)) and not str(file_path).startswith(str(MEMORY_DIR)):
+            return f"Error: Permission denied. Target must be within {ROOT_DIR} or {MEMORY_DIR}."
         if not file_path.exists() or not file_path.is_file():
             return f"Error: File '{file_path.name}' does not exist."
+            
         content = file_path.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
         
-        # Normalize line endings to prevent frustrating exact-match failures due to hidden CRLF artifacts
-        normalized_content = content.replace('\r\n', '\n')
-        normalized_search = search_text.replace('\r\n', '\n')
-        occurrence_count = normalized_content.count(normalized_search)
-        if occurrence_count == 0:
-            return "Error: The exact 'search_text' was not found in the file. Watch out for indentation and line endings. Use 'read_file' to get the exact text first."
-        elif occurrence_count > 1:
-            return f"Error: The 'search_text' appears {occurrence_count} times in the file. Your search block must be larger and more unique to avoid ambiguous replacements."
-        new_content = normalized_content.replace(normalized_search, replace_text)
+        if start_line < 1 or start_line > len(lines):
+            return f"Error: start_line {start_line} is out of range (1-{len(lines)})."
+        if end_line < start_line or end_line > len(lines):
+            return f"Error: end_line {end_line} is out of range ({start_line}-{len(lines)})."
+            
+        before = lines[:start_line-1]
+        after = lines[end_line:]
         
+        patch = new_content
+        if patch and not patch.endswith('\n'):
+            patch += '\n'
+            
+        final_content = "".join(before) + patch + "".join(after)
+
         # Fast-Fail Syntax Checking
         if file_path.suffix == ".py":
             try:
-                ast.parse(new_content)
+                ast.parse(final_content)
             except SyntaxError as e:
                 import traceback
                 error_details = traceback.format_exc()
-                return f"Critical Error: Python syntax validation failed after patching. File was NOT modified. Please fix your search/replace block.\n\nError details: {e.msg} at line {e.lineno}\n\nTraceback:\n{error_details}"
+                return f"Critical Error: Python syntax validation failed after patching. File was NOT modified. Please fix your replacement code.\n\nError details: {e.msg} at line {e.lineno}\n\nTraceback:\n{error_details}"
         
-        file_path.write_text(new_content, encoding="utf-8")
-        return f"Success: Surgically patched and validated {file_path.name}. Replaced {len(search_text)} chars with {len(replace_text)} chars."
+        file_path.write_text(final_content, encoding="utf-8")
+        return f"Success: Surgically patched and validated {file_path.name}. Replaced lines {start_line}-{end_line}."
     except Exception as e:
         return f"Error patching file: {e}"
 

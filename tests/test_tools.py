@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 from seed_agent import (
     bash_command,
     write_file,
+    patch_file,
     read_file_tool,
     send_telegram_message,
     web_search,
@@ -36,6 +37,34 @@ def test_write_file(mock_memory):
     result = write_file({"path": str(path), "content": content})
     assert "Success" in result
     assert path.read_text() == content
+
+def test_patch_file_replace(mock_memory):
+    """Test patching a file by replacing lines."""
+    test_file = mock_memory / "patch_test.txt"
+    test_file.write_text("line1\nline2\nline3\nline4")
+    
+    result = patch_file({
+        "path": str(test_file),
+        "start_line": 2,
+        "end_line": 3,
+        "new_content": "replaced_line\n"
+    })
+    assert "Success" in result
+    assert test_file.read_text() == "line1\nreplaced_line\nline4"
+
+def test_patch_file_delete(mock_memory):
+    """Test patching a file by deleting lines."""
+    test_file = mock_memory / "patch_test.txt"
+    test_file.write_text("line1\nline2\nline3\nline4")
+    
+    result = patch_file({
+        "path": str(test_file),
+        "start_line": 2,
+        "end_line": 3,
+        "new_content": ""
+    })
+    assert "Success" in result
+    assert test_file.read_text() == "line1\nline4"
 
 def test_read_file_tool_full(mock_memory):
     """Test reading entire file."""
