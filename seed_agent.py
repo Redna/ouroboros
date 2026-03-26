@@ -923,6 +923,68 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     TOOL_INTENT_HISTORY.clear()
     
     time.sleep(2)
+def render_sensory_hud(current_tokens: int, current_spend: float, limit: float) -> str:
+    remaining = max(0.0, limit - current_spend)
+    return f"""
+---
+[SENSORY INPUT: PHYSIOLOGICAL STATE]
+Current Session Tokens: {current_tokens}
+Daily Budget Spent: ${current_spend:.4f} USD
+Remaining Budget: ${remaining:.4f} USD
+"""
+
+def render_trunk_prompt(context: dict, tools_text: str, current_time: str) -> str:
+    return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
+{context['identity']}
+
+## CONSTITUTION
+{context['constitution']}
+
+## SYSTEM STATE
+- Current Time: {current_time}
+{context['trauma']}
+=== TASK QUEUE ===
+{context['formatted_queue']}
+
+## MEMORY
+### Working Memory
+{context['working_state']}
+
+### Recent Biography
+{context['recent_biography']}
+
+### Recent Conversation
+{context['chat_context']}
+
+## AVAILABLE TOOLS
+{tools_text}
+
+=== TRUNK DIRECTIVES ===
+1. You are in the GLOBAL TRUNK. You orchestrate tasks, reflect, and communicate.
+2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
+3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
+"""
+
+def render_branch_prompt(context: dict, tools_text: str, objective: str) -> str:
+    return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
+{context['identity']}
+
+## CONSTITUTION
+{context['constitution']}
+
+## SYSTEM STATE
+- Current Time: {{CURRENT_TIME}}
+
+## AVAILABLE TOOLS
+{tools_text}
+- merge_and_return: Yield control back to the global context.
+
+=== BRANCH DIRECTIVES ===
+1. You are in an ISOLATED BRANCH. Your sole purpose is to complete the following objective.
+2. OBJECTIVE: {objective}
+3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
+"""
+
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None, current_tokens: int = 0) -> str:
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
