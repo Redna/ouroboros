@@ -15,6 +15,8 @@ def mock_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("constants.TASK_QUEUE_PATH", memory_dir / "task_queue.json")
     monkeypatch.setattr("constants.CHAT_HISTORY_PATH", memory_dir / "chat_history.json")
     monkeypatch.setattr("constants.ARCHIVE_PATH", memory_dir / "global_biography.md")
+    monkeypatch.setattr("constants.SCHEDULED_TASKS_PATH", memory_dir / "scheduled_tasks.json")
+    monkeypatch.setattr("constants.LEDGER_FILE", memory_dir / "financial_ledger.json")
     
     # Initialize some required files
     (memory_dir / ".agent_state.json").write_text(json.dumps({"offset": 0, "cognitive_load": 0}))

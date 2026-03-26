@@ -7,6 +7,27 @@ import constants
 
 _session: Dict[str, Any] = {"tool_history": [], "intent_history": [], "is_first_call": True}
 
+def initialize_memory() -> None:
+    """Ensure essential memory directory and base files exist."""
+    constants.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    (constants.MEMORY_DIR / "web_cache").mkdir(parents=True, exist_ok=True)
+    
+    defaults = {
+        constants.STATE_PATH: {"offset": 0, "creator_id": None, "cognitive_load": 0},
+        constants.CHAT_HISTORY_PATH: [],
+        constants.TASK_QUEUE_PATH: [],
+        constants.WORKING_STATE_PATH: {},
+        constants.SCHEDULED_TASKS_PATH: []
+    }
+    
+    for path, default_val in defaults.items():
+        if not path.exists():
+            path.write_text(json.dumps(default_val, indent=2), encoding="utf-8")
+            
+    if not constants.ARCHIVE_PATH.exists():
+        header = f"# Ouroboros Global Biography\nInitialized: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        constants.ARCHIVE_PATH.write_text(header, encoding="utf-8")
+
 def get_current_spend() -> float:
     if not constants.LEDGER_FILE.exists():
         return 0.0

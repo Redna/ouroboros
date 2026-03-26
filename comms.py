@@ -34,6 +34,14 @@ def queue_creator_message(new_message: str, update_id: int):
             existing_p999 = task
             break
             
+    tid = f"task_msg_{update_id}"
+    
+    # Check for existing task_id to prevent duplicates (IDEMPOTENCY)
+    if any(t.get("task_id") == tid for t in queue):
+        # We also check the description to see if it's already coalesced
+        # but the tid check is usually enough for Telegram updates.
+        return
+
     if existing_p999:
         # Coalesce the messages
         timestamp = time.strftime("%H:%M:%S")

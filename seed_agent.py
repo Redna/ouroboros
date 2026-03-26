@@ -227,7 +227,7 @@ def send_telegram_message(args):
     if not constants.TELEGRAM_BOT_TOKEN: return "Error: constants.TELEGRAM_BOT_TOKEN not set."
     
     try:
-        r = requests.post(f"https://api.comms.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+        r = requests.post(f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
         if r.status_code == 200:
             agent_state.append_chat_history("Ouroboros", text)
             return "Message sent successfully."
@@ -797,13 +797,15 @@ def _resolve_execution_context(
         if queue:
             top_task = queue[0]
             creator_id = state.get("creator_id")
-            if top_task.get("priority") == 999 and not top_task.get("read_receipt_sent") and isinstance(creator_id, int):
+            last_receipt = top_task.get("read_receipt_time", 0)
+            if top_task.get("priority") == 999 and (time.time() - last_receipt > 10) and isinstance(creator_id, int):
                 print("[HAL] P999 Interrupt detected. Notifying creator...")
                 comms.send_telegram_direct(
                     creator_id,
                     "👀 *System: Attention shifted. Processing your message...*",
                 )
                 top_task["read_receipt_sent"] = True
+                top_task["read_receipt_time"] = time.time()
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             task_desc = (
                 "You are the global orchestrator. Read your queue. "
@@ -918,6 +920,7 @@ def _route_tool_calls(
 
 
 def main() -> None:
+    agent_state.initialize_memory()
     print(f"Awaking Native ReAct Mode (JSONL). Model: {constants.MODEL} | Thinking: {'ON' if constants.ENABLE_THINKING else 'OFF'}")
 
     while True:
