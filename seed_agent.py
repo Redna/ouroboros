@@ -1113,15 +1113,13 @@ def sense_environment(state: Dict[str, Any]) -> bool:
         pass
     return interrupt_triggered
 
-def evaluate_scheduled_tasks(queue: List[Dict[str, Any]]) -> None:
-    """Checks scheduled tasks and shifts them to the active queue if due."""
+def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not SCHEDULED_TASKS_PATH.exists():
-        return
-        
+        return queue
     try:
         content = SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
         if not content:
-            return
+            return queue
             
         scheduled = json.loads(content)
         now = time.time()
@@ -1140,6 +1138,8 @@ def evaluate_scheduled_tasks(queue: List[Dict[str, Any]]) -> None:
             print(f"[Scheduler] Temporal shift: {len(due_tasks)} scheduled tasks moved to active queue.")
     except Exception as e:
         print(f"[Scheduler Error]: {e}")
+        
+    return queue
 
 def main():
     global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
@@ -1147,7 +1147,7 @@ def main():
     while True:
         state, queue = load_state(), load_task_queue()
         
-        evaluate_scheduled_tasks(queue)
+        queue = process_scheduled_tasks(queue)
         
         if sense_environment(state):
             # Refresh local queue variable after file update in queue_creator_message
