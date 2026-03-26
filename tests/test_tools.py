@@ -90,7 +90,7 @@ def test_send_telegram_message(mock_memory):
     """Test telegram message sending."""
     with patch("requests.post") as mock_post:
         mock_post.return_value = MagicMock(status_code=200)
-        with patch("seed_agent.TELEGRAM_BOT_TOKEN", "fake_token"):
+        with patch("constants.TELEGRAM_BOT_TOKEN", "fake_token"):
             result = send_telegram_message({"text": "test msg", "chat_id": 123})
             assert "successfully" in result
 
@@ -103,7 +103,7 @@ def test_web_search(mock_memory):
                 {"title": "T2", "url": "U2", "content": "C2"}
             ]
         }
-        with patch("seed_agent.SEARXNG_URL", "http://fake"):
+        with patch("constants.SEARXNG_URL", "http://fake_searxng"):
             result = web_search({"query": "test"})
             assert "T1" in result
             assert "U1" in result

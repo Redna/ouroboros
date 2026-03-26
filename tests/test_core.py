@@ -19,7 +19,7 @@ from seed_agent import (
 
 def test_build_static_system_prompt_trunk(mock_memory):
     """Test system prompt construction in Trunk mode."""
-    with patch("seed_agent.ROOT_DIR", mock_memory):
+    with patch("constants.ROOT_DIR", mock_memory):
         (mock_memory / "CONSTITUTION.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
         (mock_memory / "soul" / "identity.md").write_text("Identity Content")
@@ -36,7 +36,7 @@ def test_build_static_system_prompt_trunk(mock_memory):
 
 def test_build_static_system_prompt_branch(mock_memory):
     """Test system prompt construction in Branch mode."""
-    with patch("seed_agent.ROOT_DIR", mock_memory):
+    with patch("constants.ROOT_DIR", mock_memory):
         (mock_memory / "CONSTITUTION.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
         (mock_memory / "soul" / "identity.md").write_text("Identity Content")
@@ -68,10 +68,10 @@ def test_lazarus_recovery(mock_memory):
 
 def test_main_loop_iteration(mock_memory):
     """Test a single iteration of the main execution loop."""
-    with patch("seed_agent.client.chat.completions.create") as mock_openai, \
+    with patch("llm_interface.client.chat.completions.create") as mock_openai, \
          patch("requests.get") as mock_get, \
          patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")), \
-         patch("seed_agent.load_task_queue", return_value=[{"task_id": "t1", "description": "test"}]):
+         patch("agent_state.load_task_queue", return_value=[{"task_id": "t1", "description": "test"}]):
         
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="thinking", tool_calls=[]))]

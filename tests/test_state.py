@@ -1,9 +1,10 @@
 import json
 from unittest.mock import patch
-from seed_agent import redact_secrets, update_state_variable
+from llm_interface import redact_secrets
+from seed_agent import update_state_variable
 
 def test_redact_secrets():
-    with patch("seed_agent.TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"):
+    with patch("constants.TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"):
         text = "My token is 123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
         redacted = redact_secrets(text)
         assert "[REDACTED]" in redacted or "[REDACTED_TOKEN]" in redacted
