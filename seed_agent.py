@@ -1086,12 +1086,10 @@ def queue_creator_message(new_message: str, update_id: int):
         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
         print("[HAL] Queued new P999 creator interrupt.")
 
-def sense_environment(state: Dict[str, Any]) -> bool:
-    """Polls Telegram for creator interrupts. Returns True if a new message was queued."""
+def poll_telegram(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     if not TELEGRAM_BOT_TOKEN:
-        return False
+        return state, queue
         
-    interrupt_triggered = False
     offset = state.get("offset", 0)
     try:
         r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
@@ -1099,6 +1097,8 @@ def sense_environment(state: Dict[str, Any]) -> bool:
             new_offset = r["result"][-1]["update_id"] + 1
             state["offset"], state["wake_time"] = new_offset, 0
             save_state(state)
+            
+            interrupt_triggered = False
             for u in r["result"]:
                 msg = u.get("message", {})
                 if msg.get("text"): 
@@ -1107,11 +1107,16 @@ def sense_environment(state: Dict[str, Any]) -> bool:
                         state["creator_id"] = cid
                         save_state(state)
                     append_chat_history("User", text)
-                    queue_creator_message(text, u.get('update_id', int(time.time())))
+                    update_id = u.get('update_id', int(time.time()))
+                    queue_creator_message(text, update_id)
                     interrupt_triggered = True
+                    
+            if interrupt_triggered:
+                queue = load_task_queue()
     except Exception:
         pass
-    return interrupt_triggered
+        
+    return state, queue
 
 def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not SCHEDULED_TASKS_PATH.exists():
@@ -1148,10 +1153,7 @@ def main():
         state, queue = load_state(), load_task_queue()
         
         queue = process_scheduled_tasks(queue)
-        
-        if sense_environment(state):
-            # Refresh local queue variable after file update in queue_creator_message
-            queue = load_task_queue()
+        state, queue = poll_telegram(state, queue)
         
         if time.time() < state.get("wake_time", 0):
             if len(queue) > 0:
