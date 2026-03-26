@@ -39,32 +39,35 @@ def test_write_file(mock_memory):
     assert path.read_text() == content
 
 def test_patch_file_replace(mock_memory):
-    """Test patching a file by replacing lines."""
+    """Test patching a file by replacing code block."""
     test_file = mock_memory / "patch_test.txt"
-    test_file.write_text("line1\nline2\nline3\nline4")
+    test_file.write_text("line1\nline2 \nline3\nline4")
     
     result = patch_file({
         "path": str(test_file),
-        "start_line": 2,
-        "end_line": 3,
-        "new_content": "replaced_line\n"
+        "search_text": "line2\nline3",
+        "replace_text": "replaced_line"
     })
     assert "Success" in result
+    # Resulting file will have line2 and line3 replaced by replaced_line
+    # Note that norm_content.replace(norm_search, replace_text)
+    # norm_content for "line1\nline2 \nline3\nline4" is "line1\nline2\nline3\nline4"
+    # replaced with "replaced_line" gives "line1\nreplaced_line\nline4"
     assert test_file.read_text() == "line1\nreplaced_line\nline4"
 
 def test_patch_file_delete(mock_memory):
-    """Test patching a file by deleting lines."""
+    """Test patching a file by deleting block."""
     test_file = mock_memory / "patch_test.txt"
     test_file.write_text("line1\nline2\nline3\nline4")
     
     result = patch_file({
         "path": str(test_file),
-        "start_line": 2,
-        "end_line": 3,
-        "new_content": ""
+        "search_text": "line2\nline3",
+        "replace_text": ""
     })
     assert "Success" in result
-    assert test_file.read_text() == "line1\nline4"
+    # "line1\nline2\nline3\nline4".replace("line2\nline3", "") -> "line1\n\nline4"
+    assert test_file.read_text() == "line1\n\nline4"
 
 def test_read_file_tool_full(mock_memory):
     """Test reading entire file."""

@@ -360,25 +360,15 @@ def write_file(args):
         return f"Error writing file: {e}"
 
 @registry.tool(
-    description="Surgical file edit using exact line numbers. First use read_file to get the exact line numbers.",
-    parameters={
-        "type": "object", 
-        "properties": {
-            "path": {"type": "string"}, 
-            "start_line": {"type": "integer", "description": "The first line to replace (inclusive)."}, 
-            "end_line": {"type": "integer", "description": "The last line to replace (inclusive)."}, 
-            "new_content": {"type": "string", "description": "The new code to insert. Omit to simply delete the lines."}
-        }, 
-        "required": ["path", "start_line", "end_line"]
-    },
+    description="Surgical edit. Replaces a specific block of text in a file.",
+    parameters={"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]},
     bucket="filesystem"
 )
 def patch_file(args):
     try:
         raw_path = args.get("path", "")
-        start_line = int(args.get("start_line"))
-        end_line = int(args.get("end_line"))
-        new_content = args.get("new_content", "")
+        search_text = args.get("search_text", "")
+        replace_text = args.get("replace_text", "")
         
         file_path = Path(raw_path)
         if not file_path.is_absolute():
@@ -388,35 +378,38 @@ def patch_file(args):
             return f"Error: Permission denied. Target must be within {ROOT_DIR} or {MEMORY_DIR}."
         if not file_path.exists() or not file_path.is_file():
             return f"Error: File '{file_path.name}' does not exist."
-            
-        content = file_path.read_text(encoding="utf-8")
-        lines = content.splitlines(keepends=True)
-        
-        if start_line < 1 or start_line > len(lines):
-            return f"Error: start_line {start_line} is out of range (1-{len(lines)})."
-        if end_line < start_line or end_line > len(lines):
-            return f"Error: end_line {end_line} is out of range ({start_line}-{len(lines)})."
-            
-        before = lines[:start_line-1]
-        after = lines[end_line:]
-        
-        patch = new_content
-        if patch and not patch.endswith('\n'):
-            patch += '\n'
-            
-        final_content = "".join(before) + patch + "".join(after)
 
+        content = file_path.read_text(encoding="utf-8")
+        
+        # Resilient Matching: Normalize all line endings and trailing whitespace
+        def normalize_text(text_block):
+            return "\n".join([line.rstrip() for line in text_block.replace("\r\n", "\n").splitlines()])
+
+        norm_content = normalize_text(content)
+        norm_search = normalize_text(search_text)
+        
+        occurrence_count = norm_content.count(norm_search)
+        
+        if occurrence_count == 0:
+            return "Error: 'search_text' not found. Ensure your snippet matches the file (ignoring trailing spaces). Use 'read_file' to check the target."
+        elif occurrence_count > 1:
+            return f"Error: 'search_text' appears {occurrence_count} times. Please provide a larger, more unique block of code to replace."
+
+        # Perform replacement on the normalized content
+        new_content = norm_content.replace(norm_search, replace_text)
+        
         # Fast-Fail Syntax Checking
         if file_path.suffix == ".py":
             try:
-                ast.parse(final_content)
+                ast.parse(new_content)
             except SyntaxError as e:
                 import traceback
                 error_details = traceback.format_exc()
-                return f"Critical Error: Python syntax validation failed after patching. File was NOT modified. Please fix your replacement code.\n\nError details: {e.msg} at line {e.lineno}\n\nTraceback:\n{error_details}"
+                return f"Critical Error: Python syntax validation failed after patching. File was NOT modified. Please fix your search/replace block.\n\nError details: {e.msg} at line {e.lineno}\n\nTraceback:\n{error_details}"
         
-        file_path.write_text(final_content, encoding="utf-8")
-        return f"Success: Surgically patched and validated {file_path.name}. Replaced lines {start_line}-{end_line}."
+        file_path.write_text(new_content, encoding="utf-8")
+        return f"Success: Surgically patched and validated {file_path.name}. Replaced {len(search_text)} chars with {len(replace_text)} chars."
+        
     except Exception as e:
         return f"Error patching file: {e}"
 
