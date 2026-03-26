@@ -1066,58 +1066,72 @@ def queue_creator_message(new_message: str, update_id: int):
         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
         print("[HAL] Queued new P999 creator interrupt.")
 
+def sense_environment(state: Dict[str, Any]) -> bool:
+    """Polls Telegram for creator interrupts. Returns True if a new message was queued."""
+    if not TELEGRAM_BOT_TOKEN:
+        return False
+        
+    interrupt_triggered = False
+    offset = state.get("offset", 0)
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
+        if r.get("ok") and r.get("result"):
+            new_offset = r["result"][-1]["update_id"] + 1
+            state["offset"], state["wake_time"] = new_offset, 0
+            save_state(state)
+            for u in r["result"]:
+                msg = u.get("message", {})
+                if msg.get("text"): 
+                    text, cid = msg["text"], msg["chat"]["id"]
+                    if not state.get("creator_id"):
+                        state["creator_id"] = cid
+                        save_state(state)
+                    append_chat_history("User", text)
+                    queue_creator_message(text, u.get('update_id', int(time.time())))
+                    interrupt_triggered = True
+    except Exception:
+        pass
+    return interrupt_triggered
+
+def evaluate_scheduled_tasks(queue: List[Dict[str, Any]]) -> None:
+    """Checks scheduled tasks and shifts them to the active queue if due."""
+    if not SCHEDULED_TASKS_PATH.exists():
+        return
+        
+    try:
+        content = SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
+        if not content:
+            return
+            
+        scheduled = json.loads(content)
+        now = time.time()
+        due_tasks = [t for t in scheduled if now >= t.get("run_after", 0)]
+        
+        if due_tasks:
+            pending_tasks = [t for t in scheduled if now < t.get("run_after", 0)]
+            SCHEDULED_TASKS_PATH.write_text(json.dumps(pending_tasks, indent=2), encoding="utf-8")
+            
+            for t in due_tasks:
+                t.pop("run_after", None)
+                queue.append(t)
+                
+            queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
+            TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+            print(f"[Scheduler] Temporal shift: {len(due_tasks)} scheduled tasks moved to active queue.")
+    except Exception as e:
+        print(f"[Scheduler Error]: {e}")
+
 def main():
     global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
     print(f"Awaking Native ReAct Mode (JSONL). Model: {MODEL} | Thinking: {'ON' if ENABLE_THINKING else 'OFF'}")
     while True:
         state, queue = load_state(), load_task_queue()
-        offset = state.get("offset", 0)
         
-        if SCHEDULED_TASKS_PATH.exists():
-            try:
-                content = SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
-                if content:
-                    scheduled = json.loads(content)
-                    now = time.time()
-                    due_tasks = [t for t in scheduled if now >= t.get("run_after", 0)]
-                    
-                    if due_tasks:
-                        pending_tasks = [t for t in scheduled if now < t.get("run_after", 0)]
-                        SCHEDULED_TASKS_PATH.write_text(json.dumps(pending_tasks, indent=2), encoding="utf-8")
-                        
-                        for t in due_tasks:
-                            t.pop("run_after", None)
-                            queue.append(t)
-                            
-                        queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
-                        TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-                        print(f"[Scheduler] Temporal shift: {len(due_tasks)} scheduled tasks moved to active queue.")
-            except Exception as e:
-                print(f"[Scheduler Error]: {e}")
-
-        if TELEGRAM_BOT_TOKEN:
-            try:
-                r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 5}, timeout=10).json()
-                if r.get("ok") and r.get("result"):
-                    new_offset = r["result"][-1]["update_id"] + 1
-                    state["offset"], state["wake_time"] = new_offset, 0
-                    save_state(state)
-                    interrupt_triggered = False
-                    for u in r["result"]:
-                        msg = u.get("message", {})
-                        if msg.get("text"): 
-                            text, cid = msg["text"], msg["chat"]["id"]
-                            if not state.get("creator_id"):
-                                state["creator_id"] = cid
-                                save_state(state)
-                            append_chat_history("User", text)
-                            update_id = u.get('update_id', int(time.time()))
-                            queue_creator_message(text, update_id)
-                            interrupt_triggered = True
-                    if interrupt_triggered:
-                        # Refresh local queue variable after file update in queue_creator_message
-                        queue = load_task_queue()
-            except: pass
+        evaluate_scheduled_tasks(queue)
+        
+        if sense_environment(state):
+            # Refresh local queue variable after file update in queue_creator_message
+            queue = load_task_queue()
         
         if time.time() < state.get("wake_time", 0):
             if len(queue) > 0:
