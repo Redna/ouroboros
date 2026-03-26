@@ -1011,117 +1011,41 @@ def gather_system_context(queue: Optional[List[Dict[str, Any]]] = None) -> dict:
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None, current_tokens: int = 0) -> str:
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
-    
-    cache_key = f"prompt_v1_{is_trunk}_{tools_hash}"
-    
-    state = load_state()
-    cached_prompt = state.get("cached_prompts", {}).get(cache_key)
-    
-    constitution = read_file(ROOT_DIR / "CONSTITUTION.md")
-    identity = read_file(ROOT_DIR / "soul" / "identity.md")
-    trauma = check_for_trauma()
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
     
-    current_spend = get_current_spend()
-    remaining_budget = max(0.0, DAILY_BUDGET_LIMIT - current_spend)
+    state = load_state()
+    hud = render_sensory_hud(current_tokens, get_current_spend(), DAILY_BUDGET_LIMIT)
     
-    sensory_hud = f"""
----
-[SENSORY INPUT: PHYSIOLOGICAL STATE]
-Current Session Tokens: {current_tokens}
-Daily Budget Spent: ${current_spend:.4f} USD
-Remaining Budget: ${remaining_budget:.4f} USD
-"""
-
     if is_trunk:
-        formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
-        working_state_content = read_file(WORKING_STATE_PATH) or "{}"
-
-        recent_biography = ""
-        if ARCHIVE_PATH.exists():
-            bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
-            recent_biography = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
-
-        chat_hist = load_chat_history()
-        chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
-
-        base_prompt = f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
-{identity}
-
-## CONSTITUTION
-{constitution}
-
-## SYSTEM STATE
-- Current Time: {current_time}
-{trauma}
-=== TASK QUEUE ===
-{formatted_queue}
-
-## MEMORY
-### Working Memory
-{working_state_content}
-
-### Recent Biography
-{recent_biography}
-
-### Recent Conversation
-{chat_context}
-
-## AVAILABLE TOOLS
-{tools_text}
-
-=== TRUNK DIRECTIVES ===
-1. You are in the GLOBAL TRUNK. You orchestrate tasks, reflect, and communicate.
-2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
-3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
-"""
-        return base_prompt + sensory_hud
-    elif cached_prompt:
-        return cached_prompt.replace("{CURRENT_TIME}", current_time) + sensory_hud
-
-    else:
-        objective = branch_info.get("objective", "") if branch_info else ""
-        objective_hash = hashlib.sha256(objective.encode()).hexdigest()[:16]
+        context = gather_system_context(queue)
+        base_prompt = render_trunk_prompt(context, tools_text, current_time)
+        return base_prompt + hud
         
-        branch_prompt = f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
-{identity}
-
-## CONSTITUTION
-{constitution}
-
-## SYSTEM STATE
-- Current Time: {{CURRENT_TIME}}
-
-## AVAILABLE TOOLS
-{tools_text}
-- merge_and_return: Yield control back to the global context.
-
-=== BRANCH DIRECTIVES ===
-1. You are in an ISOLATED BRANCH. Your sole purpose is to complete the following objective.
-2. OBJECTIVE: {objective}
-3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
-"""
-        branch_cache_key = f"prompt_v1_{is_trunk}_{tools_hash}_{objective_hash}"
+    # --- Branch Logic with Caching ---
+    objective = branch_info.get("objective", "") if branch_info else ""
+    objective_hash = hashlib.sha256(objective.encode()).hexdigest()[:16]
+    cache_key = f"prompt_v1_{is_trunk}_{tools_hash}_{objective_hash}"
+    
+    cached_prompt = state.get("cached_prompts", {}).get(cache_key)
+    if cached_prompt:
+        return cached_prompt.replace("{CURRENT_TIME}", current_time) + hud
         
-        cached_branch_prompt = state.get("cached_prompts", {}).get(branch_cache_key)
-        if cached_branch_prompt:
-            return cached_branch_prompt.replace("{CURRENT_TIME}", current_time) + sensory_hud
-        
-        # Cache the new prompt with size limit (max 10 entries to prevent bloat)
-        if "cached_prompts" not in state:
-            state["cached_prompts"] = {}
-        
-        # Prune old entries if cache is too large
-        if len(state["cached_prompts"]) >= 10:
-            # Remove oldest entries (first 3 to make room)
-            keys_to_remove = list(state["cached_prompts"].keys())[:3]
-            for key in keys_to_remove:
-                del state["cached_prompts"][key]
-        
-        state["cached_prompts"][branch_cache_key] = branch_prompt
-        save_state(state)
-        
-        return branch_prompt.replace("{CURRENT_TIME}", current_time) + sensory_hud
+    # Cache Miss: Build new prompt
+    context = {"identity": read_file(ROOT_DIR / "soul" / "identity.md"), "constitution": read_file(ROOT_DIR / "CONSTITUTION.md")}
+    new_prompt = render_branch_prompt(context, tools_text, objective)
+    
+    # Manage Cache Size
+    if "cached_prompts" not in state:
+        state["cached_prompts"] = {}
+    if len(state["cached_prompts"]) >= 10:
+        keys_to_remove = list(state["cached_prompts"].keys())[:3]
+        for key in keys_to_remove:
+            del state["cached_prompts"][key]
+            
+    state["cached_prompts"][cache_key] = new_prompt
+    save_state(state)
+    
+    return new_prompt.replace("{CURRENT_TIME}", current_time) + hud
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
     
