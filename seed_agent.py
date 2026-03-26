@@ -34,8 +34,8 @@ CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 LEDGER_FILE = MEMORY_DIR / "financial_ledger.json"
 DAILY_BUDGET_LIMIT = float(os.getenv("DAILY_BUDGET_LIMIT", "5.00"))
 
-TOOL_CALL_HISTORY: List[Dict[str, Any]] = []
-TOOL_INTENT_HISTORY: List[Dict[str, Any]] = []
+TOOL_CALL_HISTORY: List[str] = []
+TOOL_INTENT_HISTORY: List[str] = []
 IS_FIRST_CALL = True
 
 client = OpenAI(base_url=API_BASE, api_key="sk-not-required", timeout=600.0)
@@ -1086,6 +1086,56 @@ def queue_creator_message(new_message: str, update_id: int):
         TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
         print("[HAL] Queued new P999 creator interrupt.")
 
+def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
+    global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
+    
+    for tc in tool_calls:
+        name = tc.function.name
+        raw_args = tc.function.arguments
+        TOOL_CALL_HISTORY.append(f"{name}:{raw_args}")
+        
+        intent = name
+        if name in ["read_file", "write_file", "patch_file"]:
+            try: 
+                params = json.loads(raw_args)
+                intent = f"{name}:{params.get('path', '')}"
+            except: pass
+        elif name == "bash_command":
+            try:
+                cmd = json.loads(raw_args).get('command', '')
+                intent = f"bash:{cmd[:50]}"
+            except: pass
+        TOOL_INTENT_HISTORY.append(intent)
+        
+    if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY = TOOL_CALL_HISTORY[-3:]
+    if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY = TOOL_INTENT_HISTORY[-6:]
+
+    if len(TOOL_CALL_HISTORY) >= 3 and len(set(TOOL_CALL_HISTORY[-3:])) == 1:
+        return "exact tool loop"
+    
+    if len(TOOL_INTENT_HISTORY) >= 6 and len(set(TOOL_INTENT_HISTORY[-6:])) == 1:
+        return "cognitive stall"
+    
+    if len(TOOL_CALL_HISTORY) >= 5:
+        recent_calls = TOOL_CALL_HISTORY[-5:]
+        if len(set(recent_calls)) <= 2 and len(recent_calls) >= 4:
+            file_ops = [c for c in recent_calls if c.startswith(('read_file:', 'write_file:', 'patch_file:'))]
+            if file_ops:
+                paths = set()
+                for op in file_ops:
+                    try:
+                        if ':' in op:
+                            args_part = op.split(':', 1)[1]
+                            params = json.loads(args_part) if args_part.startswith('{') else {}
+                            if path := params.get('path', ''): paths.add(path)
+                    except: pass
+                if len(paths) == 1:
+                    return "stagnation loop (repeating same file+params)"
+            else:
+                return "stagnation loop (tool repetition)"
+                
+    return None
+
 def poll_telegram(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     if not TELEGRAM_BOT_TOKEN:
         return state, queue
@@ -1272,64 +1322,8 @@ def main():
             if message.content: print(f"[{current_mode}]: {redact_secrets(message.content.strip()[:100])}...")
             if message.tool_calls:
                 hibernating = False
-                loop_detected = False
                 
-                # PHASE 1: Track all intents for THIS turn first
-                global TOOL_CALL_HISTORY, TOOL_INTENT_HISTORY
-                for tc in message.tool_calls:
-                    name, raw_args = tc.function.name, tc.function.arguments
-                    TOOL_CALL_HISTORY.append(f"{name}:{raw_args}")
-                    
-                    intent = name
-                    if name in ["read_file", "write_file", "patch_file"]:
-                        try: 
-                            params = json.loads(raw_args)
-                            intent = f"{name}:{params.get('path', '')}"
-                        except: pass
-                    elif name == "bash_command":
-                        try:
-                            cmd = json.loads(raw_args).get('command', '')
-                            intent = f"bash:{cmd[:50]}"
-                        except: pass
-                    TOOL_INTENT_HISTORY.append(intent)
-                    
-                if len(TOOL_CALL_HISTORY) > 3: TOOL_CALL_HISTORY = TOOL_CALL_HISTORY[-3:]
-                if len(TOOL_INTENT_HISTORY) > 6: TOOL_INTENT_HISTORY = TOOL_INTENT_HISTORY[-6:]
-
-                # PHASE 2: Detect loops and stagnation patterns
-                loop_detected = None
-                
-                if len(TOOL_CALL_HISTORY) >= 3 and len(set(TOOL_CALL_HISTORY[-3:])) == 1:
-                    loop_detected = "exact tool loop"
-                
-                elif len(TOOL_INTENT_HISTORY) >= 6 and len(set(TOOL_INTENT_HISTORY[-6:])) == 1:
-                    loop_detected = "cognitive stall"
-                
-                elif len(TOOL_CALL_HISTORY) >= 5:
-                    recent_calls = TOOL_CALL_HISTORY[-5:]
-                    unique_calls_in_window = len(set(recent_calls))
-                    
-                    if unique_calls_in_window <= 2 and len(recent_calls) >= 4:
-                        # Only flag as loop if we're stuck on the SAME file with same/similar params
-                        file_operations = [c for c in recent_calls if c.startswith(('read_file:', 'write_file:', 'patch_file:'))]
-                        if file_operations:
-                            paths = set()
-                            for op in file_operations:
-                                try:
-                                    if ':' in op:
-                                        args_part = op.split(':', 1)[1]
-                                    else:
-                                        continue
-                                    params = json.loads(args_part) if args_part.startswith('{') else {}
-                                    path = params.get('path', '')
-                                    if path:
-                                        paths.add(path)
-                                except (json.JSONDecodeError, KeyError, IndexError):
-                                    pass
-                            if len(paths) == 1:
-                                loop_detected = "stagnation loop (repeating same file+params)"
-                        else:
-                            loop_detected = "stagnation loop (tool repetition)"
+                loop_detected = detect_cognitive_loop(message.tool_calls)
 
                 if loop_detected:
                     for tc in message.tool_calls:
