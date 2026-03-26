@@ -985,6 +985,29 @@ def render_branch_prompt(context: dict, tools_text: str, objective: str) -> str:
 3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
 """
 
+def gather_system_context(queue: Optional[List[Dict[str, Any]]] = None) -> dict:
+    formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
+    
+    working_state = read_file(WORKING_STATE_PATH) or "{}"
+    
+    recent_bio = ""
+    if ARCHIVE_PATH.exists():
+        bio_lines = ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
+        recent_bio = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
+
+    chat_hist = load_chat_history()
+    chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
+
+    return {
+        "identity": read_file(ROOT_DIR / "soul" / "identity.md"),
+        "constitution": read_file(ROOT_DIR / "CONSTITUTION.md"),
+        "trauma": check_for_trauma(),
+        "formatted_queue": formatted_queue,
+        "working_state": working_state,
+        "recent_biography": recent_bio,
+        "chat_context": chat_context
+    }
+
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None, current_tokens: int = 0) -> str:
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
     tools_hash = hashlib.sha256(tools_text.encode()).hexdigest()[:16]
