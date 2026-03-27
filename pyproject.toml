@@ -19,4 +19,8 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+cache_dir = "/tmp/.pytest_cache"
+
+[tool.mypy]
+cache_dir = "/tmp/.mypy_cache"
 
