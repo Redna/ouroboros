@@ -63,41 +63,41 @@ def check_for_trauma() -> str:
     return ""
 
 class ToolRegistry:
-    def __init__(self): 
+    def __init__(self):
         self.tools = {}
-        
+
     def tool(self, description: str, parameters: dict, bucket: str = "global"):
         """Decorator to register a tool using the function's own name."""
         def decorator(func):
             # Derive the tool name directly from the function name
             tool_name = func.__name__
             self.tools[tool_name] = {
-                "desc": description, 
-                "params": parameters, 
+                "desc": description,
+                "params": parameters,
                 "handler": func,
                 "bucket": bucket
             }
             return func
         return decorator
-        
-    
-    def get_names(self, allowed_buckets=None): 
+
+
+    def get_names(self, allowed_buckets=None):
         return [n for n, t in self.tools.items() if allowed_buckets is None or t["bucket"] in allowed_buckets]
-        
+
     def get_specs(self, allowed_buckets=None):
         return [
-            {"type": "function", "function": {"name": n, "description": t["desc"], "parameters": t["params"]}} 
-            for n, t in self.tools.items() 
+            {"type": "function", "function": {"name": n, "description": t["desc"], "parameters": t["params"]}}
+            for n, t in self.tools.items()
             if allowed_buckets is None or t["bucket"] in allowed_buckets
         ]
-        
+
     def execute(self, name, args):
         if name not in self.tools:
             return f"Error: Tool '{name}' not found."
-        try: 
+        try:
             result = self.tools[name]["handler"](args)
             return llm_interface.redact_secrets(str(result))
-        except Exception as e: 
+        except Exception as e:
             return llm_interface.redact_secrets(f"Error executing {name}: {e}")
 
 registry = ToolRegistry()
@@ -119,7 +119,7 @@ def bash_command(args):
         return out if out else f"Success. (Exit Code: {r.returncode}, No Output)"
     except subprocess.TimeoutExpired:
         return "[SYSTEM WARNING: Command timed out after 60 seconds. It may be hanging, requiring interactive input, or processing too much data. Run background tasks with '&' or fix the command.]"
-    except Exception as e: 
+    except Exception as e:
         return f"Error: {e}"
 
 @registry.tool(
@@ -136,7 +136,7 @@ def write_file(args):
                 _validate_python_syntax(content)
             except SyntaxError as e:
                 return f"Critical Error: Python syntax validation failed. File NOT written. Fix syntax and try again.\nError: {e.msg} at line {e.lineno}"
-        
+
         Path(p.parent).mkdir(parents=True, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -160,10 +160,10 @@ def patch_file(args):
         search_text = args.get("search_text", "")
         replace_text = args.get("replace_text", "")
         content = file_path.read_text(encoding="utf-8")
-        
+
         norm_content = _normalize_text(content)
         norm_search = _normalize_text(search_text)
-        
+
         occurrence_count = norm_content.count(norm_search)
         if occurrence_count == 0:
             return "Error: 'search_text' not found. Ensure your snippet matches the file (ignoring trailing spaces). Use 'read_file' to check the target."
@@ -176,7 +176,7 @@ def patch_file(args):
                 _validate_python_syntax(new_content)
             except SyntaxError as e:
                 return f"Critical Error: Python syntax validation failed after patching. File NOT modified.\nError: {e.msg} at line {e.lineno}"
-        
+
         file_path.write_text(new_content, encoding="utf-8")
         return f"Success: Surgically patched and validated {file_path.name}."
     except PermissionError as e: return f"Error: {e}"
@@ -192,11 +192,11 @@ def read_file_tool(args):
         p = _resolve_safe_path(args.get("path", ""))
         if not p.exists() or not p.is_file():
             return f"Error: File '{p.name}' does not exist or is a directory."
-        
+
         content_lines = p.read_text(encoding="utf-8").splitlines()
         start_line = args.get("start_line")
         end_line = args.get("end_line")
-        
+
         if start_line is not None or end_line is not None:
             s = (max(1, int(start_line)) - 1) if start_line is not None else 0
             e = int(end_line) if end_line is not None else len(content_lines)
@@ -204,7 +204,7 @@ def read_file_tool(args):
             prefix = f"[Showing lines {s+1} to {e} of {len(content_lines) + s}]\n"
         else:
             prefix = ""
-        
+
         content = "\n".join(content_lines)
         if len(content) > constants.READ_FILE_MAX_CHARS:
             warning = f"\n\n[SYSTEM WARNING: File too large. Truncated to {constants.READ_FILE_MAX_CHARS} chars. Use start_line/end_line.]"
@@ -225,7 +225,7 @@ def send_telegram_message(args):
     text = args.get("text")
     if not chat_id: return "Error: No chat_id provided and no creator registered."
     if not constants.TELEGRAM_BOT_TOKEN: return "Error: constants.TELEGRAM_BOT_TOKEN not set."
-    
+
     try:
         r = requests.post(f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
         if r.status_code == 200:
@@ -298,20 +298,20 @@ def mark_task_complete(args):
     summary = args.get("summary", "No summary provided.")
     with open(constants.ARCHIVE_PATH, "a", encoding="utf-8") as f:
         f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Task {task_id} Completed: {summary}\n")
-    
+
     q = agent_state.load_task_queue()
     completed_task = next((t for t in q if t.get("task_id") == task_id), None)
-    
+
     # FIX: Do not spam the Trunk with alerts. The Merge signal handles Trunk notifications.
     if completed_task and completed_task.get("parent_task_id"):
         parent_id = completed_task.get("parent_task_id")
         if parent_id != "global_trunk":
             msg = {"role": "user", "content": f"[SYSTEM ALERT]: Subtask {task_id} complete.\nResult Summary: {summary}"}
             agent_state.append_task_message(parent_id, msg)
-    
+
     q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
-    
+
     state = agent_state.load_state()
     # Cleanup task-specific state
     for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
@@ -382,31 +382,31 @@ def fetch_webpage(args):
     try:
         import trafilatura # type: ignore
         print(f"[System] Downloading clean markdown locally for: {url}")
-        
+
         downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             return f"Error: Could not download {url}. The site might be blocking crawlers or requires JavaScript."
-            
+
         text = trafilatura.extract(
-            downloaded, 
-            output_format="markdown", 
+            downloaded,
+            output_format="markdown",
             include_links=True,
             include_formatting=True
         )
-        
+
         if not text:
             return "Error: Page fetched, but no readable article text was found."
-            
+
         cache_dir = constants.MEMORY_DIR / "web_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         safe_name = re.sub(r'[^a-zA-Z0-9]', '_', url.split('//')[-1])[:50]
         file_name = f"{int(time.time())}_{safe_name}.md"
         file_path = cache_dir / file_name
-        
+
         file_path.write_text(text, encoding="utf-8")
         line_count = len(text.splitlines())
-        
+
         return f"Success: Webpage downloaded and converted to Markdown.\nSaved to: {file_path}\nTotal Lines: {line_count}\n\nAction Required: Use the 'read_file' tool with 'start_line' and 'end_line' to read this file progressively (e.g., 500 lines at a time)."
     except ImportError:
         return "SYSTEM ERROR: 'trafilatura' library not installed. Please run 'pip install trafilatura'."
@@ -422,7 +422,7 @@ def hibernate(args):
     try:
         duration = args.get("duration_seconds", 300)
         reason = args.get("reason", "No reason provided.")
-        duration = min(int(duration), 86400) 
+        duration = min(int(duration), 86400)
         state = agent_state.load_state()
         state["wake_time"] = time.time() + duration
         if "sys_temp" in state: del state["sys_temp"]
@@ -435,12 +435,12 @@ def hibernate(args):
 @registry.tool(
     description="Overwrite or synthesize a memory file with new content (dense summary or refactored text).",
     parameters={
-        "type": "object", 
+        "type": "object",
         "properties": {
-            "path": {"type": "string"}, 
+            "path": {"type": "string"},
             "content": {"type": "string"},
             "is_jsonl": {"type": "boolean", "description": "Set to true if targeting a .jsonl task log to wrap content in a system message."}
-        }, 
+        },
         "required": ["path", "content"]
     },
     bucket="memory_access"
@@ -451,11 +451,11 @@ def rewrite_memory(args):
         content = args.get("content", "").strip()
         if len(content) < constants.MIN_REWRITE_CONTENT_LEN:
             return f"Error: Content too short (<{constants.MIN_REWRITE_CONTENT_LEN}). Provide full synthesized text."
-        
+
         protected = ["insights.md", "global_biography.md", "task_queue.json", ".agent_state.json"]
         if p.name in protected:
             return f"Error: {p.name} is append-only. Use specific tools to update."
-        
+
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         if args.get("is_jsonl") or p.suffix == ".jsonl":
             wrapped = {"role": "user", "content": f"--- COMPRESSED LOG ({timestamp}) ---\n{content}"}
@@ -483,7 +483,7 @@ def search_memory_archive(args):
         return out[:4000] if out else "No matches found in memory."
     except subprocess.TimeoutExpired:
         return "Error: Memory search timed out after 30 seconds. Your query might be too broad or the memory volume is too large."
-    except Exception as e: 
+    except Exception as e:
         return f"Search error: {e}"
 
 @registry.tool(
@@ -552,23 +552,23 @@ def fork_execution(args):
         parent_id = state["active_branch"].get("task_id", "global_trunk")
 
     state["active_branch"] = {
-        "task_id": task_id, 
+        "task_id": task_id,
         "parent_task_id": parent_id,
-        "objective": objective, 
+        "objective": objective,
         "tool_buckets": tool_buckets,
         "model_id": model_id # Optional override
     }
     agent_state.save_state(state)
-    
+
     # Initialize the log with parent metadata
     agent_state.append_task_message(task_id, {
-        "role": "user", 
+        "role": "user",
         "content": f"[FORKED EXECUTION]: Objective: {objective}",
         "parent_task_id": parent_id,
         "task_id": task_id,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     })
-    
+
     return f"SYSTEM_SIGNAL_FORK:{task_id}"
 
 
@@ -581,18 +581,18 @@ def merge_and_return(args):
     status = args.get("status", "COMPLETED")
     synthesis_summary = args.get("synthesis_summary", "")
     partial_state = args.get("partial_state", "")
-    
+
     state = agent_state.load_state()
     branch_info = state.get("active_branch", {})
     task_id = branch_info.get("task_id", "unknown")
-    
+
     state["active_branch"] = None
     agent_state.save_state(state)
-    
+
     payload = json.dumps({
-        "status": status, 
-        "task_id": task_id, 
-        "summary": synthesis_summary, 
+        "status": status,
+        "task_id": task_id,
+        "summary": synthesis_summary,
         "partial_state": partial_state
     })
     return f"SYSTEM_SIGNAL_MERGE:{payload}"
@@ -603,7 +603,7 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
 
     # FIX: Stop overwriting logs. Append terminal failure message instead.
     agent_state.append_task_message(active_task_id, {
-        "role": "user", 
+        "role": "user",
         "content": f"[SYSTEM OVERRIDE]: Task aborted due to {reason}. Stuck in a repetitive loop."
     })
 
@@ -619,17 +619,17 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     # Spike cognitive load to force reflection
     state["cognitive_load"] = state.get("cognitive_load", 0) + 50
     agent_state.save_state(state)
-    
+
     # FIX: Wipe dirty loop tracking histories to prevent Lazarus death spirals
     agent_state._session["tool_history"].clear()
     agent_state._session["intent_history"].clear()
-    
+
     time.sleep(2)
 
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
     """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
-    
+
     # HUD
     current_spend = agent_state.get_current_spend()
     remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
@@ -644,7 +644,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     # Working Memory
     working_state = read_file(constants.WORKING_STATE_PATH) or "{}"
-    
+
     # Recent Biography
     recent_bio = ""
     if constants.ARCHIVE_PATH.exists():
@@ -672,7 +672,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     identity = read_file(constants.ROOT_DIR / "soul" / "identity.md")
     constitution = read_file(constants.ROOT_DIR / "CONSTITUTION.md")
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
-    
+
     if is_trunk:
         return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
 {identity}
@@ -708,16 +708,16 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
-    
+
     if has_interrupt:
         # The Tap on the Shoulder
         interrupt_msg = {"role": "user", "content": "[SYSTEM OVERRIDE: URGENT PRIORITY 999 INTERRUPT IN GLOBAL QUEUE. You must suspend your current work immediately. Call merge_and_return with status='SUSPENDED' and your partial progress.]"}
-        
+
         # Scrub previous interrupt messages to prevent infinite loops (Clean Slate)
         clean_messages = [m for m in messages if "URGENT PRIORITY 999 INTERRUPT" not in str(m.get("content", ""))]
         clean_messages.append(interrupt_msg)
         return clean_messages
-        
+
     return messages
 
 
@@ -726,7 +726,7 @@ def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
         name = tc.function.name
         raw_args = tc.function.arguments
         agent_state._session["tool_history"].append(f"{name}:{raw_args}")
-        
+
         intent = name
         if name in ["read_file_tool", "write_file", "patch_file"]:
             try:
@@ -757,27 +757,27 @@ def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         content = constants.SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
         if not content:
             return queue
-            
+
         scheduled = json.loads(content)
         now = time.time()
         due_tasks = [t for t in scheduled if now >= t.get("run_after", 0)]
-        
+
         if due_tasks:
             pending_tasks = [t for t in scheduled if now < t.get("run_after", 0)]
             constants.SCHEDULED_TASKS_PATH.write_text(json.dumps(pending_tasks, indent=2), encoding="utf-8")
-            
+
             for t in due_tasks:
                 t.pop("run_after", None)
                 queue.append(t)
-                
+
             queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
-            
+
             # FIX: Explicitly save the active queue to disk here so comms.py reads the fresh state
             constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             print(f"[Scheduler] Temporal shift: {len(due_tasks)} scheduled tasks moved to active queue.")
     except Exception as e:
         print(f"[Scheduler Error]: {e}")
-        
+
     return queue
 
 def _resolve_execution_context(
@@ -796,7 +796,8 @@ def _resolve_execution_context(
             top_task = queue[0]
             creator_id = state.get("creator_id")
             last_receipt = top_task.get("read_receipt_time", 0)
-            if top_task.get("priority") == 999 and (time.time() - last_receipt > 10) and isinstance(creator_id, int):
+            # Only send notification once per P999 task (after initial 10s delay)
+            if top_task.get("priority") == 999 and not top_task.get("read_receipt_sent", False) and (time.time() - last_receipt > 10) and isinstance(creator_id, int):
                 print("[HAL] P999 Interrupt detected. Notifying creator...")
                 comms.send_telegram_direct(
                     creator_id,
@@ -845,18 +846,18 @@ def _build_api_messages(
         branch_info
     )
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    
+
     telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
-    
+
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
     normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
-    
+
     # FIX: Merge telemetry into the first user message to prevent adjacent User role API crashes
     if normalized and normalized[0]["role"] == "user":
         normalized[0]["content"] = f"{telemetry}\n\n{normalized[0].get('content', '')}"
     else:
         normalized.insert(0, {"role": "user", "content": telemetry})
-        
+
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
 
@@ -902,7 +903,7 @@ def _route_tool_calls(
         elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
             try:
                 payload = json.loads(str(result).split(":", 1)[1])
-                
+
                 # FIX: Wipe BEFORE appending the summary so the trunk starts fresh WITH the summary.
                 agent_state.wipe_global_trunk_log()
 
@@ -929,7 +930,7 @@ def _route_tool_calls(
                 duration = str(result).split(":")[1]
                 agent_state.append_task_message(active_task_id, {"role": "assistant", "content": f"[SYSTEM: Hibernating for {duration} seconds. Resources conserved. Wake-up scheduled.]"})
             except Exception: pass
-            
+
             # FIX: Do not wipe here. Let the trunk retain its last thoughts until it wakes up.
             hibernating = True
 
@@ -974,7 +975,7 @@ def main() -> None:
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
         sys_think = state.get("sys_think", True)
-        
+
         if sys_temp_override is None:
             error_streak = state.get("error_streak", 0)
             if error_streak >= 3:
@@ -986,18 +987,18 @@ def main() -> None:
                 sys_temp = 0.8
         else:
             sys_temp = float(sys_temp_override)
-        
+
         try:
             requested_model = branch_info.get("model_id") if branch_info else None
             response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
 
             queue = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
-            
+
             # FIX: Properly abort the task if the token limit is breached
             if agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk):
                 registry.execute("mark_task_complete", {
-                    "task_id": active_task_id, 
+                    "task_id": active_task_id,
                     "summary": "FAILED: Token limit exceeded. Task forcibly aborted to protect budget."
                 })
                 # Spike load to force reflection upon failure
