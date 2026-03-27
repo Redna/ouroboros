@@ -8,7 +8,6 @@ from seed_agent import (
     build_static_system_prompt,
     lazarus_recovery,
     main,
-    enforce_interrupt_yield,
     registry
 )
 
@@ -39,13 +38,11 @@ def test_build_static_system_prompt_branch(mock_memory):
         (mock_memory / "CONSTITUTION.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
         (mock_memory / "soul" / "identity.md").write_text("Identity Content")
-
         branch_prompt = build_static_system_prompt(
             is_trunk=False,
             active_tool_specs=[],
             branch_info={"objective": "Test Objective"}
         )
-        assert "EXECUTION BRANCH" in branch_prompt
         assert "Test Objective" in branch_prompt
 
 
@@ -88,43 +85,3 @@ def test_main_loop_iteration(mock_memory):
         assert mock_openai.called
 
 
-# =============================================================================
-# INTERRUPT HANDLING TESTS
-# =============================================================================
-
-def test_enforce_interrupt_yield_no_interrupt():
-    """Test that normal messages are not modified when no interrupt exists."""
-    queue_normal = [{"task_id": "t1", "priority": 1}]
-    messages = [{"role": "user", "content": "Doing regular work."}]
-    
-    result_normal = enforce_interrupt_yield("task_1", queue_normal, messages)
-    assert len(result_normal) == 1
-
-
-def test_enforce_interrupt_yield_inject():
-    """Test that interrupt message is injected when P999 task exists."""
-    queue_interrupt = [
-        {"task_id": "t1", "priority": 1},
-        {"task_id": "t2", "priority": 999}
-    ]
-    messages = [{"role": "user", "content": "Doing regular work."}]
-    
-    result_interrupt = enforce_interrupt_yield("task_1", queue_interrupt, messages)
-    assert len(result_interrupt) == 2
-    assert "URGENT PRIORITY 999 INTERRUPT" in result_interrupt[1]["content"]
-
-
-def test_enforce_interrupt_yield_scrub():
-    """Test that old interrupt messages are scrubbed before injecting new ones."""
-    queue_interrupt = [
-        {"task_id": "t1", "priority": 1},
-        {"task_id": "t2", "priority": 999}
-    ]
-    messages_with_old_interrupt = [
-        {"role": "user", "content": "Doing regular work."},
-        {"role": "user", "content": "[SYSTEM OVERRIDE: URGENT PRIORITY 999 INTERRUPT IN GLOBAL QUEUE. You must suspend...]"}
-    ]
-    
-    result_scrubbed = enforce_interrupt_yield("task_1", queue_interrupt, messages_with_old_interrupt)
-    # It should strip the old one and append the new one, resulting in exactly 2 messages
-    assert len(result_scrubbed) == 2

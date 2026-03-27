@@ -298,8 +298,13 @@ def mark_task_complete(args):
 
     state = agent_state.load_state()
     # If the active branch is this task, we must clear it so the loop properly drops to trunk instead of hanging
-    if state.get("active_branch", {}).get("task_id") == task_id:
-        state["active_branch"] = None
+    if isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id:
+        suspended = state.get("suspended_branches", [])
+        if suspended:
+            state["active_branch"] = suspended.pop()
+            state["suspended_branches"] = suspended
+        else:
+            state["active_branch"] = None
         
     for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
         if key in state: del state[key]
@@ -534,8 +539,13 @@ def fork_execution(args):
     # Get parent ID from current context
     state = agent_state.load_state()
     parent_id = "global_trunk"
+    
     if state.get("active_branch"):
         parent_id = state["active_branch"].get("task_id", "global_trunk")
+        # Stash current active branch
+        suspended = state.get("suspended_branches", [])
+        suspended.append(state["active_branch"])
+        state["suspended_branches"] = suspended
 
     state["active_branch"] = {
         "task_id": task_id,
@@ -571,7 +581,13 @@ def merge_and_return(args):
     branch_info = state.get("active_branch", {})
     task_id = branch_info.get("task_id", "unknown")
 
-    state["active_branch"] = None
+    suspended = state.get("suspended_branches", [])
+    if suspended:
+        state["active_branch"] = suspended.pop()
+        state["suspended_branches"] = suspended
+    else:
+        state["active_branch"] = None
+        
     agent_state.save_state(state)
 
     payload = json.dumps({
@@ -627,7 +643,12 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         rem_tokens = max(0, budget_limit - task_tokens)
         hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Task Tokens: {task_tokens:,} / {budget_limit:,} (left: {rem_tokens:,}) | Time: {current_time}"
         queue_content = ""
-        context_header = f"EXECUTION BRANCH ({queue[0].get('task_id')})" if queue else "EXECUTION BRANCH"
+        
+        # Branch Awareness
+        suspended = len(state.get("suspended_branches", []))
+        suspended_alert = f" [{suspended} BRANCH(ES) SUSPENDED]" if suspended > 0 else ""
+        context_header = f"EXECUTION BRANCH ({queue[0].get('task_id')}){suspended_alert}" if queue else f"EXECUTION BRANCH{suspended_alert}"
+        
         objective = queue[0].get('description') if queue else "Unknown"
         objective_part = f"\n\n### BRANCH OBJECTIVE\n{objective}"
 
@@ -650,7 +671,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     # Construct unified layout
     sections = [
-        f"=== CURRENT TELEMETRY ({context_header}) ===",
+        f"## CURRENT TELEMETRY ({context_header})",
         hud,
         objective_part,
         f"\n### TASK QUEUE\n{queue_content}" if is_trunk else "",
@@ -668,7 +689,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
     constitution = read_file(constants.ROOT_DIR / "CONSTITUTION.md")
 
     if is_trunk:
-        return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
+        return f"""# SYSTEM CONTEXT
 {identity}
 
 ## CONSTITUTION
@@ -682,7 +703,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 """
 
     objective = branch_info.get("objective", "") if branch_info else "No objective provided."
-    return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
+    return f"""# SYSTEM CONTEXT
 {identity}
 
 ## CONSTITUTION
@@ -694,18 +715,6 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 3. When complete, blocked, or interrupted, you MUST call `merge_and_return`.
 """
 
-def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
-
-    if has_interrupt:
-        interrupt_msg = {"role": "user", "content": "[SYSTEM OVERRIDE: URGENT PRIORITY 999 INTERRUPT IN GLOBAL QUEUE. You must suspend your current work immediately. Call merge_and_return with status='SUSPENDED' and your partial progress.]"}
-
-        # Scrub previous interrupt messages to prevent infinite loops (Clean Slate)
-        clean_messages = [m for m in messages if "URGENT PRIORITY 999 INTERRUPT" not in str(m.get("content", ""))]
-        clean_messages.append(interrupt_msg)
-        return clean_messages
-
-    return messages
 
 def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
     for tc in tool_calls:
@@ -770,10 +779,17 @@ def _resolve_execution_context(
     state: Dict[str, Any],
     queue: List[Dict[str, Any]],
 ) -> Tuple[str, str, List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
-    branch_info: Optional[Dict[str, Any]] = state.get("active_branch")
-    is_trunk = branch_info is None
+    has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
+    
+    # If there's an interrupt, force Trunk to handle it instantly, parking the active branch natively.
+    if has_interrupt:
+        branch_info = None
+        is_trunk = True
+    else:
+        branch_info = state.get("active_branch")
+        is_trunk = branch_info is None
 
-    if branch_info is None:
+    if is_trunk:
         active_task_id = "global_trunk"
         allowed_buckets = ["global", "memory_access", "system_control", "search"]
 
@@ -802,6 +818,7 @@ def _resolve_execution_context(
                 "or `hibernate` to save resources."
             )
     else:
+        assert branch_info is not None
         active_task_id = branch_info.get("task_id", f"branch_{int(time.time())}")
 
         allowed_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control", "memory_access"]
@@ -843,9 +860,6 @@ def _build_api_messages(
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
-
-    if not is_trunk:
-        api_messages = enforce_interrupt_yield(active_task_id, queue, api_messages)
 
     return api_messages
 
