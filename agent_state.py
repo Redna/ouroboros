@@ -109,11 +109,29 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     if not hasattr(response, "usage"): return False
     
     t_count = response.usage.total_tokens
-    state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + t_count
+    i_count = response.usage.prompt_tokens
+    o_count = response.usage.completion_tokens
     
-    # Estimate cost based on a fixed rate or metadata if available
-    cost_per_1k = 0.02 # Placeholder
-    spend = (t_count / 1000) * cost_per_1k
+    state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + t_count
+    state["global_input_tokens"] = state.get("global_input_tokens", 0) + i_count
+    state["global_output_tokens"] = state.get("global_output_tokens", 0) + o_count
+    
+    # Store turn metrics for UI HUD
+    state["last_context_size"] = t_count
+    state["last_input_tokens"] = i_count
+    state["last_output_tokens"] = o_count
+    
+    # Estimate cost only for external/paid models
+    # If the model name contains .gguf or starts with mistralai/ (local), cost is 0
+    model_name = response.model.lower()
+    is_local = ".gguf" in model_name or "mistralai" in model_name or "local" in model_name
+    
+    if is_local:
+        spend = 0.0
+    else:
+        # Placeholder for external model pricing (e.g. $2.00 per 1M tokens)
+        cost_per_1m = 2.00
+        spend = (t_count / 1_000_000) * cost_per_1m
     
     ledger = {}
     if constants.LEDGER_FILE.exists():

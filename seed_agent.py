@@ -542,14 +542,30 @@ def fork_execution(args):
     tool_buckets = args.get("tool_buckets", ["filesystem", "bash"])
     model_id = args.get("model_id")
 
+    # Get parent ID from current context
     state = agent_state.load_state()
+    parent_id = "global_trunk"
+    if state.get("active_branch"):
+        parent_id = state["active_branch"].get("task_id", "global_trunk")
+
     state["active_branch"] = {
         "task_id": task_id, 
+        "parent_task_id": parent_id,
         "objective": objective, 
         "tool_buckets": tool_buckets,
         "model_id": model_id # Optional override
     }
     agent_state.save_state(state)
+    
+    # Initialize the log with parent metadata
+    agent_state.append_task_message(task_id, {
+        "role": "system", 
+        "content": f"[FORKED EXECUTION]: Objective: {objective}",
+        "parent_task_id": parent_id,
+        "task_id": task_id,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    })
+    
     return f"SYSTEM_SIGNAL_FORK:{task_id}"
 
 
@@ -776,6 +792,8 @@ def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 queue.append(t)
                 
             queue.sort(key=lambda x: x.get("priority", 1), reverse=True)
+            
+            # FIX: Explicitly save the active queue to disk here so comms.py reads the fresh state
             constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             print(f"[Scheduler] Temporal shift: {len(due_tasks)} scheduled tasks moved to active queue.")
     except Exception as e:
@@ -792,7 +810,8 @@ def _resolve_execution_context(
 
     if branch_info is None:
         active_task_id = "global_trunk"
-        allowed_buckets = ["global", "memory_access", "system_control"]
+        # FIX: Added 'search' bucket so Ouroboros is not blind during reflection
+        allowed_buckets = ["global", "memory_access", "system_control", "search"]
 
         if queue:
             top_task = queue[0]
