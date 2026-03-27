@@ -105,7 +105,7 @@ def append_chat_history(role: str, text: str) -> None:
     constants.CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
 def auto_compact_task_log(task_id: str, max_lines: int = 100) -> None:
-    """Prunes the task log if it exceeds max_lines, keeping only the most recent context."""
+    """Prunes the task log safely without breaking API tool-call chains."""
     if not task_id: return
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists(): return
@@ -113,12 +113,29 @@ def auto_compact_task_log(task_id: str, max_lines: int = 100) -> None:
     with open(log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
     
-    if len(lines) > max_lines:
-        print(f"[System] Compacting log for {task_id} ({len(lines)} lines -> {max_lines})")
-        # Keep the first message (usually the task start) and the last max_lines-1
-        compacted = [lines[0]] + lines[-(max_lines-1):]
+    if len(lines) <= max_lines: return
+    
+    try:
+        messages = [json.loads(line) for line in lines if line.strip()]
+        first_msg = messages[0]
+        
+        # FIX: Find a safe boundary. We must cut at a 'user' message to avoid orphaning tool calls.
+        cutoff = len(messages) - (max_lines - 2)
+        while cutoff < len(messages) and messages[cutoff].get("role") != "user":
+            cutoff += 1
+            
+        if cutoff >= len(messages):
+            return # Could not find a safe boundary, defer compaction
+            
+        compaction_notice = {"role": "user", "content": "[SYSTEM NOTE]: Older execution steps archived to save context space."}
+        compacted = [first_msg, compaction_notice] + messages[cutoff:]
+        
+        print(f"[System] Safely compacted log for {task_id} ({len(lines)} lines -> {len(compacted)})")
         with open(log_path, "w", encoding="utf-8") as f:
-            f.writelines(compacted)
+            for msg in compacted:
+                f.write(json.dumps(msg) + "\n")
+    except Exception as e:
+        print(f"[System] Error compacting log {task_id}: {e}")
 
 def wipe_global_trunk_log() -> None:
     """Explicitly clears the global trunk log to maintain 'Trunk Amnesia' during context switches."""

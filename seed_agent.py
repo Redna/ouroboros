@@ -562,7 +562,7 @@ def fork_execution(args):
     
     # Initialize the log with parent metadata
     agent_state.append_task_message(task_id, {
-        "role": "system", 
+        "role": "user", 
         "content": f"[FORKED EXECUTION]: Objective: {objective}",
         "parent_task_id": parent_id,
         "task_id": task_id,
@@ -846,20 +846,23 @@ def _build_api_messages(
     )
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     
-    # Dynamic Telemetry Message (Encapsulated)
     telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
-    api_messages.append({"role": "user", "content": telemetry})
     
-    # FIX: Route raw logs through llm_interface normalization and shedding pipelines
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
     normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
+    
+    # FIX: Merge telemetry into the first user message to prevent adjacent User role API crashes
+    if normalized and normalized[0]["role"] == "user":
+        normalized[0]["content"] = f"{telemetry}\n\n{normalized[0].get('content', '')}"
+    else:
+        normalized.insert(0, {"role": "user", "content": telemetry})
+        
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
 
     if not is_trunk:
         api_messages = enforce_interrupt_yield(active_task_id, queue, api_messages)
 
-    # An assistant-terminal history causes the API to skip generation; inject a nudge.
     if api_messages and api_messages[-1]["role"] == "assistant":
         api_messages.append({"role": "user", "content": "[SYSTEM NUDGE]: Please proceed with your next action."})
 
