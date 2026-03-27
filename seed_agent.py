@@ -779,11 +779,8 @@ def _resolve_execution_context(
             last_receipt = top_task.get("read_receipt_time", 0)
 
             if top_task.get("priority") == 999 and not top_task.get("read_receipt_sent", False) and (time.time() - last_receipt > 10) and isinstance(creator_id, int):
-                print("[HAL] P999 Interrupt detected. Notifying creator...")
-                comms.send_telegram_direct(
-                    creator_id,
-                    "👀 *System: Attention shifted. Processing your message...*",
-                )
+                print("[HAL] P999 Interrupt detected. Sending typing action...")
+                comms.send_telegram_action(creator_id, "typing")
                 top_task["read_receipt_sent"] = True
                 top_task["read_receipt_time"] = time.time()
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
