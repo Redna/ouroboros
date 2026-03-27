@@ -19,11 +19,6 @@ import llm_interface
 import comms
 
 
-
-
-
-
-
 def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
@@ -43,15 +38,6 @@ def _validate_python_syntax(content: str) -> None:
 def _normalize_text(text: str) -> str:
     """Normalize line endings and strip trailing whitespace for resilient matching."""
     return "\n".join([line.rstrip() for line in text.replace("\r\n", "\n").splitlines()])
-
-
-
-
-
-
-
-
-
 
 def check_for_trauma() -> str:
     if constants.CRASH_LOG_PATH.exists():
@@ -227,7 +213,7 @@ def send_telegram_message(args):
     if not constants.TELEGRAM_BOT_TOKEN: return "Error: constants.TELEGRAM_BOT_TOKEN not set."
 
     try:
-        r = requests.post(f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+        r = requests.post(f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
         if r.status_code == 200:
             agent_state.append_chat_history("Ouroboros", text)
             return "Message sent successfully."
@@ -638,7 +624,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     # Queue
     if is_trunk:
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
-        queue_section = f"\n\n=== TASK QUEUE ===\n{formatted_queue}"
+        queue_section = f"\n\n## TASK QUEUE \n{formatted_queue}"
     else:
         queue_section = ""
 
@@ -658,13 +644,13 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     return f"""{hud}
 {queue_section}
 
-=== WORKING MEMORY ===
+## WORKING MEMORY 
 {working_state}
 
-=== RECENT BIOGRAPHY ===
+## RECENT BIOGRAPHY 
 {recent_bio}
 
-=== RECENT CONVERSATION ===
+## RECENT CONVERSATION 
 {chat_context}
 """
 
@@ -680,10 +666,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 ## CONSTITUTION
 {constitution}
 
-## AVAILABLE TOOLS
-{tools_text}
-
-=== TRUNK DIRECTIVES ===
+## TRUNK DIRECTIVES
 1. You are in the GLOBAL TRUNK. EVALUATE the provided prompt context (Queue, Memory, History).
 2. Orchestrate, reflect, and communicate. Do NOT do deep work (file editing, bash) here.
 3. To perform deep work, you MUST use `fork_execution` to spawn a BRANCH.
@@ -700,7 +683,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 ## AVAILABLE TOOLS
 {tools_text}
 
-=== BRANCH DIRECTIVES ===
+## BRANCH DIRECTIVES
 1. You are in an ISOLATED BRANCH. Focus exclusively on the OBJECTIVE.
 2. OBJECTIVE: {objective}
 3. When complete, blocked, or interrupted, you MUST call `merge_and_return`.
@@ -719,7 +702,6 @@ def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages:
         return clean_messages
 
     return messages
-
 
 def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
     for tc in tool_calls:
@@ -789,14 +771,13 @@ def _resolve_execution_context(
 
     if branch_info is None:
         active_task_id = "global_trunk"
-        # FIX: Added 'search' bucket so Ouroboros is not blind during reflection
         allowed_buckets = ["global", "memory_access", "system_control", "search"]
 
         if queue:
             top_task = queue[0]
             creator_id = state.get("creator_id")
             last_receipt = top_task.get("read_receipt_time", 0)
-            # Only send notification once per P999 task (after initial 10s delay)
+
             if top_task.get("priority") == 999 and not top_task.get("read_receipt_sent", False) and (time.time() - last_receipt > 10) and isinstance(creator_id, int):
                 print("[HAL] P999 Interrupt detected. Notifying creator...")
                 comms.send_telegram_direct(
@@ -859,9 +840,9 @@ def _build_api_messages(
     # NEW LOGIC: Inject telemetry at the END of the context for immediate attention
     if normalized[-1]["role"] == "user":
         # Prepend to last user message so it's the first thing the agent sees in the latest prompt
-        normalized[-1]["content"] = f"=== CURRENT TELEMETRY ===\n{telemetry}\n\n{normalized[-1]['content']}"
+        normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
     else:
-        normalized.append({"role": "user", "content": f"=== CURRENT TELEMETRY ===\n{telemetry}"})
+        normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
