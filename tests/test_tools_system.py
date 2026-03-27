@@ -29,7 +29,7 @@ def test_read_file_tool(mock_memory):
 def test_send_telegram_message(mock_memory):
     with patch("requests.post") as mock_post:
         mock_post.return_value = MagicMock(status_code=200)
-        with patch("seed_agent.TELEGRAM_BOT_TOKEN", "fake_token"):
+        with patch("constants.TELEGRAM_BOT_TOKEN", "fake_token"):
             result = send_telegram_message({"text": "test msg", "chat_id": 123})
             assert "successfully" in result
             history = json.loads((mock_memory / "chat_history.json").read_text())
@@ -38,7 +38,7 @@ def test_send_telegram_message(mock_memory):
 def test_web_search():
     with patch("requests.get") as mock_get:
         mock_get.return_value.json.return_value = {"results": [{"title": "T1", "url": "U1", "content": "C1"}]}
-        with patch("seed_agent.SEARXNG_URL", "http://fake"):
+        with patch("constants.SEARXNG_URL", "http://fake"):
             result = web_search({"query": "test"})
             assert "T1" in result
             assert "U1" in result

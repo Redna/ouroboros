@@ -1,5 +1,6 @@
 import json
-from seed_agent import push_task, fork_execution, merge_and_return, load_state, save_state
+from agent_state import load_state, save_state
+from seed_agent import push_task, fork_execution, merge_and_return
 
 def test_push_task(mock_memory):
     result = push_task({"description": "new task", "priority": 2})
