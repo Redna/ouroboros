@@ -614,7 +614,15 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     current_spend = agent_state.get_current_spend()
     remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
-    hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Time: {current_time}"
+    
+    if is_trunk:
+        global_tokens = state.get("global_tokens_consumed", 0)
+        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+    else:
+        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
+        budget_limit = int(constants.CONTEXT_WINDOW * 1.5)
+        remaining_tokens = max(0, budget_limit - task_tokens)
+        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Task Tokens: {task_tokens:,} / {budget_limit:,} (left: {remaining_tokens:,}) | Time: {current_time}"
 
     if is_trunk:
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
