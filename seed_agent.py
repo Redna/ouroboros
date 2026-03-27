@@ -301,10 +301,13 @@ def mark_task_complete(args):
     
     q = agent_state.load_task_queue()
     completed_task = next((t for t in q if t.get("task_id") == task_id), None)
+    
+    # FIX: Do not spam the Trunk with alerts. The Merge signal handles Trunk notifications.
     if completed_task and completed_task.get("parent_task_id"):
         parent_id = completed_task.get("parent_task_id")
-        msg = {"role": "user", "content": f"[SYSTEM ALERT]: Subtask {task_id} complete.\nResult Summary: {summary}"}
-        agent_state.append_task_message(parent_id, msg)
+        if parent_id != "global_trunk":
+            msg = {"role": "user", "content": f"[SYSTEM ALERT]: Subtask {task_id} complete.\nResult Summary: {summary}"}
+            agent_state.append_task_message(parent_id, msg)
     
     q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
@@ -528,7 +531,7 @@ def check_environment(args):
             "objective": {"type": "string"},
             "tool_buckets": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["filesystem", "bash", "search"]}
+                "items": {"type": "string", "enum": ["filesystem", "bash", "search", "global"]}
             },
             "model_id": {"type": "string", "description": "Optional: Override the default model for this specific branch."}
         },
@@ -818,7 +821,8 @@ def _resolve_execution_context(
     else:
         # Now mypy knows branch_info is a Dict
         active_task_id = branch_info.get("task_id", f"branch_{int(time.time())}")
-        allowed_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control"]
+        # FIX: Ensure branches can always read files/memory
+        allowed_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control", "memory_access"]
         task_desc = branch_info.get("objective", "")
         if partial_state := state.get(f"partial_state_{active_task_id}"):
             task_desc += f"\n\n[RESUME STATE]: {partial_state}"
@@ -846,13 +850,17 @@ def _build_api_messages(
     telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
     api_messages.append({"role": "user", "content": telemetry})
     
-    api_messages += agent_state.load_task_messages(active_task_id, task_desc)
+    # FIX: Route raw logs through llm_interface normalization and shedding pipelines
+    raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
+    normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
+    shedded = llm_interface.shed_heavy_payloads(normalized)
+    api_messages += shedded
 
     if not is_trunk:
         api_messages = enforce_interrupt_yield(active_task_id, queue, api_messages)
 
     # An assistant-terminal history causes the API to skip generation; inject a nudge.
-    if api_messages[-1]["role"] == "assistant":
+    if api_messages and api_messages[-1]["role"] == "assistant":
         api_messages.append({"role": "user", "content": "[SYSTEM NUDGE]: Please proceed with your next action."})
 
     return api_messages
@@ -953,9 +961,22 @@ def main() -> None:
             queue, state, branch_info, is_trunk,
         )
 
-        sys_temp  = state.get("sys_temp",  0.8)
+        # FIX: Restore Dynamic Metacognitive Overrides
+        sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
         sys_think = state.get("sys_think", True)
+        
+        if sys_temp_override is None:
+            error_streak = state.get("error_streak", 0)
+            if error_streak >= 3:
+                print(f"[Metacognition] High error streak ({error_streak}). Auto-tuning temperature to 0.3 for precision.")
+                sys_temp, sys_think = 0.3, True
+            elif any(keyword in task_desc.lower() for keyword in ["code", "script", "python", "bug", "refactor"]):
+                sys_temp, sys_think = 0.6, True
+            else:
+                sys_temp = 0.8
+        else:
+            sys_temp = float(sys_temp_override)
         
         try:
             requested_model = branch_info.get("model_id") if branch_info else None
@@ -963,7 +984,16 @@ def main() -> None:
             message  = response.choices[0].message
 
             queue = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
+            
+            # FIX: Properly abort the task if the token limit is breached
             if agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk):
+                registry.execute("mark_task_complete", {
+                    "task_id": active_task_id, 
+                    "summary": "FAILED: Token limit exceeded. Task forcibly aborted to protect budget."
+                })
+                # Spike load to force reflection upon failure
+                state["cognitive_load"] = state.get("cognitive_load", 0) + 50
+                agent_state.save_state(state)
                 continue
 
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))

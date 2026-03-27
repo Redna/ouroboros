@@ -166,10 +166,29 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     constants.LEDGER_FILE.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
     
     save_state(state)
+    
+    # Check Task Token Hard Limit
+    if not is_trunk and queue:
+        queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + t_count
+        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        if queue[0]["task_tokens"] >= int(constants.CONTEXT_WINDOW * 1.5):
+            return True # Signal main loop to abort
+            
     return False
 
 def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> List[Dict[str, Any]]:
     """Prunes history or handles context-aware yield triggers."""
-    # Placeholder: currently seed_agent.py has the implementation. 
-    # I'll move it here.
+    if is_trunk or not queue:
+        return queue
+        
+    queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
+    current_context_size = state.get("last_context_size", 0)
+    max_physical_context = int(constants.CONTEXT_WINDOW * constants.CONTEXT_SAFETY_MARGIN)
+    
+    if queue[0]["turn_count"] >= constants.TURN_LIMIT or current_context_size > max_physical_context:
+        trigger_reason = f"{constants.TURN_LIMIT}-turn limit" if queue[0]["turn_count"] >= constants.TURN_LIMIT else f"physical context exhaustion ({current_context_size}/{constants.CONTEXT_WINDOW})"
+        append_task_message(task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. You MUST use `push_task` to break your remaining work down into a new subtask immediately."})
+        queue[0]["turn_count"] = 0 
+        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        
     return queue
