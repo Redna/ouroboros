@@ -896,13 +896,16 @@ def _route_tool_calls(
             agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
             agent_state._session["tool_history"].clear()
             agent_state._session["intent_history"].clear()
-            # Workpackage 7: Trunk Amnesia
-            agent_state.wipe_global_trunk_log()
+            # FIX: Do not wipe here. Wiping during Merge is sufficient and preserves reasoning logs.
             context_switch_triggered = True
             break
         elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
             try:
                 payload = json.loads(str(result).split(":", 1)[1])
+                
+                # FIX: Wipe BEFORE appending the summary so the trunk starts fresh WITH the summary.
+                agent_state.wipe_global_trunk_log()
+
                 # Workpackage 5: Inject Action Required
                 agent_state.append_task_message("global_trunk", {
                     "role": "user",
@@ -916,15 +919,12 @@ def _route_tool_calls(
             agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": "SYSTEM_SIGNAL_MERGE_ACKNOWLEDGED"})
             agent_state._session["tool_history"].clear()
             agent_state._session["intent_history"].clear()
-            # Workpackage 7: Trunk Amnesia
-            agent_state.wipe_global_trunk_log()
             context_switch_triggered = True
             break
         elif result == "SYSTEM_SIGNAL_RESTART":
             sys.exit(0)
         elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
-            # Workpackage 7: Trunk Amnesia
-            agent_state.wipe_global_trunk_log()
+            # FIX: Do not wipe here. Let the trunk retain its last thoughts until it wakes up.
             hibernating = True
 
         agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
