@@ -852,20 +852,22 @@ def _build_api_messages(
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
     normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
 
-    # FIX: Merge telemetry into the first user message to prevent adjacent User role API crashes
-    if normalized and normalized[0]["role"] == "user":
-        normalized[0]["content"] = f"{telemetry}\n\n{normalized[0].get('content', '')}"
+    # Anchor the start if the log is empty
+    if not normalized:
+        normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
+
+    # NEW LOGIC: Inject telemetry at the END of the context for immediate attention
+    if normalized[-1]["role"] == "user":
+        # Prepend to last user message so it's the first thing the agent sees in the latest prompt
+        normalized[-1]["content"] = f"=== CURRENT TELEMETRY ===\n{telemetry}\n\n{normalized[-1]['content']}"
     else:
-        normalized.insert(0, {"role": "user", "content": telemetry})
+        normalized.append({"role": "user", "content": f"=== CURRENT TELEMETRY ===\n{telemetry}"})
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
 
     if not is_trunk:
         api_messages = enforce_interrupt_yield(active_task_id, queue, api_messages)
-
-    if api_messages and api_messages[-1]["role"] == "assistant":
-        api_messages.append({"role": "user", "content": "[SYSTEM NUDGE]: Please proceed with your next action."})
 
     return api_messages
 
@@ -970,6 +972,10 @@ def main() -> None:
             active_task_id, task_desc, active_tool_specs,
             queue, state, branch_info, is_trunk,
         )
+
+        # RECORD the prompt (with telemetry) to the log for continuity
+        if api_messages and api_messages[-1]["role"] == "user":
+             agent_state.append_task_message(active_task_id, api_messages[-1])
 
         # FIX: Restore Dynamic Metacognitive Overrides
         sys_temp_override = state.get("sys_temp")

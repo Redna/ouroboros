@@ -53,8 +53,10 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
             new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
             
-        elif role == "user" and "[SYSTEM METRICS]" in content_str and len(content_str) > constants.SYSTEM_METRICS_TRIM_CHARS:
-            new_msg["content"] = content_str.split("[SYSTEM METRICS]")[0].strip() + "\n[SYSTEM METRICS: Archived]"
+        elif role == "user" and ("=== CURRENT TELEMETRY ===" in content_str or "[SYSTEM METRICS]" in content_str):
+            if len(content_str) > constants.SYSTEM_METRICS_TRIM_CHARS:
+                header = "=== CURRENT TELEMETRY ===" if "=== CURRENT TELEMETRY ===" in content_str else "[SYSTEM METRICS]"
+                new_msg["content"] = content_str.split(header)[0].strip() + f"\n{header}: (Old telemetry archived to save context tokens)"
             
         elif role == "assistant" and new_msg.get("tool_calls"):
             trimmed_calls = []
@@ -64,7 +66,7 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
                     args = json.loads(new_tc.get("function", {}).get("arguments", "{}"))
                     for key in ["content", "patch", "text", "code"]:
                         if key in args and isinstance(args[key], str) and len(args[key]) > constants.TOOL_ARG_TRIM_CHARS:
-                            args[key] = f"[ARCHIVED PAYLOAD: {len(args[key])} chars omitted]"
+                            args[key] = f"(... {len(args[key])} characters of {key} archived ...)"
                     new_tc["function"]["arguments"] = json.dumps(args)
                 except Exception:
                     pass
