@@ -5,6 +5,7 @@ cat > "$HOOK_FILE" << 'EOF'
 #!/bin/bash
 export UV_PROJECT_ENVIRONMENT=/tmp/ouroboros-preflight-venv
 export UV_CACHE_DIR=/tmp/.uv-cache
+export PYTHONDONTWRITEBYTECODE=1
 echo "Running pre-flight cognitive checks..."
 
 # 1. Static Type Checking
