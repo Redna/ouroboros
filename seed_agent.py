@@ -611,27 +611,35 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
     """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
-
     current_spend = agent_state.get_current_spend()
     remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
     
+    # 1. Context-Aware HUD & Directives
     if is_trunk:
         global_tokens = state.get("global_tokens_consumed", 0)
-        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+        queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
+        context_header = "GLOBAL TRUNK"
+        objective_part = ""
     else:
         task_tokens = queue[0].get("task_tokens", 0) if queue else 0
         budget_limit = int(constants.CONTEXT_WINDOW * 1.5)
-        remaining_tokens = max(0, budget_limit - task_tokens)
-        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Task Tokens: {task_tokens:,} / {budget_limit:,} (left: {remaining_tokens:,}) | Time: {current_time}"
+        rem_tokens = max(0, budget_limit - task_tokens)
+        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Task Tokens: {task_tokens:,} / {budget_limit:,} (left: {rem_tokens:,}) | Time: {current_time}"
+        queue_content = ""
+        context_header = f"EXECUTION BRANCH ({queue[0].get('task_id')})" if queue else "EXECUTION BRANCH"
+        objective = queue[0].get('description') if queue else "Unknown"
+        objective_part = f"\n\n### BRANCH OBJECTIVE\n{objective}"
 
-    if is_trunk:
-        formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
-        queue_section = f"\n\n## TASK QUEUE \n{formatted_queue}"
-    else:
-        queue_section = ""
+    # 2. Structured Working Memory
+    raw_memory = read_file(constants.WORKING_STATE_PATH) or "{}"
+    try:
+        mem_data = json.loads(raw_memory)
+        working_memory = f"```json\n{json.dumps(mem_data, indent=2)}\n```"
+    except Exception:
+        working_memory = raw_memory
 
-    working_state = read_file(constants.WORKING_STATE_PATH) or "{}"
-
+    # 3. Biography & Converation context
     recent_bio = ""
     if constants.ARCHIVE_PATH.exists():
         bio_lines = constants.ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
@@ -640,18 +648,20 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     chat_hist = agent_state.load_chat_history()
     chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation."
 
-    return f"""{hud}
-{queue_section}
-
-## WORKING MEMORY 
-{working_state}
-
-## RECENT BIOGRAPHY 
-{recent_bio}
-
-## RECENT CONVERSATION 
-{chat_context}
-"""
+    # Construct unified layout
+    sections = [
+        f"=== CURRENT TELEMETRY ({context_header}) ===",
+        hud,
+        objective_part,
+        f"\n### TASK QUEUE\n{queue_content}" if is_trunk else "",
+        "\n### WORKING MEMORY",
+        working_memory,
+        "\n### RECENT BIOGRAPHY",
+        recent_bio,
+        "\n### RECENT CONVERSATION",
+        chat_context
+    ]
+    return "\n".join([s for s in sections if s])
 
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
     identity = read_file(constants.ROOT_DIR / "soul" / "identity.md")
