@@ -924,6 +924,12 @@ def _route_tool_calls(
         elif result == "SYSTEM_SIGNAL_RESTART":
             sys.exit(0)
         elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
+            # FIX: Record hibernation in the log to reset the watchdog's stall timer
+            try:
+                duration = str(result).split(":")[1]
+                agent_state.append_task_message(active_task_id, {"role": "assistant", "content": f"[SYSTEM: Hibernating for {duration} seconds. Resources conserved. Wake-up scheduled.]"})
+            except Exception: pass
+            
             # FIX: Do not wipe here. Let the trunk retain its last thoughts until it wakes up.
             hibernating = True
 
