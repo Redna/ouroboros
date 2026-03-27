@@ -586,13 +586,6 @@ def merge_and_return(args):
     state["active_branch"] = None
     agent_state.save_state(state)
     
-    # FIX: Auto-close the task if it successfully completed to keep the queue clean
-    if status == "COMPLETED" and task_id != "unknown":
-        registry.execute("mark_task_complete", {
-            "task_id": task_id,
-            "summary": f"Auto-closed upon branch merge. Synthesis: {synthesis_summary}"
-        })
-    
     payload = json.dumps({
         "status": status, 
         "task_id": task_id, 
@@ -605,10 +598,10 @@ def merge_and_return(args):
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
 
-    registry.execute("rewrite_memory", {
-        "path": str(constants.MEMORY_DIR / f"task_log_{active_task_id}.jsonl"),
-        "content": f"SYSTEM OVERRIDE: Task forcibly closed due to {reason}. Stuck in a repetitive loop.",
-        "is_jsonl": True
+    # FIX: Stop overwriting logs. Append terminal failure message instead.
+    agent_state.append_task_message(active_task_id, {
+        "role": "user", 
+        "content": f"[SYSTEM OVERRIDE]: Task aborted due to {reason}. Stuck in a repetitive loop."
     })
 
     registry.execute("mark_task_complete", {
@@ -630,102 +623,85 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     
     time.sleep(2)
 
-def render_sensory_hud(current_tokens: int, current_spend: float, limit: float) -> str:
-    remaining = max(0.0, limit - current_spend)
-    return f"""
----
-[SENSORY INPUT: PHYSIOLOGICAL STATE]
-Current Session Tokens: {current_tokens}
-Daily Budget Spent: ${current_spend:.4f} USD
-Remaining Budget: ${remaining:.4f} USD
-"""
-
-def render_trunk_prompt(context: dict, tools_text: str, current_time: str) -> str:
-    return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
-{context['identity']}
-
-## CONSTITUTION
-{context['constitution']}
-
-## SYSTEM STATE
-- Current Time: {current_time}
-{context['trauma']}
-=== TASK QUEUE ===
-{context['formatted_queue']}
-
-## MEMORY
-### Working Memory
-{context['working_state']}
-
-### Recent Biography
-{context['recent_biography']}
-
-### Recent Conversation
-{context['chat_context']}
-
-## AVAILABLE TOOLS
-{tools_text}
-
-=== TRUNK DIRECTIVES ===
-1. You are in the GLOBAL TRUNK. You orchestrate tasks, reflect, and communicate.
-2. Do NOT do heavy file editing here. Use `fork_execution` to spawn a branch for deep work.
-3. If the queue is empty, use `push_task` to optimize code/memory, or `hibernate`.
-"""
-
-def render_branch_prompt(context: dict, tools_text: str, objective: str) -> str:
-    return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
-{context['identity']}
-
-## CONSTITUTION
-{context['constitution']}
-
-## SYSTEM STATE
-- Current Time: {{CURRENT_TIME}}
-
-## AVAILABLE TOOLS
-{tools_text}
-
-=== BRANCH DIRECTIVES ===
-1. You are in an ISOLATED BRANCH. Your sole purpose is to complete the following objective.
-2. OBJECTIVE: {objective}
-3. When the objective is complete, blocked, or if you receive a system interrupt, you MUST call `merge_and_return`.
-"""
-
-def gather_system_context(queue: Optional[List[Dict[str, Any]]] = None) -> dict:
-    formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
+def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
+    """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
+    current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
     
+    # HUD
+    current_spend = agent_state.get_current_spend()
+    remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+    hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Time: {current_time}"
+
+    # Queue
+    if is_trunk:
+        formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
+        queue_section = f"\n\n=== TASK QUEUE ===\n{formatted_queue}"
+    else:
+        queue_section = ""
+
+    # Working Memory
     working_state = read_file(constants.WORKING_STATE_PATH) or "{}"
     
+    # Recent Biography
     recent_bio = ""
     if constants.ARCHIVE_PATH.exists():
         bio_lines = constants.ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
         recent_bio = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
 
+    # Chat History
     chat_hist = agent_state.load_chat_history()
-    chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-10:]]) if chat_hist else "No recent conversation."
+    chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation."
 
-    return {
-        "identity": read_file(constants.ROOT_DIR / "soul" / "identity.md"),
-        "constitution": read_file(constants.ROOT_DIR / "CONSTITUTION.md"),
-        "trauma": check_for_trauma(),
-        "formatted_queue": formatted_queue,
-        "working_state": working_state,
-        "recent_biography": recent_bio,
-        "chat_context": chat_context
-    }
+    return f"""{hud}
+{queue_section}
 
-def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], queue: Optional[List[Dict[str, Any]]] = None, branch_info: Optional[Dict[str, Any]] = None, current_tokens: int = 0) -> str:
+=== WORKING MEMORY ===
+{working_state}
+
+=== RECENT BIOGRAPHY ===
+{recent_bio}
+
+=== RECENT CONVERSATION ===
+{chat_context}
+"""
+
+def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
+    identity = read_file(constants.ROOT_DIR / "soul" / "identity.md")
+    constitution = read_file(constants.ROOT_DIR / "CONSTITUTION.md")
     tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
-    current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
-    hud = render_sensory_hud(current_tokens, agent_state.get_current_spend(), constants.DAILY_BUDGET_LIMIT)
     
     if is_trunk:
-        context = gather_system_context(queue)
-        return render_trunk_prompt(context, tools_text, current_time) + hud
-    
-    objective = branch_info.get("objective", "") if branch_info else ""
-    context = {"identity": read_file(constants.ROOT_DIR / "soul" / "identity.md"), "constitution": read_file(constants.ROOT_DIR / "CONSTITUTION.md")}
-    return render_branch_prompt(context, tools_text, objective).replace("{CURRENT_TIME}", current_time) + hud
+        return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
+{identity}
+
+## CONSTITUTION
+{constitution}
+
+## AVAILABLE TOOLS
+{tools_text}
+
+=== TRUNK DIRECTIVES ===
+1. You are in the GLOBAL TRUNK. EVALUATE the provided prompt context (Queue, Memory, History).
+2. Orchestrate, reflect, and communicate. Do NOT do deep work (file editing, bash) here.
+3. To perform deep work, you MUST use `fork_execution` to spawn a BRANCH.
+4. If the queue is empty, you MUST use `push_task` to initiate deep synthesis/optimization.
+"""
+
+    objective = branch_info.get("objective", "") if branch_info else "No objective provided."
+    return f"""# SYSTEM CONTEXT (EXECUTION BRANCH)
+{identity}
+
+## CONSTITUTION
+{constitution}
+
+## AVAILABLE TOOLS
+{tools_text}
+
+=== BRANCH DIRECTIVES ===
+1. You are in an ISOLATED BRANCH. Focus exclusively on the OBJECTIVE.
+2. OBJECTIVE: {objective}
+3. When complete, blocked, or interrupted, you MUST call `merge_and_return`.
+"""
 
 def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
@@ -827,18 +803,17 @@ def _resolve_execution_context(
                 top_task["read_receipt_time"] = time.time()
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             task_desc = (
-                "You are the global orchestrator. Read your queue. "
-                "If the top task is communication (e.g., a P999 creator message) or administrative, "
+                "You are the global orchestrator. EVALUATE your queue. "
+                "If the top task is communication or administrative, "
                 "handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. "
                 "If the top task requires deep work (file editing, bash, searching), "
-                "use `fork_execution` to spawn a branch."
+                "you MUST use `fork_execution` to spawn a BRANCH."
             )
         else:
             task_desc = (
-                "Your task queue is empty. Initiate P9 (Cognitive Synthesis). "
-                "Read your recent logs using `read_file`, extract higher-order wisdom using "
-                "`store_memory_insight`, synthesize dense files using `refactor_memory`, "
-                "or `hibernate` if your mind is fully optimized."
+                "Your task queue is empty. EVALUATE your history and "
+                "you MUST use `push_task` to initiate deep synthesis/optimization "
+                "or `hibernate` to save resources."
             )
     else:
         # Now mypy knows branch_info is a Dict
@@ -857,16 +832,20 @@ def _build_api_messages(
     task_desc: str,
     active_tool_specs: List[Dict[str, Any]],
     queue: List[Dict[str, Any]],
+    state: Dict[str, Any],
     branch_info: Optional[Dict[str, Any]],
     is_trunk: bool,
-    current_tokens: int,
 ) -> List[Dict[str, Any]]:
     system_prompt = build_static_system_prompt(
         is_trunk, active_tool_specs,
-        queue if is_trunk else None,
-        branch_info, current_tokens,
+        branch_info
     )
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    
+    # Dynamic Telemetry Message (Encapsulated)
+    telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+    api_messages.append({"role": "user", "content": telemetry})
+    
     api_messages += agent_state.load_task_messages(active_task_id, task_desc)
 
     if not is_trunk:
@@ -906,14 +885,17 @@ def _route_tool_calls(
             agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
             agent_state._session["tool_history"].clear()
             agent_state._session["intent_history"].clear()
+            # Workpackage 7: Trunk Amnesia
+            agent_state.wipe_global_trunk_log()
             context_switch_triggered = True
             break
         elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
             try:
                 payload = json.loads(str(result).split(":", 1)[1])
+                # Workpackage 5: Inject Action Required
                 agent_state.append_task_message("global_trunk", {
                     "role": "user",
-                    "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}",
+                    "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}\n\n[ACTION REQUIRED]: Evaluate the synthesis and determine the next step.",
                 })
                 if payload.get("status") == "SUSPENDED" and payload.get("partial_state"):
                     post_merge_state = agent_state.load_state()
@@ -923,11 +905,15 @@ def _route_tool_calls(
             agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": "SYSTEM_SIGNAL_MERGE_ACKNOWLEDGED"})
             agent_state._session["tool_history"].clear()
             agent_state._session["intent_history"].clear()
+            # Workpackage 7: Trunk Amnesia
+            agent_state.wipe_global_trunk_log()
             context_switch_triggered = True
             break
         elif result == "SYSTEM_SIGNAL_RESTART":
             sys.exit(0)
         elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
+            # Workpackage 7: Trunk Amnesia
+            agent_state.wipe_global_trunk_log()
             hibernating = True
 
         agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
@@ -959,10 +945,12 @@ def main() -> None:
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
 
-        current_tokens = state.get("global_tokens_consumed", 0)
+        # Workpackage 7: Log Compaction
+        agent_state.auto_compact_task_log(active_task_id)
+
         api_messages = _build_api_messages(
             active_task_id, task_desc, active_tool_specs,
-            queue, branch_info, is_trunk, current_tokens,
+            queue, state, branch_info, is_trunk,
         )
 
         sys_temp  = state.get("sys_temp",  0.8)

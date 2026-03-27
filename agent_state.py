@@ -104,6 +104,29 @@ def append_chat_history(role: str, text: str) -> None:
     history.append({"role": role, "text": text, "timestamp": timestamp})
     constants.CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
+def auto_compact_task_log(task_id: str, max_lines: int = 100) -> None:
+    """Prunes the task log if it exceeds max_lines, keeping only the most recent context."""
+    if not task_id: return
+    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists(): return
+    
+    with open(log_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    
+    if len(lines) > max_lines:
+        print(f"[System] Compacting log for {task_id} ({len(lines)} lines -> {max_lines})")
+        # Keep the first message (usually the task start) and the last max_lines-1
+        compacted = [lines[0]] + lines[-(max_lines-1):]
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.writelines(compacted)
+
+def wipe_global_trunk_log() -> None:
+    """Explicitly clears the global trunk log to maintain 'Trunk Amnesia' during context switches."""
+    log_path = constants.MEMORY_DIR / "task_log_global_trunk.jsonl"
+    if log_path.exists():
+        log_path.unlink()
+    print("[System] Global Trunk log wiped (Amnesia protocol).")
+
 def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str, is_trunk: bool) -> bool:
     """Updates global usage tokens and ledger spend from response usage."""
     if not hasattr(response, "usage"): return False
