@@ -3,6 +3,8 @@ HOOK_FILE=".git/hooks/pre-commit"
 
 cat > "$HOOK_FILE" << 'EOF'
 #!/bin/bash
+export UV_PROJECT_ENVIRONMENT=/tmp/ouroboros-preflight-venv
+export UV_CACHE_DIR=/tmp/.uv-cache
 echo "Running pre-flight cognitive checks..."
 
 # 1. Static Type Checking
@@ -17,3 +19,4 @@ echo "All checks passed. Memory committed."
 EOF
 
 chmod +x "$HOOK_FILE"
+echo "Git pre-commit hook installed successfully."
