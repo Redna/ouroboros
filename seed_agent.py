@@ -55,7 +55,6 @@ class ToolRegistry:
     def tool(self, description: str, parameters: dict, bucket: str = "global"):
         """Decorator to register a tool using the function's own name."""
         def decorator(func):
-            # Derive the tool name directly from the function name
             tool_name = func.__name__
             self.tools[tool_name] = {
                 "desc": description,
@@ -65,7 +64,6 @@ class ToolRegistry:
             }
             return func
         return decorator
-
 
     def get_names(self, allowed_buckets=None):
         return [n for n, t in self.tools.items() if allowed_buckets is None or t["bucket"] in allowed_buckets]
@@ -299,7 +297,10 @@ def mark_task_complete(args):
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
 
     state = agent_state.load_state()
-    # Cleanup task-specific state
+    # If the active branch is this task, we must clear it so the loop properly drops to trunk instead of hanging
+    if state.get("active_branch", {}).get("task_id") == task_id:
+        state["active_branch"] = None
+        
     for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
         if key in state: del state[key]
     agent_state.save_state(state)
@@ -460,7 +461,6 @@ def search_memory_archive(args):
     query = args.get("query", "")
     if not query: return "Error: No query provided."
     try:
-        # Added explicit timeout handling
         r = subprocess.run(
             ["grep", "-rEi", query, "/memory/"],
             capture_output=True, text=True, timeout=30
@@ -542,11 +542,10 @@ def fork_execution(args):
         "parent_task_id": parent_id,
         "objective": objective,
         "tool_buckets": tool_buckets,
-        "model_id": model_id # Optional override
+        "model_id": model_id
     }
     agent_state.save_state(state)
 
-    # Initialize the log with parent metadata
     agent_state.append_task_message(task_id, {
         "role": "user",
         "content": f"[FORKED EXECUTION]: Objective: {objective}",
@@ -602,11 +601,8 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
     if state.get("active_branch") and state["active_branch"].get("task_id") == active_task_id:
         state["active_branch"] = None
 
-    # Spike cognitive load to force reflection
-    state["cognitive_load"] = state.get("cognitive_load", 0) + 50
     agent_state.save_state(state)
 
-    # FIX: Wipe dirty loop tracking histories to prevent Lazarus death spirals
     agent_state._session["tool_history"].clear()
     agent_state._session["intent_history"].clear()
 
@@ -616,28 +612,23 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
 
-    # HUD
     current_spend = agent_state.get_current_spend()
     remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
     hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Remaining: ${remaining:.4f} | Time: {current_time}"
 
-    # Queue
     if is_trunk:
         formatted_queue = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         queue_section = f"\n\n## TASK QUEUE \n{formatted_queue}"
     else:
         queue_section = ""
 
-    # Working Memory
     working_state = read_file(constants.WORKING_STATE_PATH) or "{}"
 
-    # Recent Biography
     recent_bio = ""
     if constants.ARCHIVE_PATH.exists():
         bio_lines = constants.ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
         recent_bio = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
 
-    # Chat History
     chat_hist = agent_state.load_chat_history()
     chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation."
 
@@ -657,7 +648,6 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
     identity = read_file(constants.ROOT_DIR / "soul" / "identity.md")
     constitution = read_file(constants.ROOT_DIR / "CONSTITUTION.md")
-    tools_text = "\n".join([f"- {t['function']['name']}: {t['function']['description']}" for t in active_tool_specs])
 
     if is_trunk:
         return f"""# SYSTEM CONTEXT (GLOBAL TRUNK)
@@ -680,9 +670,6 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 ## CONSTITUTION
 {constitution}
 
-## AVAILABLE TOOLS
-{tools_text}
-
 ## BRANCH DIRECTIVES
 1. You are in an ISOLATED BRANCH. Focus exclusively on the OBJECTIVE.
 2. OBJECTIVE: {objective}
@@ -693,7 +680,6 @@ def enforce_interrupt_yield(task_id: str, queue: List[Dict[str, Any]], messages:
     has_interrupt = any(t.get("priority", 1) >= 999 and t.get("task_id") != task_id for t in queue)
 
     if has_interrupt:
-        # The Tap on the Shoulder
         interrupt_msg = {"role": "user", "content": "[SYSTEM OVERRIDE: URGENT PRIORITY 999 INTERRUPT IN GLOBAL QUEUE. You must suspend your current work immediately. Call merge_and_return with status='SUSPENDED' and your partial progress.]"}
 
         # Scrub previous interrupt messages to prevent infinite loops (Clean Slate)
@@ -798,9 +784,8 @@ def _resolve_execution_context(
                 "or `hibernate` to save resources."
             )
     else:
-        # Now mypy knows branch_info is a Dict
         active_task_id = branch_info.get("task_id", f"branch_{int(time.time())}")
-        # FIX: Ensure branches can always read files/memory
+
         allowed_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control", "memory_access"]
         task_desc = branch_info.get("objective", "")
         if partial_state := state.get(f"partial_state_{active_task_id}"):
@@ -808,7 +793,7 @@ def _resolve_execution_context(
 
     active_tool_specs = registry.get_specs(allowed_buckets=allowed_buckets)
     return active_task_id, task_desc, active_tool_specs, branch_info, is_trunk
-
+ 
 
 def _build_api_messages(
     active_task_id: str,
@@ -830,13 +815,10 @@ def _build_api_messages(
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
     normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
 
-    # Anchor the start if the log is empty
     if not normalized:
         normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
 
-    # NEW LOGIC: Inject telemetry at the END of the context for immediate attention
     if normalized[-1]["role"] == "user":
-        # Prepend to last user message so it's the first thing the agent sees in the latest prompt
         normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
     else:
         normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
@@ -887,7 +869,6 @@ def _route_tool_calls(
                 # FIX: Wipe BEFORE appending the summary so the trunk starts fresh WITH the summary.
                 agent_state.wipe_global_trunk_log()
 
-                # Workpackage 5: Inject Action Required
                 agent_state.append_task_message("global_trunk", {
                     "role": "user",
                     "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}\n\n[ACTION REQUIRED]: Evaluate the synthesis and determine the next step.",
@@ -943,7 +924,6 @@ def main() -> None:
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
 
-        # Workpackage 7: Log Compaction
         agent_state.auto_compact_task_log(active_task_id)
 
         api_messages = _build_api_messages(
@@ -951,11 +931,9 @@ def main() -> None:
             queue, state, branch_info, is_trunk,
         )
 
-        # RECORD the prompt (with telemetry) to the log for continuity
         if api_messages and api_messages[-1]["role"] == "user":
              agent_state.append_task_message(active_task_id, api_messages[-1])
 
-        # FIX: Restore Dynamic Metacognitive Overrides
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
         sys_think = state.get("sys_think", True)
@@ -985,8 +963,7 @@ def main() -> None:
                     "task_id": active_task_id,
                     "summary": "FAILED: Token limit exceeded. Task forcibly aborted to protect budget."
                 })
-                # Spike load to force reflection upon failure
-                state["cognitive_load"] = state.get("cognitive_load", 0) + 50
+
                 agent_state.save_state(state)
                 continue
 
@@ -1015,7 +992,6 @@ def main() -> None:
             if re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
                 sys.exit(1)
             time.sleep(0.5)
-
 
 if __name__ == "__main__":
     main()

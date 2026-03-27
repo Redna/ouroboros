@@ -169,7 +169,6 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     if is_local:
         spend = 0.0
     else:
-        # Placeholder for external model pricing (e.g. $2.00 per 1M tokens)
         cost_per_1m = 2.00
         spend = (t_count / 1_000_000) * cost_per_1m
     
@@ -201,9 +200,22 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
     queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
     current_context_size = state.get("last_context_size", 0)
     max_physical_context = int(constants.CONTEXT_WINDOW * constants.CONTEXT_SAFETY_MARGIN)
+    cumulative_tokens = queue[0].get("task_tokens", 0)
+    budget_limit = int(constants.CONTEXT_WINDOW * 1.5)
+    budget_warning = int(budget_limit * 0.8) # 80% of budget limit
     
-    if queue[0]["turn_count"] >= constants.TURN_LIMIT or current_context_size > max_physical_context:
-        trigger_reason = f"{constants.TURN_LIMIT}-turn limit" if queue[0]["turn_count"] >= constants.TURN_LIMIT else f"physical context exhaustion ({current_context_size}/{constants.CONTEXT_WINDOW})"
+    hit_turn_limit = queue[0]["turn_count"] >= constants.TURN_LIMIT
+    hit_context_limit = current_context_size > max_physical_context
+    hit_budget_limit = cumulative_tokens > budget_warning
+    
+    if hit_turn_limit or hit_context_limit or hit_budget_limit:
+        if hit_turn_limit:
+            trigger_reason = f"{constants.TURN_LIMIT}-turn limit"
+        elif hit_budget_limit:
+            trigger_reason = f"token budget approaching limit ({cumulative_tokens}/{budget_limit})"
+        else:
+            trigger_reason = f"physical context exhaustion ({current_context_size}/{constants.CONTEXT_WINDOW})"
+            
         append_task_message(task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. You MUST use `push_task` to break your remaining work down into a new subtask immediately."})
         queue[0]["turn_count"] = 0 
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")

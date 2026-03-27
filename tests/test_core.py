@@ -31,7 +31,6 @@ def test_build_static_system_prompt_trunk(mock_memory):
         assert "Constitution Content" in trunk_prompt
         assert "Identity Content" in trunk_prompt
         assert "GLOBAL TRUNK" in trunk_prompt
-        assert "test_tool" in trunk_prompt
 
 
 def test_build_static_system_prompt_branch(mock_memory):
