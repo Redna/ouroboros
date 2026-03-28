@@ -852,6 +852,7 @@ def _build_api_messages(
     state: Dict[str, Any],
     branch_info: Optional[Dict[str, Any]],
     is_trunk: bool,
+    enrich: bool = True
 ) -> List[Dict[str, Any]]:
     system_prompt = build_static_system_prompt(
         is_trunk, active_tool_specs,
@@ -859,18 +860,19 @@ def _build_api_messages(
     )
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-    telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
-
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
     normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
 
     if not normalized:
         normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
 
-    if normalized[-1]["role"] == "user":
-        normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
-    else:
-        normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
+    if enrich:
+        telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+        # We only enrich the VERY LAST user message for the API call
+        if normalized[-1]["role"] == "user":
+            normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
+        else:
+            normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
@@ -972,13 +974,28 @@ def main() -> None:
 
         agent_state.auto_compact_task_log(active_task_id)
 
-        api_messages = _build_api_messages(
+        # 1. Build CLEAN messages for the task log (Heartbeat only)
+        # We use build_dynamic_telemetry_message to get just the physiology line
+        current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+        current_spend = agent_state.get_current_spend()
+        physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Time: {current_time}"
+        
+        # We manually build a minimalist user prompt for the log
+        log_messages = _build_api_messages(
             active_task_id, task_desc, active_tool_specs,
-            queue, state, branch_info, is_trunk,
+            queue, state, branch_info, is_trunk, enrich=False
         )
 
-        if api_messages and api_messages[-1]["role"] == "user":
-             agent_state.append_task_message(active_task_id, api_messages[-1])
+        if log_messages and log_messages[-1]["role"] == "user":
+            log_msg = log_messages[-1].copy()
+            log_msg["content"] = f"## CURRENT TELEMETRY\n{physiology_heartbeat}\n\n{log_msg['content']}"
+            agent_state.append_task_message(active_task_id, log_msg)
+
+        # 2. Build ENRICHED messages for the LLM API call (Full HUD)
+        api_messages = _build_api_messages(
+            active_task_id, task_desc, active_tool_specs,
+            queue, state, branch_info, is_trunk, enrich=True
+        )
 
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
