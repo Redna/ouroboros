@@ -20,6 +20,7 @@ def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=
             temperature=temperature,
             top_p=top_p,
             presence_penalty=presence_penalty,
+            cache_prompt=True,
             extra_body={"top_k": 20, "chat_template_kwargs": {"enable_thinking": think}}
         )
         agent_state._session["is_first_call"] = False

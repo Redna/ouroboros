@@ -11,12 +11,23 @@ import shutil
 import traceback
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import tree_sitter_python as tspython
+from tree_sitter import Language, Parser, Query, QueryCursor
 from openai import OpenAI
 
 import constants
 import agent_state
 import llm_interface
 import comms
+
+# Initialize Tree-sitter parser and query for repository mapping
+PY_LANGUAGE = Language(tspython.language())
+parser = Parser(PY_LANGUAGE)
+
+MAP_QUERY = Query(PY_LANGUAGE, """
+    (class_definition name: (identifier) @class.name)
+    (function_definition name: (identifier) @function.name)
+""")
 
 
 def read_file(path: Path) -> str:
@@ -119,7 +130,7 @@ def write_file(args):
             try:
                 _validate_python_syntax(content)
             except SyntaxError as e:
-                return f"Critical Error: Python syntax validation failed. File NOT written. Fix syntax and try again.\nError: {e.msg} at line {e.lineno}"
+                return f"SYSTEM REJECTED: Invalid Python syntax in content.\nError: {e.msg} at line {e.lineno}\nTraceback: {traceback.format_exc()}\nFix syntax and try again."
 
         Path(p.parent).mkdir(parents=True, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
@@ -159,7 +170,7 @@ def patch_file(args):
             try:
                 _validate_python_syntax(new_content)
             except SyntaxError as e:
-                return f"Critical Error: Python syntax validation failed after patching. File NOT modified.\nError: {e.msg} at line {e.lineno}"
+                return f"SYSTEM REJECTED: Patch creates invalid Python syntax.\nError: {e.msg} at line {e.lineno}\nTraceback: {traceback.format_exc()}\nFix your indentation or logic."
 
         file_path.write_text(new_content, encoding="utf-8")
         return f"Success: Surgically patched and validated {file_path.name}."
@@ -196,6 +207,127 @@ def read_file_tool(args):
         return prefix + content
     except PermissionError as e: return f"Error: {e}"
     except Exception as e: return f"Error reading file: {e}"
+
+
+@registry.tool(
+    description="Generate a high-signal structural map of the Python codebase using Tree-sitter AST parsing.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory path to map (e.g., '.'). Defaults to project root."}
+        }
+    },
+    bucket="filesystem"
+)
+def generate_repo_map(args: dict) -> str:
+    target_path = args.get("path", ".")
+    try:
+        root = _resolve_safe_path(target_path)
+    except Exception as e:
+        return f"Error: {e}"
+
+    if not root.is_dir():
+        return f"Error: '{target_path}' is not a directory."
+
+    skeleton = []
+    
+    for current_root, dirs, files in os.walk(root):
+        # Skip hidden directories and virtual environments
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("venv", "node_modules", "__pycache__", ".venv")]
+        
+        for file in files:
+            if file.endswith(".py"):
+                file_path = Path(current_root) / file
+                try:
+                    rel_path = file_path.relative_to(constants.ROOT_DIR)
+                except ValueError:
+                    rel_path = file_path # Fallback if not relative to root
+                
+                try:
+                    source_code = file_path.read_bytes()
+                    tree = parser.parse(source_code)
+                    
+                    cursor = QueryCursor(MAP_QUERY)
+                    captures_dict = cursor.captures(tree.root_node)
+                    
+                    if captures_dict:
+                        # Extract all captures and sort them by start byte to maintain order
+                        captures = []
+                        for capture_name, nodes in captures_dict.items():
+                            for node in nodes:
+                                captures.append((node, capture_name))
+                        captures.sort(key=lambda x: x[0].start_byte)
+                        
+                        skeleton.append(f"File: {rel_path}")
+                        for node, capture_name in captures:
+                            if node.text is None:
+                                continue
+                            text = node.text.decode('utf8')
+                            if capture_name == "class.name":
+                                skeleton.append(f"  class {text}:")
+                            elif capture_name == "function.name":
+                                skeleton.append(f"    def {text}(...):")
+                except Exception as e:
+                    skeleton.append(f"File: {rel_path}\n  [Parse Error: {e}]")
+                    
+    return "\n".join(skeleton) or "No Python files found or mapped."
+
+
+@registry.tool(
+    description="Sawtooth Context Folding. Autonomously compress context by replacing recent raw turns with a synthesis. Use this when a sub-task is complete or context is bloated.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk' or branch ID)."},
+            "synthesis": {"type": "string", "description": "Dense summary of what was learned or accomplished in the dropped steps."},
+            "steps_to_drop": {"type": "integer", "description": "Number of recent tool/assistant turns to delete."}
+        },
+        "required": ["task_id", "synthesis", "steps_to_drop"]
+    },
+    bucket="global"
+)
+def fold_context(args: dict) -> str:
+    task_id = args.get("task_id")
+    synthesis = args.get("synthesis")
+    try:
+        steps_to_drop = int(args.get("steps_to_drop", 0))
+    except (ValueError, TypeError):
+        return "Error: 'steps_to_drop' must be an integer."
+    
+    if not task_id or steps_to_drop <= 0:
+        return "Error: Invalid parameters for context folding."
+        
+    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists():
+        return f"Error: Task log '{task_id}' not found."
+        
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
+    except Exception as e:
+        return f"Error reading log: {e}"
+        
+    if len(messages) <= steps_to_drop + 1:
+        return f"Error: Not enough history to fold safely (History: {len(messages)}, Drop: {steps_to_drop})."
+        
+    # Slice the messages to remove the tail
+    cutoff = len(messages) - steps_to_drop
+    preserved = messages[:cutoff]
+    
+    knowledge_block = {
+        "role": "user",
+        "content": f"[FOCUS SYNTHESIS - PREVIOUS {steps_to_drop} STEPS ARCHIVED]: {synthesis}"
+    }
+    
+    try:
+        with open(log_path, "w", encoding="utf-8") as f:
+            for msg in preserved:
+                f.write(json.dumps(msg) + "\n")
+            f.write(json.dumps(knowledge_block) + "\n")
+    except Exception as e:
+        return f"Error writing log during fold: {e}"
+        
+    return f"Context successfully folded for {task_id}. {steps_to_drop} turns replaced with synthesis."
 
 
 @registry.tool(
@@ -280,8 +412,7 @@ def push_task(args):
 def mark_task_complete(args):
     task_id = args.get("task_id")
     summary = args.get("summary", "No summary provided.")
-    with open(constants.ARCHIVE_PATH, "a", encoding="utf-8") as f:
-        f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Task {task_id} Completed: {summary}\n")
+    agent_state.append_task_archive(task_id, summary)
 
     q = agent_state.load_task_queue()
     completed_task = next((t for t in q if t.get("task_id") == task_id), None)
@@ -444,9 +575,9 @@ def rewrite_memory(args):
         if len(content) < constants.MIN_REWRITE_CONTENT_LEN:
             return f"Error: Content too short (<{constants.MIN_REWRITE_CONTENT_LEN}). Provide full synthesized text."
 
-        protected = ["insights.md", "global_biography.md", "task_queue.json", ".agent_state.json"]
+        protected = ["agent_memory.json", "task_queue.json", ".agent_state.json", "task_archive.jsonl"]
         if p.name in protected:
-            return f"Error: {p.name} is append-only. Use specific tools to update."
+            return f"Error: {p.name} is managed by dedicated tools. Use the appropriate tool to update."
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         if args.get("is_jsonl") or p.suffix == ".jsonl":
@@ -478,17 +609,60 @@ def search_memory_archive(args):
         return f"Search error: {e}"
 
 @registry.tool(
-    description="Save profound insights.",
-    parameters={"type": "object", "properties": {"insight": {"type": "string"}, "category": {"type": "string"}}, "required": ["insight"]},
+    description="Store or update a persistent memory. Key is a short topic sentence (your memory index shows all keys every turn). Content is the detailed knowledge. Use to record insights, task outcomes, learned patterns, or any important context for future recall. During P9 synthesis, merge related memories into higher-order entries.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": "Short topic sentence (max 100 chars). Appears in your memory index."},
+            "content": {"type": "string", "description": "Detailed knowledge or context for this topic."}
+        },
+        "required": ["key", "content"]
+    },
     bucket="memory_access"
 )
-def store_memory_insight(args):
-    insight, category = args.get("insight"), args.get("category", "General")
-    path = constants.MEMORY_DIR / "insights.md"
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(f"\n### [{timestamp}] {category}\n{insight}\n")
-    return f"Insight stored in {path.name}."
+def store_memory(args):
+    key = args.get("key", "").strip()
+    content = args.get("content", "").strip()
+    if not key or not content:
+        return "Error: Both key and content are required."
+    if len(key) > 100:
+        return "Error: Key must be <= 100 characters. Shorten your topic sentence."
+    return agent_state.store_memory_entry(key, content)
+
+@registry.tool(
+    description="Retrieve the detailed content of a specific memory by its key. Use when you need the full context behind a memory index entry.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": "The exact key or a substring to search for."}
+        },
+        "required": ["key"]
+    },
+    bucket="memory_access"
+)
+def recall_memory(args):
+    key = args.get("key", "").strip()
+    if not key:
+        return "Error: Provide a key or substring to search for."
+    result = agent_state.load_memory_entry(key)
+    return result if result else f"No memory found matching '{key}'."
+
+@registry.tool(
+    description="Remove a memory entry to free a slot. Use when a memory is obsolete, or to make room before storing a new one. During P9 synthesis, forget low-value entries after merging their essence into higher-order memories.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": "The exact key of the memory to remove."}
+        },
+        "required": ["key"]
+    },
+    bucket="memory_access"
+)
+def forget_memory(args):
+    key = args.get("key", "").strip()
+    if not key:
+        return "Error: Provide the exact key to forget."
+    return agent_state.forget_memory_entry(key)
 
 @registry.tool(
     description="Signal the watchdog to restart the agent process. Use this AFTER committing your changes via bash_command('git commit'). The git pre-commit hook enforces mypy and pytest automatically — if those fail, the commit (and therefore this restart) will be blocked.",
@@ -725,11 +899,13 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     except Exception:
         working_memory = raw_memory
 
-    # 3. Biography & Converation context
-    recent_bio = ""
-    if constants.ARCHIVE_PATH.exists():
-        bio_lines = constants.ARCHIVE_PATH.read_text(encoding="utf-8").strip().split('\n')
-        recent_bio = "\n".join(bio_lines[-5:]) if len(bio_lines) >= 5 else "\n".join(bio_lines)
+    # 3. Memory Index & Conversation context
+    memory_keys = agent_state.load_memory_index()
+    max_entries = constants.MEMORY_MAX_ENTRIES
+    if memory_keys:
+        memory_index = f"({len(memory_keys)}/{max_entries} slots)\n" + "\n".join(f"- {k}" for k in memory_keys)
+    else:
+        memory_index = f"(0/{max_entries} slots) — Empty. Use `store_memory` to record insights."
 
     chat_hist = agent_state.load_chat_history()
     chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation."
@@ -742,15 +918,15 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         f"\n### TASK QUEUE\n{queue_content}" if is_trunk else "",
         "\n### WORKING MEMORY",
         working_memory,
-        "\n### RECENT BIOGRAPHY",
-        recent_bio,
+        "\n### MEMORY INDEX",
+        memory_index,
         "\n### RECENT CONVERSATION",
         chat_context
     ]
     return "\n".join([s for s in sections if s])
 
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
-    identity = read_file(constants.ROOT_DIR / "soul" / "identity.md")
+    identity = read_file(constants.ROOT_DIR / "identity.md")
     constitution = read_file(constants.ROOT_DIR / "CONSTITUTION.md")
 
     if is_trunk:
@@ -1068,10 +1244,6 @@ def main() -> None:
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
 
-        agent_state.auto_compact_task_log(active_task_id)
-
-        # 1. Build CLEAN messages for the task log (Heartbeat only)
-        # We use build_dynamic_telemetry_message to get just the physiology line
         current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
         current_spend = agent_state.get_current_spend()
         remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)

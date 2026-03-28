@@ -8,12 +8,91 @@ from seed_agent import (
     write_file,
     patch_file,
     read_file_tool,
+    generate_repo_map,
+    fold_context,
     send_telegram_message,
     web_search,
-    store_memory_insight,
+    store_memory,
     ToolRegistry
 )
 import json
+
+def test_fold_context(mock_memory):
+    """Test sawtooth context folding logic."""
+    task_id = "test_fold"
+    log_path = mock_memory / f"task_log_{task_id}.jsonl"
+    
+    # Setup initial log with 5 messages
+    initial_msgs = [
+        {"role": "user", "content": "Start"},
+        {"role": "assistant", "content": "Thought 1"},
+        {"role": "tool", "content": "Result 1"},
+        {"role": "assistant", "content": "Thought 2"},
+        {"role": "tool", "content": "Result 2"}
+    ]
+    with open(log_path, "w") as f:
+        for m in initial_msgs:
+            f.write(json.dumps(m) + "\n")
+            
+    # Fold last 2 steps
+    result = fold_context({
+        "task_id": task_id,
+        "synthesis": "Successfully calculated X.",
+        "steps_to_drop": 2
+    })
+    
+    assert "successfully folded" in result
+    
+    # Verify log content
+    with open(log_path, "r") as f:
+        final_msgs = [json.loads(line) for line in f if line.strip()]
+        
+    # Should have 3 preserved + 1 synthesis = 4 messages
+    assert len(final_msgs) == 4
+    assert final_msgs[0]["content"] == "Start"
+    assert "FOCUS SYNTHESIS" in final_msgs[-1]["content"]
+    assert "Successfully calculated X." in final_msgs[-1]["content"]
+
+
+def test_patch_file_syntax_error(mock_memory):
+    """Test that patch_file rejects invalid Python syntax."""
+    p = mock_memory / "broken.py"
+    p.write_text("def hello():\n    pass\n")
+    
+    result = patch_file({
+        "path": str(p),
+        "search_text": "pass",
+        "replace_text": "pass(" # Invalid syntax
+    })
+    
+    assert "Critical Error" in result or "SYSTEM REJECTED" in result
+    assert "syntax" in result.lower()
+    # Ensure file was NOT modified
+    assert p.read_text() == "def hello():\n    pass\n"
+
+def test_generate_repo_map(mock_memory):
+    """Test repository mapping with Tree-sitter."""
+    # Create a dummy python file in mock_memory
+    test_dir = mock_memory / "test_app"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    py_file = test_dir / "dummy.py"
+    py_file.write_text("""
+class MyClass:
+    def my_method(self):
+        pass
+
+def global_function():
+    pass
+""")
+    
+    with patch("constants.ROOT_DIR", mock_memory):
+        result = generate_repo_map({"path": str(test_dir)})
+        
+        assert "dummy.py" in result
+        assert "class MyClass:" in result
+        assert "def my_method(...):" in result
+        assert "def global_function(...):" in result
+
 
 def test_bash_command_success():
     """Test successful bash command execution."""
@@ -108,11 +187,12 @@ def test_web_search(mock_memory):
             assert "T1" in result
             assert "U1" in result
 
-def test_store_memory_insight(mock_memory):
-    """Test storing insights."""
-    result = store_memory_insight({"insight": "Deep thought", "category": "Mind"})
-    assert "stored" in result
-    assert "Deep thought" in (mock_memory / "insights.md").read_text()
+def test_store_memory(mock_memory):
+    """Test storing structured memories."""
+    result = store_memory({"key": "Deep thought on consciousness", "content": "Consciousness may emerge from recursive self-modeling."})
+    assert "memory" in result.lower()
+    store_data = json.loads((mock_memory / "agent_memory.json").read_text())
+    assert "Deep thought on consciousness" in store_data["entries"]
 
 def test_tool_registry_buckets():
     """Test tool registry bucket filtering."""
