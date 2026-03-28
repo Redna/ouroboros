@@ -53,10 +53,14 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
             new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
             
-        elif role == "user" and ("=== CURRENT TELEMETRY ===" in content_str or "[SYSTEM METRICS]" in content_str):
+        elif role == "user" and "## CURRENT TELEMETRY" in content_str:
             if len(content_str) > constants.SYSTEM_METRICS_TRIM_CHARS:
-                header = "=== CURRENT TELEMETRY ===" if "=== CURRENT TELEMETRY ===" in content_str else "[SYSTEM METRICS]"
-                new_msg["content"] = content_str.split(header)[0].strip() + f"\n{header}: (Old telemetry archived to save context tokens)"
+                header = "## CURRENT TELEMETRY"
+                # Preserve the [PHYSIOLOGY] line as a heartbeat for rationale
+                lines = content_str.splitlines()
+                heartbeat = next((l for l in lines if "[PHYSIOLOGY]" in l), "[HEARTBEAT: Metrics Archived]")
+                prefix = content_str.split(header)[0].strip()
+                new_msg["content"] = f"{prefix}\n{header}: {heartbeat} (Old structure archived to save tokens)"
             
         elif role == "assistant" and new_msg.get("tool_calls"):
             trimmed_calls = []

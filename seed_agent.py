@@ -599,6 +599,54 @@ def merge_and_return(args):
     return f"SYSTEM_SIGNAL_MERGE:{payload}"
 
 
+@registry.tool(
+    description="Resume a previously suspended branch. Use this when the top task in the queue is a suspended branch and you have finished the interrupt that caused the suspension.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "synthesis": {"type": "string", "description": "A summary of the interrupt or context that occurred while the branch was suspended."}
+        },
+        "required": ["task_id"]
+    },
+    bucket="global"
+)
+def resume_branch(args):
+    task_id = args.get("task_id")
+    synthesis = args.get("synthesis", "No synthesis provided.")
+
+    state = agent_state.load_state()
+    suspended = state.get("suspended_branches", [])
+    
+    # Find the target branch in the stack
+    target_idx = -1
+    for i, b in enumerate(suspended):
+        if b.get("task_id") == task_id:
+            target_idx = i
+            break
+            
+    if target_idx == -1:
+        return f"Error: Branch {task_id} not found in suspended stack."
+
+    # Pop the target branch
+    branch_info = suspended.pop(target_idx)
+    
+    # If there was an active branch (shouldn't happen in Trunk, but for safety), stash it
+    if state.get("active_branch"):
+        suspended.append(state["active_branch"])
+        
+    state["active_branch"] = branch_info
+    state["suspended_branches"] = suspended
+    agent_state.save_state(state)
+
+    agent_state.append_task_message(task_id, {
+        "role": "user",
+        "content": f"[SYSTEM RESUME]: Task resumed by Trunk. Synthesis of interrupt: {synthesis}"
+    })
+
+    return f"SYSTEM_SIGNAL_FORK:{task_id}"
+
+
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
 
@@ -628,20 +676,37 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
     current_spend = agent_state.get_current_spend()
-    remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+    remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+    
+    # We use 80% of context window as the soft target for turning/forking
+    token_limit = constants.CONTEXT_WINDOW
     
     # 1. Context-Aware HUD & Directives
     if is_trunk:
         global_tokens = state.get("global_tokens_consumed", 0)
-        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+        # Cumulative tracking for the active trunk task
+        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
+        rem_tokens = max(0, token_limit - task_tokens)
+        
+        # Turn-specific size
+        turn_tokens = state.get("last_context_size", 0)
+        
+        hud = (
+            f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
+            f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
+            f"Turn Tokens: {turn_tokens:,} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+        )
         queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         context_header = "GLOBAL TRUNK"
         objective_part = ""
     else:
         task_tokens = queue[0].get("task_tokens", 0) if queue else 0
-        budget_limit = int(constants.CONTEXT_WINDOW * 1.5)
-        rem_tokens = max(0, budget_limit - task_tokens)
-        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Task Tokens: {task_tokens:,} / {budget_limit:,} (left: {rem_tokens:,}) | Time: {current_time}"
+        rem_tokens = max(0, token_limit - task_tokens)
+        hud = (
+            f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
+            f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
+            f"Time: {current_time}"
+        )
         queue_content = ""
         
         # Branch Awareness
@@ -780,13 +845,55 @@ def _resolve_execution_context(
     queue: List[Dict[str, Any]],
 ) -> Tuple[str, str, List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
-    
-    # If there's an interrupt, force Trunk to handle it instantly, parking the active branch natively.
+    active_branch = state.get("active_branch")
+    suspended = state.get("suspended_branches", [])
+
+    # Auto-Suspend: Freeze active work if an interrupt arrives.
+    if has_interrupt and active_branch:
+        print(f"[HAL] Suspending task {active_branch.get('task_id')} due to interrupt.")
+        agent_state.append_task_message(active_branch.get("task_id"), {
+            "role": "user",
+            "content": "[SYSTEM]: Priority 999 interrupt detected. This branch is now SUSPENDED and PARKED. You will be thawed once the interrupt is addressed."
+        })
+        suspended.append(active_branch)
+        state["active_branch"] = None
+        state["suspended_branches"] = suspended
+        agent_state.save_state(state)
+        active_branch = None
+
+    # Auto-Thaw: Resume background work if queue allows.
+    if not has_interrupt and not active_branch and suspended:
+        # We only thaw if the top task matches the top of our suspended stack.
+        top_suspended = suspended[-1]
+        if queue and queue[0].get("task_id") == top_suspended.get("task_id"):
+            print(f"[HAL] Thawing task {top_suspended.get('task_id')}.")
+            active_branch = suspended.pop()
+            state["active_branch"] = active_branch
+            state["suspended_branches"] = suspended
+            agent_state.save_state(state)
+            agent_state.append_task_message(active_branch.get("task_id"), {
+                "role": "user",
+                "content": "[SYSTEM]: Interrupt cleared. This branch is now THAWED and ACTIVE. Resume your objective."
+            })
+
+    # Auto-Close P999 interrupts if addressed but not cleared.
+    if has_interrupt and queue and queue[0].get("priority") == 999:
+        top_task = queue[0]
+        top_task["turn_count"] = top_task.get("turn_count", 0) + 1
+        if top_task["turn_count"] > 3:
+            print(f"[HAL] Auto-closing persistent interrupt {top_task.get('task_id')}.")
+            registry.execute("mark_task_complete", {
+                "task_id": top_task.get("task_id"),
+                "summary": "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work."
+            })
+            queue = agent_state.load_task_queue()
+            has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
+
     if has_interrupt:
         branch_info = None
         is_trunk = True
     else:
-        branch_info = state.get("active_branch")
+        branch_info = active_branch
         is_trunk = branch_info is None
 
     if is_trunk:
@@ -804,10 +911,13 @@ def _resolve_execution_context(
                 top_task["read_receipt_sent"] = True
                 top_task["read_receipt_time"] = time.time()
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+            
             task_desc = (
                 "You are the global orchestrator. EVALUATE your queue. "
-                "If the top task is communication or administrative, "
-                "handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. "
+                "If the top task is communication or administrative, you MUST handle it "
+                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `mark_task_complete`. "
+                "NEVER leave an interrupt task in the queue once responded to. "
+                "If the top task is a previously suspended branch, you MUST use `resume_branch` to thaw it. "
                 "If the top task requires deep work (file editing, bash, searching), "
                 "you MUST use `fork_execution` to spawn a BRANCH."
             )
@@ -838,6 +948,7 @@ def _build_api_messages(
     state: Dict[str, Any],
     branch_info: Optional[Dict[str, Any]],
     is_trunk: bool,
+    enrich: bool = True
 ) -> List[Dict[str, Any]]:
     system_prompt = build_static_system_prompt(
         is_trunk, active_tool_specs,
@@ -845,18 +956,19 @@ def _build_api_messages(
     )
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-    telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
-
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
     normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
 
     if not normalized:
         normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
 
-    if normalized[-1]["role"] == "user":
-        normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
-    else:
-        normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
+    if enrich:
+        telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+        # We only enrich the VERY LAST user message for the API call
+        if normalized[-1]["role"] == "user":
+            normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
+        else:
+            normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
@@ -958,13 +1070,29 @@ def main() -> None:
 
         agent_state.auto_compact_task_log(active_task_id)
 
-        api_messages = _build_api_messages(
+        # 1. Build CLEAN messages for the task log (Heartbeat only)
+        # We use build_dynamic_telemetry_message to get just the physiology line
+        current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+        current_spend = agent_state.get_current_spend()
+        remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+        physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | Time: {current_time}"
+        
+        # We manually build a minimalist user prompt for the log
+        log_messages = _build_api_messages(
             active_task_id, task_desc, active_tool_specs,
-            queue, state, branch_info, is_trunk,
+            queue, state, branch_info, is_trunk, enrich=False
         )
 
-        if api_messages and api_messages[-1]["role"] == "user":
-             agent_state.append_task_message(active_task_id, api_messages[-1])
+        if log_messages and log_messages[-1]["role"] == "user":
+            log_msg = log_messages[-1].copy()
+            log_msg["content"] = f"## CURRENT TELEMETRY\n{physiology_heartbeat}\n\n{log_msg['content']}"
+            agent_state.append_task_message(active_task_id, log_msg)
+
+        # 2. Build ENRICHED messages for the LLM API call (Full HUD)
+        api_messages = _build_api_messages(
+            active_task_id, task_desc, active_tool_specs,
+            queue, state, branch_info, is_trunk, enrich=True
+        )
 
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
@@ -1021,9 +1149,15 @@ def main() -> None:
             try:
                 constants.CRASH_LOG_PATH.write_text(str(e), encoding="utf-8")
             except Exception: pass
-            if re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
+            
+            # P5: Fail Fast on structural/fatal errors.
+            fatal_types = (AttributeError, ImportError, NameError, SyntaxError, TypeError)
+            if isinstance(e, fatal_types) or re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
+                print(f"\033[91m[FATAL]: {type(e).__name__}: {e}. Exiting for watchdog recovery.\033[0m")
                 sys.exit(1)
-            time.sleep(0.5)
+            
+            print(f"[ERROR]: {e}. Recovering in 2s...")
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()

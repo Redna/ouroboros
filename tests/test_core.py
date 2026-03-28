@@ -72,8 +72,13 @@ def test_main_loop_iteration(mock_memory):
          patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")), \
          patch("agent_state.load_task_queue", return_value=[{"task_id": "t1", "description": "test"}]):
         
+        mock_message = MagicMock()
+        mock_message.content = "thinking"
+        mock_message.tool_calls = []
+        mock_message.model_dump.return_value = {"role": "assistant", "content": "thinking"}
+        
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content="thinking", tool_calls=[]))]
+        mock_response.choices = [MagicMock(message=mock_message)]
         mock_response.usage = MagicMock(total_tokens=100, prompt_tokens=50, completion_tokens=50)
         mock_openai.return_value = mock_response
         
