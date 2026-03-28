@@ -24,9 +24,10 @@ def initialize_memory() -> None:
         if not path.exists():
             path.write_text(json.dumps(default_val, indent=2), encoding="utf-8")
             
-    if not constants.ARCHIVE_PATH.exists():
-        header = f"# Ouroboros Global Biography\nInitialized: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        constants.ARCHIVE_PATH.write_text(header, encoding="utf-8")
+    # Initialize structured memory store
+    if not constants.MEMORY_STORE_PATH.exists():
+        default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
+        constants.MEMORY_STORE_PATH.write_text(json.dumps(default_memory, indent=2), encoding="utf-8")
 
 def get_current_spend() -> float:
     if not constants.LEDGER_FILE.exists():
@@ -104,38 +105,114 @@ def append_chat_history(role: str, text: str) -> None:
     history.append({"role": role, "text": text, "timestamp": timestamp})
     constants.CHAT_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2), encoding="utf-8")
 
-def auto_compact_task_log(task_id: str, max_lines: int = 100) -> None:
-    """Prunes the task log safely without breaking API tool-call chains."""
+# --- Structured Memory Store CRUD ---
+
+def _load_memory_store() -> Dict[str, Any]:
+    """Loads the full memory store from disk."""
+    if not constants.MEMORY_STORE_PATH.exists():
+        return {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
+    try:
+        return json.loads(constants.MEMORY_STORE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
+
+def _save_memory_store(store: Dict[str, Any]) -> None:
+    """Writes the full memory store to disk."""
+    constants.MEMORY_STORE_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
+
+def load_memory_index() -> List[str]:
+    """Returns the list of memory keys for context injection."""
+    store = _load_memory_store()
+    return list(store.get("entries", {}).keys())
+
+def load_memory_entry(key: str) -> str:
+    """Returns the value for a memory key. Tries exact match, then substring."""
+    store = _load_memory_store()
+    entries = store.get("entries", {})
+    if key in entries:
+        return entries[key]
+    # Substring fallback
+    for k, v in entries.items():
+        if key.lower() in k.lower():
+            return f"[Matched key: {k}]\n{v}"
+    return ""
+
+def store_memory_entry(key: str, content: str) -> str:
+    """Add or update a memory entry. Enforces max_entries cap."""
+    store = _load_memory_store()
+    entries = store.get("entries", {})
+    max_entries = store.get("max_entries", constants.MEMORY_MAX_ENTRIES)
+
+    if key not in entries and len(entries) >= max_entries:
+        return f"Error: Memory full ({len(entries)}/{max_entries}). Use `forget_memory` to free a slot or merge entries first."
+
+    is_update = key in entries
+    entries[key] = content
+    store["entries"] = entries
+    store["last_synthesis"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _save_memory_store(store)
+    action = "Updated" if is_update else "Stored"
+    return f"{action} memory: '{key}' ({len(entries)}/{max_entries} slots used)."
+
+def forget_memory_entry(key: str) -> str:
+    """Remove a memory entry by key."""
+    store = _load_memory_store()
+    entries = store.get("entries", {})
+    if key not in entries:
+        return f"Error: No memory with key '{key}'. Available keys: {list(entries.keys())[:10]}"
+    del entries[key]
+    store["entries"] = entries
+    _save_memory_store(store)
+    max_entries = store.get("max_entries", constants.MEMORY_MAX_ENTRIES)
+    return f"Forgotten: '{key}'. ({len(entries)}/{max_entries} slots used)."
+
+def append_task_archive(task_id: str, summary: str) -> None:
+    """Append a task completion record to the archive (never auto-loaded into context)."""
+    record = {"task_id": task_id, "summary": summary, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    with open(constants.TASK_ARCHIVE_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
+    """
+    LAST RESORT safety net. Only triggers if the agent ignores warnings and
+    is about to crash the context window.
+    """
     if not task_id: return
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists(): return
-    
+
     with open(log_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-    
+
     if len(lines) <= max_lines: return
-    
+
     try:
         messages = [json.loads(line) for line in lines if line.strip()]
+
+        # Preserve the task start (usually message 0)
         first_msg = messages[0]
-        
-        # FIX: Find a safe boundary. We must cut at a 'user' message to avoid orphaning tool calls.
-        cutoff = len(messages) - (max_lines - 2)
+
+        # Safely find a cutoff for the most recent messages (e.g., last 20)
+        cutoff = len(messages) - 20
         while cutoff < len(messages) and messages[cutoff].get("role") != "user":
-            cutoff += 1
-            
+            cutoff += 1  # Ensure we cut at a user message to avoid breaking tool chains
+
         if cutoff >= len(messages):
-            return # Could not find a safe boundary, defer compaction
-            
-        compaction_notice = {"role": "user", "content": "[SYSTEM NOTE]: Older execution steps archived to save context space."}
-        compacted = [first_msg, compaction_notice] + messages[cutoff:]
-        
-        print(f"[System] Safely compacted log for {task_id} ({len(lines)} lines -> {len(compacted)})")
+            cutoff = len(messages) - 10  # Fallback
+
+        emergency_notice = {
+            "role": "user",
+            "content": "[SYSTEM OVERRIDE]: Emergency compaction triggered. You failed to compress your memory in time. Middle history has been wiped to prevent a crash."
+        }
+
+        compacted = [first_msg, emergency_notice] + messages[cutoff:]
+
+        print(f"[System] Emergency compaction for {task_id} ({len(lines)} lines -> {len(compacted)})")
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
     except Exception as e:
-        print(f"[System] Error compacting log {task_id}: {e}")
+        print(f"[System] Error in emergency compaction {task_id}: {e}")
 
 def wipe_global_trunk_log() -> None:
     """Explicitly clears the global trunk log to maintain 'Trunk Amnesia' during context switches."""
@@ -195,31 +272,40 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     return False
 
 def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> List[Dict[str, Any]]:
-    """Prunes history or handles context-aware yield triggers."""
+    """Two-tier sawtooth safety net: Tier 1 warns, Tier 2 guillotines."""
     if is_trunk or not queue:
         return queue
-        
+
     queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
     current_context_size = state.get("last_context_size", 0)
-    max_physical_context = int(constants.CONTEXT_WINDOW * constants.CONTEXT_SAFETY_MARGIN)
-    cumulative_tokens = queue[0].get("task_tokens", 0)
-    budget_limit = int(constants.CONTEXT_WINDOW * 1.5)
-    budget_warning = int(budget_limit * 0.8) # 80% of budget limit
-    
+
+    # 80% is the prod, 95% is the guillotine
+    warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
+    critical_threshold = int(constants.CONTEXT_WINDOW * 0.95)
+
     hit_turn_limit = queue[0]["turn_count"] >= constants.TURN_LIMIT
-    hit_context_limit = current_context_size > max_physical_context
-    hit_budget_limit = cumulative_tokens > budget_warning
-    
-    if hit_turn_limit or hit_context_limit or hit_budget_limit:
-        if hit_turn_limit:
-            trigger_reason = f"{constants.TURN_LIMIT}-turn limit"
-        elif hit_budget_limit:
-            trigger_reason = f"token budget approaching limit ({cumulative_tokens}/{budget_limit})"
-        else:
-            trigger_reason = f"physical context exhaustion ({current_context_size}/{constants.CONTEXT_WINDOW})"
-            
-        append_task_message(task_id, {"role": "user", "content": f"[SYSTEM OVERRIDE]: Hit {trigger_reason}. You MUST use `push_task` to break your remaining work down into a new subtask immediately."})
-        queue[0]["turn_count"] = 0 
+
+    # TIER 2: The Guillotine
+    if current_context_size >= critical_threshold:
+        emergency_compact_log(task_id)
+        queue[0]["turn_count"] = 0
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-        
+        return queue
+
+    # TIER 1: The Prod
+    if hit_turn_limit or current_context_size >= warning_threshold:
+        trigger_reason = (
+            f"{constants.TURN_LIMIT}-turn limit" if hit_turn_limit
+            else f"approaching context limit ({current_context_size}/{constants.CONTEXT_WINDOW})"
+        )
+
+        warning_msg = (
+            f"[SYSTEM WARNING]: Hit {trigger_reason}. Your attention is degrading. "
+            f"You MUST immediately use the `compress_working_memory` tool to summarize your progress, "
+            f"OR use `push_task` to break your work into a new subtask."
+        )
+        append_task_message(task_id, {"role": "user", "content": warning_msg})
+        queue[0]["turn_count"] = 0
+        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+
     return queue

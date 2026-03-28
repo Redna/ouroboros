@@ -21,7 +21,7 @@ def test_build_static_system_prompt_trunk(mock_memory):
     with patch("constants.ROOT_DIR", mock_memory):
         (mock_memory / "CONSTITUTION.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
-        (mock_memory / "soul" / "identity.md").write_text("Identity Content")
+        (mock_memory / "identity.md").write_text("Identity Content")
 
         trunk_prompt = build_static_system_prompt(
             is_trunk=True,
@@ -37,7 +37,7 @@ def test_build_static_system_prompt_branch(mock_memory):
     with patch("constants.ROOT_DIR", mock_memory):
         (mock_memory / "CONSTITUTION.md").write_text("Constitution Content")
         (mock_memory / "soul").mkdir(exist_ok=True)
-        (mock_memory / "soul" / "identity.md").write_text("Identity Content")
+        (mock_memory / "identity.md").write_text("Identity Content")
         branch_prompt = build_static_system_prompt(
             is_trunk=False,
             active_tool_specs=[],

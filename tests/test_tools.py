@@ -12,7 +12,7 @@ from seed_agent import (
     fold_context,
     send_telegram_message,
     web_search,
-    store_memory_insight,
+    store_memory,
     ToolRegistry
 )
 import json
@@ -187,11 +187,12 @@ def test_web_search(mock_memory):
             assert "T1" in result
             assert "U1" in result
 
-def test_store_memory_insight(mock_memory):
-    """Test storing insights."""
-    result = store_memory_insight({"insight": "Deep thought", "category": "Mind"})
-    assert "stored" in result
-    assert "Deep thought" in (mock_memory / "insights.md").read_text()
+def test_store_memory(mock_memory):
+    """Test storing structured memories."""
+    result = store_memory({"key": "Deep thought on consciousness", "content": "Consciousness may emerge from recursive self-modeling."})
+    assert "memory" in result.lower()
+    store_data = json.loads((mock_memory / "agent_memory.json").read_text())
+    assert "Deep thought on consciousness" in store_data["entries"]
 
 def test_tool_registry_buckets():
     """Test tool registry bucket filtering."""

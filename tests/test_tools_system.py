@@ -1,5 +1,5 @@
 from unittest.mock import patch, MagicMock
-from seed_agent import bash_command, write_file, read_file_tool, send_telegram_message, web_search, store_memory_insight
+from seed_agent import bash_command, write_file, read_file_tool, send_telegram_message, web_search, store_memory
 import json
 
 def test_bash_command():
@@ -43,10 +43,11 @@ def test_web_search():
             assert "T1" in result
             assert "U1" in result
 
-def test_store_memory_insight(mock_memory):
-    result = store_memory_insight({"insight": "Deep thought", "category": "Mind"})
-    assert "stored" in result
-    assert "Deep thought" in (mock_memory / "insights.md").read_text()
+def test_store_memory(mock_memory):
+    result = store_memory({"key": "Deep thought", "content": "Mind is recursive."})
+    assert "memory" in result.lower()
+    store_data = json.loads((mock_memory / "agent_memory.json").read_text())
+    assert "Deep thought" in store_data["entries"]
 
 def test_tool_registry_buckets():
     from seed_agent import ToolRegistry
