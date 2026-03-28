@@ -684,14 +684,17 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     # 1. Context-Aware HUD & Directives
     if is_trunk:
         global_tokens = state.get("global_tokens_consumed", 0)
-        # Trunk also needs turn-awareness if it's doing work (like reading files)
-        trunk_tokens = state.get("last_context_size", 0)
-        rem_tokens = max(0, token_limit - trunk_tokens)
+        # Cumulative tracking for the active trunk task
+        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
+        rem_tokens = max(0, token_limit - task_tokens)
+        
+        # Turn-specific size
+        turn_tokens = state.get("last_context_size", 0)
         
         hud = (
             f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
-            f"Turn Tokens: {trunk_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
-            f"Global Tokens: {global_tokens:,} | Time: {current_time}"
+            f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
+            f"Turn Tokens: {turn_tokens:,} | Global Tokens: {global_tokens:,} | Time: {current_time}"
         )
         queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         context_header = "GLOBAL TRUNK"

@@ -183,10 +183,12 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     
     save_state(state)
     
-    # Check Task Token Hard Limit
-    if not is_trunk and queue:
+    # Check Task Token Hard Limit (Now applies to Trunk tasks too)
+    if queue:
         queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + t_count
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        
+        # Hard abort threshold (150% of context window)
         if queue[0]["task_tokens"] >= int(constants.CONTEXT_WINDOW * 1.5):
             return True # Signal main loop to abort
             
