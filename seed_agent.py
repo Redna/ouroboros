@@ -676,20 +676,34 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
     current_spend = agent_state.get_current_spend()
-    remaining = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+    remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+    
+    # We use 80% of context window as the soft target for turning/forking
+    token_limit = constants.CONTEXT_WINDOW
     
     # 1. Context-Aware HUD & Directives
     if is_trunk:
         global_tokens = state.get("global_tokens_consumed", 0)
-        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+        # Trunk also needs turn-awareness if it's doing work (like reading files)
+        trunk_tokens = state.get("last_context_size", 0)
+        rem_tokens = max(0, token_limit - trunk_tokens)
+        
+        hud = (
+            f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
+            f"Turn Tokens: {trunk_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
+            f"Global Tokens: {global_tokens:,} | Time: {current_time}"
+        )
         queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         context_header = "GLOBAL TRUNK"
         objective_part = ""
     else:
         task_tokens = queue[0].get("task_tokens", 0) if queue else 0
-        budget_limit = int(constants.CONTEXT_WINDOW * 1.5)
-        rem_tokens = max(0, budget_limit - task_tokens)
-        hud = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Daily Limit Remaining: ${remaining:.4f} | Task Tokens: {task_tokens:,} / {budget_limit:,} (left: {rem_tokens:,}) | Time: {current_time}"
+        rem_tokens = max(0, token_limit - task_tokens)
+        hud = (
+            f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
+            f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
+            f"Time: {current_time}"
+        )
         queue_content = ""
         
         # Branch Awareness
@@ -1057,7 +1071,8 @@ def main() -> None:
         # We use build_dynamic_telemetry_message to get just the physiology line
         current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
         current_spend = agent_state.get_current_spend()
-        physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Time: {current_time}"
+        remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+        physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | Time: {current_time}"
         
         # We manually build a minimalist user prompt for the log
         log_messages = _build_api_messages(
