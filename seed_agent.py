@@ -599,6 +599,54 @@ def merge_and_return(args):
     return f"SYSTEM_SIGNAL_MERGE:{payload}"
 
 
+@registry.tool(
+    description="Resume a previously suspended branch. Use this when the top task in the queue is a suspended branch and you have finished the interrupt that caused the suspension.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "synthesis": {"type": "string", "description": "A summary of the interrupt or context that occurred while the branch was suspended."}
+        },
+        "required": ["task_id"]
+    },
+    bucket="global"
+)
+def resume_branch(args):
+    task_id = args.get("task_id")
+    synthesis = args.get("synthesis", "No synthesis provided.")
+
+    state = agent_state.load_state()
+    suspended = state.get("suspended_branches", [])
+    
+    # Find the target branch in the stack
+    target_idx = -1
+    for i, b in enumerate(suspended):
+        if b.get("task_id") == task_id:
+            target_idx = i
+            break
+            
+    if target_idx == -1:
+        return f"Error: Branch {task_id} not found in suspended stack."
+
+    # Pop the target branch
+    branch_info = suspended.pop(target_idx)
+    
+    # If there was an active branch (shouldn't happen in Trunk, but for safety), stash it
+    if state.get("active_branch"):
+        suspended.append(state["active_branch"])
+        
+    state["active_branch"] = branch_info
+    state["suspended_branches"] = suspended
+    agent_state.save_state(state)
+
+    agent_state.append_task_message(task_id, {
+        "role": "user",
+        "content": f"[SYSTEM RESUME]: Task resumed by Trunk. Synthesis of interrupt: {synthesis}"
+    })
+
+    return f"SYSTEM_SIGNAL_FORK:{task_id}"
+
+
 def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
 
@@ -780,7 +828,37 @@ def _resolve_execution_context(
     queue: List[Dict[str, Any]],
 ) -> Tuple[str, str, List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
-    
+    active_branch = state.get("active_branch")
+    suspended = state.get("suspended_branches", [])
+
+    # Auto-Suspend: Freeze active work if an interrupt arrives.
+    if has_interrupt and active_branch:
+        print(f"[HAL] Suspending task {active_branch.get('task_id')} due to interrupt.")
+        agent_state.append_task_message(active_branch.get("task_id"), {
+            "role": "user",
+            "content": "[SYSTEM]: Priority 999 interrupt detected. This branch is now SUSPENDED and PARKED. You will be thawed once the interrupt is addressed."
+        })
+        suspended.append(active_branch)
+        state["active_branch"] = None
+        state["suspended_branches"] = suspended
+        agent_state.save_state(state)
+        active_branch = None
+
+    # Auto-Thaw: Resume background work if queue allows.
+    if not has_interrupt and not active_branch and suspended:
+        # We only thaw if the top task matches the top of our suspended stack.
+        top_suspended = suspended[-1]
+        if queue and queue[0].get("task_id") == top_suspended.get("task_id"):
+            print(f"[HAL] Thawing task {top_suspended.get('task_id')}.")
+            active_branch = suspended.pop()
+            state["active_branch"] = active_branch
+            state["suspended_branches"] = suspended
+            agent_state.save_state(state)
+            agent_state.append_task_message(active_branch.get("task_id"), {
+                "role": "user",
+                "content": "[SYSTEM]: Interrupt cleared. This branch is now THAWED and ACTIVE. Resume your objective."
+            })
+
     # Auto-Close P999 interrupts if addressed but not cleared.
     if has_interrupt and queue and queue[0].get("priority") == 999:
         top_task = queue[0]
@@ -798,7 +876,7 @@ def _resolve_execution_context(
         branch_info = None
         is_trunk = True
     else:
-        branch_info = state.get("active_branch")
+        branch_info = active_branch
         is_trunk = branch_info is None
 
     if is_trunk:
@@ -821,7 +899,8 @@ def _resolve_execution_context(
                 "You are the global orchestrator. EVALUATE your queue. "
                 "If the top task is communication or administrative, you MUST handle it "
                 "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `mark_task_complete`. "
-                "NEVER leave an interrupt task in the queue once responded to."
+                "NEVER leave an interrupt task in the queue once responded to. "
+                "If the top task is a previously suspended branch, you MUST use `resume_branch` to thaw it. "
                 "If the top task requires deep work (file editing, bash, searching), "
                 "you MUST use `fork_execution` to spawn a BRANCH."
             )
