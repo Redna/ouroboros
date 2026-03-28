@@ -130,7 +130,7 @@ def write_file(args):
             try:
                 _validate_python_syntax(content)
             except SyntaxError as e:
-                return f"Critical Error: Python syntax validation failed. File NOT written. Fix syntax and try again.\nError: {e.msg} at line {e.lineno}"
+                return f"SYSTEM REJECTED: Invalid Python syntax in content.\nError: {e.msg} at line {e.lineno}\nTraceback: {traceback.format_exc()}\nFix syntax and try again."
 
         Path(p.parent).mkdir(parents=True, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
@@ -170,7 +170,7 @@ def patch_file(args):
             try:
                 _validate_python_syntax(new_content)
             except SyntaxError as e:
-                return f"Critical Error: Python syntax validation failed after patching. File NOT modified.\nError: {e.msg} at line {e.lineno}"
+                return f"SYSTEM REJECTED: Patch creates invalid Python syntax.\nError: {e.msg} at line {e.lineno}\nTraceback: {traceback.format_exc()}\nFix your indentation or logic."
 
         file_path.write_text(new_content, encoding="utf-8")
         return f"Success: Surgically patched and validated {file_path.name}."

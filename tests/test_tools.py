@@ -54,6 +54,22 @@ def test_fold_context(mock_memory):
     assert "Successfully calculated X." in final_msgs[-1]["content"]
 
 
+def test_patch_file_syntax_error(mock_memory):
+    """Test that patch_file rejects invalid Python syntax."""
+    p = mock_memory / "broken.py"
+    p.write_text("def hello():\n    pass\n")
+    
+    result = patch_file({
+        "path": str(p),
+        "search_text": "pass",
+        "replace_text": "pass(" # Invalid syntax
+    })
+    
+    assert "Critical Error" in result or "SYSTEM REJECTED" in result
+    assert "syntax" in result.lower()
+    # Ensure file was NOT modified
+    assert p.read_text() == "def hello():\n    pass\n"
+
 def test_generate_repo_map(mock_memory):
     """Test repository mapping with Tree-sitter."""
     # Create a dummy python file in mock_memory
