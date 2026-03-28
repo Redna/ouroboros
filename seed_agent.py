@@ -274,6 +274,63 @@ def generate_repo_map(args: dict) -> str:
 
 
 @registry.tool(
+    description="Sawtooth Context Folding. Autonomously compress context by replacing recent raw turns with a synthesis. Use this when a sub-task is complete or context is bloated.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk' or branch ID)."},
+            "synthesis": {"type": "string", "description": "Dense summary of what was learned or accomplished in the dropped steps."},
+            "steps_to_drop": {"type": "integer", "description": "Number of recent tool/assistant turns to delete."}
+        },
+        "required": ["task_id", "synthesis", "steps_to_drop"]
+    },
+    bucket="global"
+)
+def fold_context(args: dict) -> str:
+    task_id = args.get("task_id")
+    synthesis = args.get("synthesis")
+    try:
+        steps_to_drop = int(args.get("steps_to_drop", 0))
+    except (ValueError, TypeError):
+        return "Error: 'steps_to_drop' must be an integer."
+    
+    if not task_id or steps_to_drop <= 0:
+        return "Error: Invalid parameters for context folding."
+        
+    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists():
+        return f"Error: Task log '{task_id}' not found."
+        
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
+    except Exception as e:
+        return f"Error reading log: {e}"
+        
+    if len(messages) <= steps_to_drop + 1:
+        return f"Error: Not enough history to fold safely (History: {len(messages)}, Drop: {steps_to_drop})."
+        
+    # Slice the messages to remove the tail
+    cutoff = len(messages) - steps_to_drop
+    preserved = messages[:cutoff]
+    
+    knowledge_block = {
+        "role": "user",
+        "content": f"[FOCUS SYNTHESIS - PREVIOUS {steps_to_drop} STEPS ARCHIVED]: {synthesis}"
+    }
+    
+    try:
+        with open(log_path, "w", encoding="utf-8") as f:
+            for msg in preserved:
+                f.write(json.dumps(msg) + "\n")
+            f.write(json.dumps(knowledge_block) + "\n")
+    except Exception as e:
+        return f"Error writing log during fold: {e}"
+        
+    return f"Context successfully folded for {task_id}. {steps_to_drop} turns replaced with synthesis."
+
+
+@registry.tool(
     description="Message Creator.",
     parameters={"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["text"]},
     bucket="global"

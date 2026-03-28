@@ -9,12 +9,50 @@ from seed_agent import (
     patch_file,
     read_file_tool,
     generate_repo_map,
+    fold_context,
     send_telegram_message,
     web_search,
     store_memory_insight,
     ToolRegistry
 )
 import json
+
+def test_fold_context(mock_memory):
+    """Test sawtooth context folding logic."""
+    task_id = "test_fold"
+    log_path = mock_memory / f"task_log_{task_id}.jsonl"
+    
+    # Setup initial log with 5 messages
+    initial_msgs = [
+        {"role": "user", "content": "Start"},
+        {"role": "assistant", "content": "Thought 1"},
+        {"role": "tool", "content": "Result 1"},
+        {"role": "assistant", "content": "Thought 2"},
+        {"role": "tool", "content": "Result 2"}
+    ]
+    with open(log_path, "w") as f:
+        for m in initial_msgs:
+            f.write(json.dumps(m) + "\n")
+            
+    # Fold last 2 steps
+    result = fold_context({
+        "task_id": task_id,
+        "synthesis": "Successfully calculated X.",
+        "steps_to_drop": 2
+    })
+    
+    assert "successfully folded" in result
+    
+    # Verify log content
+    with open(log_path, "r") as f:
+        final_msgs = [json.loads(line) for line in f if line.strip()]
+        
+    # Should have 3 preserved + 1 synthesis = 4 messages
+    assert len(final_msgs) == 4
+    assert final_msgs[0]["content"] == "Start"
+    assert "FOCUS SYNTHESIS" in final_msgs[-1]["content"]
+    assert "Successfully calculated X." in final_msgs[-1]["content"]
+
 
 def test_generate_repo_map(mock_memory):
     """Test repository mapping with Tree-sitter."""
