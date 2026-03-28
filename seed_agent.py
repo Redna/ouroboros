@@ -1035,9 +1035,15 @@ def main() -> None:
             try:
                 constants.CRASH_LOG_PATH.write_text(str(e), encoding="utf-8")
             except Exception: pass
-            if re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
+            
+            # P5: Fail Fast on structural/fatal errors.
+            fatal_types = (AttributeError, ImportError, NameError, SyntaxError, TypeError)
+            if isinstance(e, fatal_types) or re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
+                print(f"\033[91m[FATAL]: {type(e).__name__}: {e}. Exiting for watchdog recovery.\033[0m")
                 sys.exit(1)
-            time.sleep(0.5)
+            
+            print(f"[ERROR]: {e}. Recovering in 2s...")
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
