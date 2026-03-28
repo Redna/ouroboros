@@ -781,7 +781,19 @@ def _resolve_execution_context(
 ) -> Tuple[str, str, List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
     
-    # If there's an interrupt, force Trunk to handle it instantly, parking the active branch natively.
+    # Auto-Close P999 interrupts if addressed but not cleared.
+    if has_interrupt and queue and queue[0].get("priority") == 999:
+        top_task = queue[0]
+        top_task["turn_count"] = top_task.get("turn_count", 0) + 1
+        if top_task["turn_count"] > 3:
+            print(f"[HAL] Auto-closing persistent interrupt {top_task.get('task_id')}.")
+            registry.execute("mark_task_complete", {
+                "task_id": top_task.get("task_id"),
+                "summary": "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work."
+            })
+            queue = agent_state.load_task_queue()
+            has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
+
     if has_interrupt:
         branch_info = None
         is_trunk = True
@@ -804,10 +816,12 @@ def _resolve_execution_context(
                 top_task["read_receipt_sent"] = True
                 top_task["read_receipt_time"] = time.time()
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+            
             task_desc = (
                 "You are the global orchestrator. EVALUATE your queue. "
-                "If the top task is communication or administrative, "
-                "handle it DIRECTLY here using `send_telegram_message` and `mark_task_complete`. "
+                "If the top task is communication or administrative, you MUST handle it "
+                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `mark_task_complete`. "
+                "NEVER leave an interrupt task in the queue once responded to."
                 "If the top task requires deep work (file editing, bash, searching), "
                 "you MUST use `fork_execution` to spawn a BRANCH."
             )
