@@ -8,12 +8,37 @@ from seed_agent import (
     write_file,
     patch_file,
     read_file_tool,
+    generate_repo_map,
     send_telegram_message,
     web_search,
     store_memory_insight,
     ToolRegistry
 )
 import json
+
+def test_generate_repo_map(mock_memory):
+    """Test repository mapping with Tree-sitter."""
+    # Create a dummy python file in mock_memory
+    test_dir = mock_memory / "test_app"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    py_file = test_dir / "dummy.py"
+    py_file.write_text("""
+class MyClass:
+    def my_method(self):
+        pass
+
+def global_function():
+    pass
+""")
+    
+    with patch("constants.ROOT_DIR", mock_memory):
+        result = generate_repo_map({"path": str(test_dir)})
+        
+        assert "dummy.py" in result
+        assert "class MyClass:" in result
+        assert "def my_method(...):" in result
+        assert "def global_function(...):" in result
+
 
 def test_bash_command_success():
     """Test successful bash command execution."""

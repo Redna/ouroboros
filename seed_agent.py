@@ -11,12 +11,23 @@ import shutil
 import traceback
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import tree_sitter_python as tspython
+from tree_sitter import Language, Parser, Query, QueryCursor
 from openai import OpenAI
 
 import constants
 import agent_state
 import llm_interface
 import comms
+
+# Initialize Tree-sitter parser and query for repository mapping
+PY_LANGUAGE = Language(tspython.language())
+parser = Parser(PY_LANGUAGE)
+
+MAP_QUERY = Query(PY_LANGUAGE, """
+    (class_definition name: (identifier) @class.name)
+    (function_definition name: (identifier) @function.name)
+""")
 
 
 def read_file(path: Path) -> str:
@@ -196,6 +207,70 @@ def read_file_tool(args):
         return prefix + content
     except PermissionError as e: return f"Error: {e}"
     except Exception as e: return f"Error reading file: {e}"
+
+
+@registry.tool(
+    description="Generate a high-signal structural map of the Python codebase using Tree-sitter AST parsing.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory path to map (e.g., '.'). Defaults to project root."}
+        }
+    },
+    bucket="filesystem"
+)
+def generate_repo_map(args: dict) -> str:
+    target_path = args.get("path", ".")
+    try:
+        root = _resolve_safe_path(target_path)
+    except Exception as e:
+        return f"Error: {e}"
+
+    if not root.is_dir():
+        return f"Error: '{target_path}' is not a directory."
+
+    skeleton = []
+    
+    for current_root, dirs, files in os.walk(root):
+        # Skip hidden directories and virtual environments
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("venv", "node_modules", "__pycache__", ".venv")]
+        
+        for file in files:
+            if file.endswith(".py"):
+                file_path = Path(current_root) / file
+                try:
+                    rel_path = file_path.relative_to(constants.ROOT_DIR)
+                except ValueError:
+                    rel_path = file_path # Fallback if not relative to root
+                
+                try:
+                    source_code = file_path.read_bytes()
+                    tree = parser.parse(source_code)
+                    
+                    cursor = QueryCursor(MAP_QUERY)
+                    captures_dict = cursor.captures(tree.root_node)
+                    
+                    if captures_dict:
+                        # Extract all captures and sort them by start byte to maintain order
+                        captures = []
+                        for capture_name, nodes in captures_dict.items():
+                            for node in nodes:
+                                captures.append((node, capture_name))
+                        captures.sort(key=lambda x: x[0].start_byte)
+                        
+                        skeleton.append(f"File: {rel_path}")
+                        for node, capture_name in captures:
+                            if node.text is None:
+                                continue
+                            text = node.text.decode('utf8')
+                            if capture_name == "class.name":
+                                skeleton.append(f"  class {text}:")
+                            elif capture_name == "function.name":
+                                skeleton.append(f"    def {text}(...):")
+                except Exception as e:
+                    skeleton.append(f"File: {rel_path}\n  [Parse Error: {e}]")
+                    
+    return "\n".join(skeleton) or "No Python files found or mapped."
 
 
 @registry.tool(
