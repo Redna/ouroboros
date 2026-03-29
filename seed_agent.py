@@ -391,23 +391,47 @@ def _release_queue_lock(fd: int) -> None:
 
 
 def _is_semantic_duplicate(new_desc: str, existing_queue: List[Dict]) -> bool:
-    """Detect semantic duplicates to prevent cognitive loops."""
-    keywords = set(new_desc.lower().split())
-    action_words = {'fix', 'update', 'modify', 'change', 'refactor', 'improve', 'optimize'}
+    """Detect semantic duplicates to prevent cognitive loops.
+    
+    Uses multi-tier detection:
+    1. Exact match (normalized)
+    2. High keyword overlap (>50% of significant words)
+    3. Same action + same target pattern
+    """
+    stop_words = {'the', 'a', 'an', 'to', 'for', 'in', 'on', 'at', 'by', 'with', 'and', 'or'}
+    action_words = {'fix', 'update', 'modify', 'change', 'refactor', 'improve', 'optimize', 'implement', 'add', 'remove'}
+    
+    def extract_significant_words(text: str) -> set:
+        words = set(text.lower().split())
+        return words - stop_words
+    
+    new_keywords = extract_significant_words(new_desc)
+    if len(new_keywords) < 3:  # Too short to be meaningful
+        return False
     
     for task in existing_queue:
-        existing_keywords = set(task.get("description", "").lower().split())
-        if len(keywords) > 5:
-            overlap = len(keywords & existing_keywords)
-            if overlap / len(keywords) > 0.6 and overlap > 3:
-                return True
-        new_actions = keywords & action_words
+        existing_desc = task.get("description", "")
+        existing_keywords = extract_significant_words(existing_desc)
+        
+        if len(existing_keywords) < 3:
+            continue
+        
+        # Tier 1: High overlap ratio (>50% of smaller set matches)
+        overlap = new_keywords & existing_keywords
+        min_len = min(len(new_keywords), len(existing_keywords))
+        if len(overlap) >= 3 and len(overlap) / min_len > 0.5:
+            return True
+        
+        # Tier 2: Same action words + same target words
+        new_actions = new_keywords & action_words
         existing_actions = existing_keywords & action_words
-        if new_actions and existing_actions and (new_actions == existing_actions):
-            new_target = keywords - action_words - {'the', 'a', 'an', 'to', 'for'}
-            existing_target = existing_keywords - action_words - {'the', 'a', 'an', 'to', 'for'}
-            if len(new_target & existing_target) > 2:
+        if new_actions and existing_actions and (new_actions & existing_actions):
+            new_target = new_keywords - action_words
+            existing_target = existing_keywords - action_words
+            target_overlap = new_target & existing_target
+            if len(target_overlap) >= 2:
                 return True
+    
     return False
 
 
@@ -442,17 +466,17 @@ def git_commit(args):
     message = args.get("message", "").strip()
     if not message:
         return "Error: Commit message is required."
-    
+
     # Check if there are staged changes
     rc, stdout, stderr = _run_git_command(["diff", "--staged", "--quiet"])
     if rc == 0:
         return "No staged changes to commit."
-    
+
     # Run commit (pre-commit hooks run automatically)
     rc, stdout, stderr = _run_git_command(["commit", "-m", message])
     if rc != 0:
         return f"Commit failed: {stderr.strip()}"
-    
+
     # Get commit hash
     _, short_hash, _ = _run_git_command(["rev-parse", "--short", "HEAD"])
     return f"Committed changes: {short_hash.strip()}\n{message}"
@@ -472,15 +496,15 @@ def git_commit(args):
 def git_push(args):
     remote = args.get("remote", "origin")
     branch = args.get("branch")
-    
+
     cmd = ["push", remote]
     if branch:
         cmd.append(branch)
-    
+
     rc, stdout, stderr = _run_git_command(cmd)
     if rc != 0:
         return f"Push failed: {stderr.strip()}"
-    
+
     return f"Successfully pushed to {remote}{f'/{branch}' if branch else ''}."
 
 
