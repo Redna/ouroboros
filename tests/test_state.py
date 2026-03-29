@@ -19,8 +19,8 @@ def test_enforce_context_limits_branch_exhaustion(mock_memory):
     queue = [{"task_id": "b1", "priority": 1, "turn_count": 5}]
     
     with patch("agent_state.append_task_message"):
-        new_q, breach = enforce_context_limits(state, queue, "b1", is_trunk=False)
-        assert breach is True
+        new_q, status = enforce_context_limits(state, queue, "b1", is_trunk=False)
+        assert status == "LAST_GASP"
 
 def test_enforce_context_limits_trunk_amnesia(mock_memory):
     """Test that Trunk hitting limits signals amnesia."""
@@ -28,5 +28,5 @@ def test_enforce_context_limits_trunk_amnesia(mock_memory):
     state = {"last_context_size": 1000}
     queue = [{"task_id": "global_trunk", "priority": 1, "turn_count": 51}]
     
-    new_q, breach = enforce_context_limits(state, queue, "global_trunk", is_trunk=True)
-    assert breach is True
+    new_q, status = enforce_context_limits(state, queue, "global_trunk", is_trunk=True)
+    assert status == "BREACH"

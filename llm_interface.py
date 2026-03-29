@@ -105,4 +105,19 @@ def _normalize_message_history(messages: List[Dict[str, Any]], task_id: str) -> 
     # Note: Dangling state healing (append_task_message) is tricky here 
     # as it might cause circular imports if agent_state.py is involved.
     # We will assume seed_agent handles the appending for now.
-    return normalized
+    
+    # Add Turn Indexing [TURN X] for spatial awareness (Volatile only)
+    indexed: List[Dict[str, Any]] = []
+    turn_idx = 1
+    for msg in normalized:
+        role = msg.get("role")
+        if role in ["user", "assistant"]:
+            new_msg = msg.copy()
+            content = new_msg.get("content", "")
+            new_msg["content"] = f"[TURN {turn_idx}] {content}"
+            indexed.append(new_msg)
+            turn_idx += 1
+        else:
+            indexed.append(msg)
+            
+    return indexed

@@ -279,7 +279,7 @@ def generate_repo_map(args: dict) -> str:
         "type": "object",
         "properties": {
             "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk' or branch ID)."},
-            "synthesis": {"type": "string", "description": "Dense summary of what was learned or accomplished in the dropped steps."},
+            "synthesis": {"type": "string", "description": "Dense summary following the DELTA PATTERN: 1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."},
             "steps_to_drop": {"type": "integer", "description": "Number of recent tool/assistant turns to delete."}
         },
         "required": ["task_id", "synthesis", "steps_to_drop"]
@@ -743,7 +743,15 @@ def fork_execution(args):
 
 @registry.tool(
     description="Yield control back to the global context.",
-    parameters={"type": "object", "properties": {"status": {"type": "string", "enum": ["COMPLETED", "SUSPENDED", "BLOCKED"]}, "synthesis_summary": {"type": "string"}, "partial_state": {"type": "string"}}, "required": ["status"]},
+    parameters={
+        "type": "object", 
+        "properties": {
+            "status": {"type": "string", "enum": ["COMPLETED", "SUSPENDED", "BLOCKED"]}, 
+            "synthesis_summary": {"type": "string", "description": "High-level overview following the DELTA PATTERN: 1. State Delta, 2. Negative Knowledge, 3. Handoff."}, 
+            "partial_state": {"type": "string"}
+        }, 
+        "required": ["status"]
+    },
     bucket="execution_control"
 )
 def merge_and_return(args):
@@ -1301,31 +1309,31 @@ def main() -> None:
             response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
 
-            queue, breach_detected = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
+            queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
 
-            # HANDLE PHYSICAL BREACH (Tier 2 safety)
-            if breach_detected or limit_exceeded:
+            # HANDLE PHYSICAL BREACH (Tier 3 safety)
+            if limit_status == "BREACH" or limit_exceeded:
                 summary = "FAILED: Physical context or turn limit exceeded. Task forcibly closed to prevent cognitive collapse."
                 if not is_trunk:
                     print(f"\033[91m[System] Branch {active_task_id} breached limits. Triggering Exhaustion Merge.\033[0m")
-                    # Perform an automatic merge_and_return with EXHAUSTED status
-                    registry.execute("merge_and_return", {
-                        "status": "EXHAUSTED",
-                        "task_id": active_task_id,
-                        "synthesis_summary": summary
-                    })
+                    registry.execute("merge_and_return", {"status": "EXHAUSTED", "task_id": active_task_id, "synthesis_summary": summary})
                 else:
                     print(f"\033[91m[System] Trunk breached limits. Triggering Trunk Amnesia.\033[0m")
-                    # Break work into a new task and wipe log
-                    registry.execute("push_task", {
-                        "description": f"RESUME TRUNK WORK: {task_desc}",
-                        "priority": 1
-                    })
+                    registry.execute("push_task", {"description": f"RESUME TRUNK WORK: {task_desc}", "priority": 1})
                     agent_state.wipe_global_trunk_log()
                 
                 agent_state.save_state(state)
                 continue
+
+            # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)
+            if limit_status == "LAST_GASP":
+                gasp_msg = (
+                    "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
+                    "You MUST use the DELTA PATTERN to synthesize your progress and merge/fold now: "
+                    "1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."
+                )
+                agent_state.append_task_message(active_task_id, {"role": "user", "content": gasp_msg})
 
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:

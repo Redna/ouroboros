@@ -271,36 +271,42 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
             
     return False
 
-def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], bool]:
-    """Two-tier sawtooth safety net: Tier 1 warns, Tier 2 signals breach."""
+def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], str]:
+    """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
     if not queue:
-        return queue, False
+        return queue, "NORMAL"
 
     queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
     current_context_size = state.get("last_context_size", 0)
     turn_count = queue[0]["turn_count"]
 
-    # 80% is the prod, 95% is the guillotine
+    # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
-    critical_threshold = int(constants.CONTEXT_WINDOW * 0.95)
+    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.95)
+    breach_threshold = int(constants.CONTEXT_WINDOW * 0.98)
 
-    # TRUNK SAFETY: If Trunk is stuck in a loop or too long, force amnesia.
+    # TRUNK SAFETY
     if is_trunk:
-        if turn_count > 50 or current_context_size >= critical_threshold:
-            print(f"[System] Trunk limit hit (Turns: {turn_count}, Tokens: {current_context_size}). Triggering reset.")
-            return queue, True # Signal for reset
-        return queue, False
+        if turn_count > 50 or current_context_size >= breach_threshold:
+            return queue, "BREACH"
+        if turn_count > 45 or current_context_size >= last_gasp_threshold:
+            return queue, "LAST_GASP"
+        return queue, "NORMAL"
 
     # BRANCH SAFETY
-    hit_turn_limit = turn_count >= constants.TURN_LIMIT
-    hit_critical_tokens = current_context_size >= critical_threshold
+    hit_turn_breach = turn_count > constants.TURN_LIMIT
+    hit_turn_gasp = turn_count >= constants.TURN_LIMIT
+    
+    hit_token_breach = current_context_size >= breach_threshold
+    hit_token_gasp = current_context_size >= last_gasp_threshold
 
-    # TIER 2: The Guillotine (Physical Breach)
-    if hit_critical_tokens or hit_turn_limit:
-        print(f"[System] Branch {task_id} physical limit hit. Signaling exhaustion merge.")
-        return queue, True
+    if hit_token_breach or hit_turn_breach:
+        return queue, "BREACH"
+    
+    if hit_token_gasp or hit_turn_gasp:
+        return queue, "LAST_GASP"
 
-    # TIER 1: The Prod (Heuristic Warning)
+    # TIER 1: The Prod (Heuristic Warning in logs)
     if turn_count >= (constants.TURN_LIMIT - 5) or current_context_size >= warning_threshold:
         trigger_reason = (
             f"turn limit ({turn_count}/{constants.TURN_LIMIT})" if turn_count >= (constants.TURN_LIMIT - 5)
@@ -315,4 +321,4 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
         append_task_message(task_id, {"role": "user", "content": warning_msg})
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
 
-    return queue, False
+    return queue, "NORMAL"
