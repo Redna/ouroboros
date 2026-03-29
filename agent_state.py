@@ -65,11 +65,16 @@ def load_task_queue() -> List[Dict[str, Any]]:
         return []
 
 def load_task_messages(task_id: str, description: str, preprocess_fn=None) -> List[Dict[str, Any]]:
-    """Loads and normalizes message history for a task."""
+    """Loads and normalizes message history for a task. Includes OOM protection."""
     if not task_id: return []
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    raw_messages = []
+    
+    # OOM Protection: If log is > 50MB, force emergency compaction before loading
+    if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
+        print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Compacting...")
+        emergency_compact_log(task_id)
 
+    raw_messages = []
     if log_path.exists():
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -82,14 +87,17 @@ def load_task_messages(task_id: str, description: str, preprocess_fn=None) -> Li
         append_task_message(task_id, msg)
         return [msg]
     
-    # We'll pass the normalization logic back to seed_agent or llm.py if it's too complex.
-    # Currently, seed_agent.py has _normalize_message_history. 
-    # Let's keep state.py focussed on the CRUD of logs.
     return raw_messages
 
 def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
     if not task_id: return
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    
+    # Safety: Refuse to append if file is already dangerously large
+    if log_path.exists() and log_path.stat().st_size > 100 * 1024 * 1024:
+        print(f"[System] ERROR: Refusing to append to {task_id}. File size exceeds 100MB limit.")
+        return
+
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_dict) + "\n")
 

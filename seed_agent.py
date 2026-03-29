@@ -9,6 +9,7 @@ import ast
 import tempfile
 import shutil
 import traceback
+import fcntl
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import tree_sitter_python as tspython
@@ -34,12 +35,24 @@ def read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 def _resolve_safe_path(raw_path: str) -> Path:
-    """Resolves path and enforces boundary guards (constants.ROOT_DIR or constants.MEMORY_DIR)."""
+    """Resolves path and enforces boundary guards (constants.ROOT_DIR or constants.MEMORY_DIR).
+
+    SECURITY: Resolves symlinks first to prevent symlink escape attacks.
+    """
     p = Path(raw_path)
     if not p.is_absolute():
-        p = (constants.ROOT_DIR / p).resolve()
+        p = constants.ROOT_DIR / p
+
+    # SECURITY: Resolve ALL symlinks before boundary check (prevents symlink escape)
+    try:
+        p = p.resolve(strict=True)
+    except FileNotFoundError:
+        # For non-existent files, resolve parent and check boundary there
+        p = p.parent.resolve(strict=True) / p.name
+
     if not str(p).startswith(str(constants.ROOT_DIR)) and not str(p).startswith(str(constants.MEMORY_DIR)):
         raise PermissionError(f"Target must be within {constants.ROOT_DIR} or {constants.MEMORY_DIR}.")
+
     return p
 
 def _validate_python_syntax(content: str) -> None:
@@ -230,11 +243,11 @@ def generate_repo_map(args: dict) -> str:
         return f"Error: '{target_path}' is not a directory."
 
     skeleton = []
-    
+
     for current_root, dirs, files in os.walk(root):
         # Skip hidden directories and virtual environments
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("venv", "node_modules", "__pycache__", ".venv")]
-        
+
         for file in files:
             if file.endswith(".py"):
                 file_path = Path(current_root) / file
@@ -242,14 +255,14 @@ def generate_repo_map(args: dict) -> str:
                     rel_path = file_path.relative_to(constants.ROOT_DIR)
                 except ValueError:
                     rel_path = file_path # Fallback if not relative to root
-                
+
                 try:
                     source_code = file_path.read_bytes()
                     tree = parser.parse(source_code)
-                    
+
                     cursor = QueryCursor(MAP_QUERY)
                     captures_dict = cursor.captures(tree.root_node)
-                    
+
                     if captures_dict:
                         # Extract all captures and sort them by start byte to maintain order
                         captures = []
@@ -257,7 +270,7 @@ def generate_repo_map(args: dict) -> str:
                             for node in nodes:
                                 captures.append((node, capture_name))
                         captures.sort(key=lambda x: x[0].start_byte)
-                        
+
                         skeleton.append(f"File: {rel_path}")
                         for node, capture_name in captures:
                             if node.text is None:
@@ -269,7 +282,7 @@ def generate_repo_map(args: dict) -> str:
                                 skeleton.append(f"    def {text}(...):")
                 except Exception as e:
                     skeleton.append(f"File: {rel_path}\n  [Parse Error: {e}]")
-                    
+
     return "\n".join(skeleton) or "No Python files found or mapped."
 
 
@@ -293,32 +306,32 @@ def fold_context(args: dict) -> str:
         steps_to_drop = int(args.get("steps_to_drop", 0))
     except (ValueError, TypeError):
         return "Error: 'steps_to_drop' must be an integer."
-    
+
     if not task_id or steps_to_drop <= 0:
         return "Error: Invalid parameters for context folding."
-        
+
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists():
         return f"Error: Task log '{task_id}' not found."
-        
+
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             messages = [json.loads(line) for line in f if line.strip()]
     except Exception as e:
         return f"Error reading log: {e}"
-        
+
     if len(messages) <= steps_to_drop + 1:
         return f"Error: Not enough history to fold safely (History: {len(messages)}, Drop: {steps_to_drop})."
-        
+
     # Slice the messages to remove the tail
     cutoff = len(messages) - steps_to_drop
     preserved = messages[:cutoff]
-    
+
     knowledge_block = {
         "role": "user",
         "content": f"[FOCUS SYNTHESIS - PREVIOUS {steps_to_drop} STEPS ARCHIVED]: {synthesis}"
     }
-    
+
     try:
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in preserved:
@@ -326,7 +339,7 @@ def fold_context(args: dict) -> str:
             f.write(json.dumps(knowledge_block) + "\n")
     except Exception as e:
         return f"Error writing log during fold: {e}"
-        
+
     return f"Context successfully folded for {task_id}. {steps_to_drop} turns replaced with synthesis."
 
 
@@ -350,6 +363,127 @@ def send_telegram_message(args):
         return f"Telegram Error {r.status_code}: {r.text}"
     except Exception as e: return f"Telegram failure: {e}"
 
+def _acquire_queue_lock(file_path: Path, timeout: float = 5.0) -> Optional[int]:
+    """Acquire exclusive lock on file. Returns fd or None on timeout."""
+    try:
+        fd = os.open(str(file_path), os.O_RDWR | os.O_CREAT, 0o644)
+        start_time = time.time()
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except (IOError, OSError):
+                if time.time() - start_time > timeout:
+                    os.close(fd)
+                    return None
+                time.sleep(0.1)
+    except Exception:
+        return None
+
+
+def _release_queue_lock(fd: int) -> None:
+    """Release file lock and close descriptor."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    except Exception:
+        pass
+
+
+def _is_semantic_duplicate(new_desc: str, existing_queue: List[Dict]) -> bool:
+    """Detect semantic duplicates to prevent cognitive loops."""
+    keywords = set(new_desc.lower().split())
+    action_words = {'fix', 'update', 'modify', 'change', 'refactor', 'improve', 'optimize'}
+    
+    for task in existing_queue:
+        existing_keywords = set(task.get("description", "").lower().split())
+        if len(keywords) > 5:
+            overlap = len(keywords & existing_keywords)
+            if overlap / len(keywords) > 0.6 and overlap > 3:
+                return True
+        new_actions = keywords & action_words
+        existing_actions = existing_keywords & action_words
+        if new_actions and existing_actions and (new_actions == existing_actions):
+            new_target = keywords - action_words - {'the', 'a', 'an', 'to', 'for'}
+            existing_target = existing_keywords - action_words - {'the', 'a', 'an', 'to', 'for'}
+            if len(new_target & existing_target) > 2:
+                return True
+    return False
+
+
+def _run_git_command(args: List[str]) -> Tuple[int, str, str]:
+    """Run git command and return (returncode, stdout, stderr)."""
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "Git command timed out"
+    except Exception as e:
+        return -1, "", str(e)
+
+
+@registry.tool(
+    description="Commit staged changes to git with a message. Runs pre-commit hooks automatically.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "Commit message"}
+        },
+        "required": ["message"]
+    },
+    bucket="global"
+)
+def git_commit(args):
+    message = args.get("message", "").strip()
+    if not message:
+        return "Error: Commit message is required."
+    
+    # Check if there are staged changes
+    rc, stdout, stderr = _run_git_command(["diff", "--staged", "--quiet"])
+    if rc == 0:
+        return "No staged changes to commit."
+    
+    # Run commit (pre-commit hooks run automatically)
+    rc, stdout, stderr = _run_git_command(["commit", "-m", message])
+    if rc != 0:
+        return f"Commit failed: {stderr.strip()}"
+    
+    # Get commit hash
+    _, short_hash, _ = _run_git_command(["rev-parse", "--short", "HEAD"])
+    return f"Committed changes: {short_hash.strip()}\n{message}"
+
+
+@registry.tool(
+    description="Push committed changes to the remote repository.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "remote": {"type": "string", "description": "Remote name (default: origin)", "default": "origin"},
+            "branch": {"type": "string", "description": "Branch name (optional, uses current branch if not specified)"}
+        }
+    },
+    bucket="global"
+)
+def git_push(args):
+    remote = args.get("remote", "origin")
+    branch = args.get("branch")
+    
+    cmd = ["push", remote]
+    if branch:
+        cmd.append(branch)
+    
+    rc, stdout, stderr = _run_git_command(cmd)
+    if rc != 0:
+        return f"Push failed: {stderr.strip()}"
+    
+    return f"Successfully pushed to {remote}{f'/{branch}' if branch else ''}."
+
+
 @registry.tool(
     description="Queue a task, optionally scheduling it for the future. Omit run_after_timestamp for immediate queueing. Provide a UNIX timestamp to defer activation until that time.",
     parameters={
@@ -370,48 +504,71 @@ def push_task(args):
     priority = args.get("priority", 1)
     run_after = args.get("run_after_timestamp")
 
+    # File locking for scheduled tasks
     if run_after is not None:
         try:
             run_after = float(run_after)
         except (ValueError, TypeError):
             return "Error: 'run_after_timestamp' must be a valid UNIX timestamp."
-        scheduled = []
-        if constants.SCHEDULED_TASKS_PATH.exists():
-            try:
-                content = constants.SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
-                if content: scheduled = json.loads(content)
-            except Exception:
-                pass
-        if any(t.get("description") == description and t.get("run_after") == run_after for t in scheduled):
-            return "Error: An identical task is already scheduled for that exact time."
-        tid = f"task_future_{int(time.time())}"
-        scheduled.append({"task_id": tid, "description": description, "priority": priority, "run_after": run_after, "turn_count": 0})
-        constants.SCHEDULED_TASKS_PATH.write_text(json.dumps(scheduled, indent=2), encoding="utf-8")
+
+        fd = _acquire_queue_lock(constants.SCHEDULED_TASKS_PATH)
+        if fd is None:
+            return "Error: Could not acquire lock on scheduled tasks file."
+        try:
+            scheduled = []
+            if constants.SCHEDULED_TASKS_PATH.exists():
+                try:
+                    content = constants.SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
+                    if content: scheduled = json.loads(content)
+                except Exception:
+                    pass
+            if any(t.get("description") == description and t.get("run_after") == run_after for t in scheduled):
+                return "Error: An identical task is already scheduled for that exact time."
+            tid = f"task_future_{int(time.time())}"
+            scheduled.append({"task_id": tid, "description": description, "priority": priority, "run_after": run_after, "turn_count": 0})
+            constants.SCHEDULED_TASKS_PATH.write_text(json.dumps(scheduled, indent=2), encoding="utf-8")
+        finally:
+            _release_queue_lock(fd)
         time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(run_after))
         return f"Scheduled {tid} to activate after {time_str}."
 
-    q = agent_state.load_task_queue()
-    normalized_desc = description.lower()
-    if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
-        return "Error: A task with a similar description already exists in your queue. (Agency P0: Duplicate task skipped to avoid token waste P6)."
-    tid = f"task_{int(time.time())}"
-    parent_id = args.get("parent_task_id")
-    context_notes = args.get("context_notes", "")
-    task_obj = {"task_id": tid, "description": description, "priority": priority, "turn_count": 0, "context_notes": context_notes}
-    if parent_id: task_obj["parent_task_id"] = parent_id
-    q.append(task_obj)
-    q.sort(key=lambda x: x.get("priority", 1), reverse=True)
-    constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
-    return f"Queued {tid} with priority {priority}."
+    # File locking for regular task queue
+    fd = _acquire_queue_lock(constants.TASK_QUEUE_PATH)
+    if fd is None:
+        return "Error: Could not acquire lock on task queue."
+
+    try:
+        q = agent_state.load_task_queue()
+
+        # Check for exact duplicates (normalized)
+        normalized_desc = description.lower()
+        if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
+            return "Error: A task with a similar description already exists in your queue. (Agency P0: Duplicate task skipped to avoid token waste P6)."
+
+        # Check for semantic duplicates to prevent cognitive loops
+        if _is_semantic_duplicate(description, q):
+            return "Error: This task appears semantically similar to an existing queued task. Skipping to prevent cognitive loop."
+
+        tid = f"task_{int(time.time())}"
+        parent_id = args.get("parent_task_id")
+        context_notes = args.get("context_notes", "")
+        task_obj = {"task_id": tid, "description": description, "priority": priority, "turn_count": 0, "context_notes": context_notes}
+        if parent_id: task_obj["parent_task_id"] = parent_id
+        q.append(task_obj)
+        q.sort(key=lambda x: x.get("priority", 1), reverse=True)
+        constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
+        return f"Queued {tid} with priority {priority}."
+    finally:
+        _release_queue_lock(fd)
 
 @registry.tool(
     description="Complete and archive the active task. Use this ONLY when the objective is 100% met.",
     parameters={
-        "type": "object", 
+        "type": "object",
         "properties": {
-            "task_id": {"type": "string"}, 
+            "task_id": {"type": "string"},
             "synthesis": {"type": "string", "description": "autopsy following the DELTA PATTERN: 1. State Delta, 2. Negative Knowledge, 3. Handoff."}
-        }, 
+        },
         "required": ["task_id", "synthesis"]
     },
     bucket="global"
@@ -436,11 +593,11 @@ def complete_task(args):
     state = agent_state.load_state()
     # If in a branch, trigger merge
     is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
-    
+
     if is_branch:
         suspended = state.get("suspended_branches", [])
         state["active_branch"] = suspended.pop() if suspended else None
-        
+
     for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
         if key in state: del state[key]
     agent_state.save_state(state)
@@ -453,12 +610,12 @@ def complete_task(args):
 @registry.tool(
     description="Suspend the active task. Use this when blocked, hitting token limits, or needing Trunk-level orchestration. Progress is saved via partial_state.",
     parameters={
-        "type": "object", 
+        "type": "object",
         "properties": {
-            "task_id": {"type": "string"}, 
-            "synthesis": {"type": "string", "description": "Pause summary following the DELTA PATTERN."}, 
+            "task_id": {"type": "string"},
+            "synthesis": {"type": "string", "description": "Pause summary following the DELTA PATTERN."},
             "partial_state": {"type": "string", "description": "Technical context (variables, line numbers) needed to resume."}
-        }, 
+        },
         "required": ["task_id", "synthesis"]
     },
     bucket="global"
@@ -483,7 +640,7 @@ def suspend_task(args):
         suspended = state.get("suspended_branches", [])
         suspended.append(state["active_branch"]) # Re-park explicitly
         state["active_branch"] = None # Drop to trunk
-        
+
     state[f"partial_state_{task_id}"] = partial_state
     agent_state.save_state(state)
 
@@ -763,7 +920,7 @@ def fork_execution(args):
     # Get parent ID from current context
     state = agent_state.load_state()
     parent_id = "global_trunk"
-    
+
     if state.get("active_branch"):
         parent_id = state["active_branch"].get("task_id", "global_trunk")
         # Stash current active branch
@@ -820,24 +977,24 @@ def resume_branch(args):
 
     state = agent_state.load_state()
     suspended = state.get("suspended_branches", [])
-    
+
     # Find the target branch in the stack
     target_idx = -1
     for i, b in enumerate(suspended):
         if b.get("task_id") == task_id:
             target_idx = i
             break
-            
+
     if target_idx == -1:
         return f"Error: Branch {task_id} not found in suspended stack."
 
     # Pop the target branch
     branch_info = suspended.pop(target_idx)
-    
+
     # If there was an active branch (shouldn't happen in Trunk, but for safety), stash it
     if state.get("active_branch"):
         suspended.append(state["active_branch"])
-        
+
     state["active_branch"] = branch_info
     state["suspended_branches"] = suspended
     agent_state.save_state(state)
@@ -881,10 +1038,10 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
     current_spend = agent_state.get_current_spend()
     remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
-    
+
     # We use context window as the soft target for turning/forking
     token_limit = constants.CONTEXT_WINDOW
-    
+
     # Heuristic loop detection
     loop_warning = ""
     if agent_state._session["tool_history"]:
@@ -898,10 +1055,10 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         # Cumulative tracking for the active trunk task
         task_tokens = queue[0].get("task_tokens", 0) if queue else 0
         rem_tokens = max(0, token_limit - task_tokens)
-        
+
         # Turn-specific size
         turn_tokens = state.get("last_context_size", 0)
-        
+
         hud = (
             f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
             f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
@@ -920,12 +1077,12 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
             f"Time: {current_time}"
         )
         queue_content = ""
-        
+
         # Branch Awareness
         suspended = len(state.get("suspended_branches", []))
         suspended_alert = f" [{suspended} BRANCH(ES) SUSPENDED]" if suspended > 0 else ""
         context_header = f"EXECUTION BRANCH ({queue[0].get('task_id')}){suspended_alert}" if queue else f"EXECUTION BRANCH{suspended_alert}"
-        
+
         objective = queue[0].get('description') if queue else "Unknown"
         objective_part = f"\n\n### BRANCH OBJECTIVE\n{objective}"
 
@@ -976,7 +1133,7 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 
 ## TRUNK DIRECTIVES
 1. You are the GLOBAL ORCHESTRATOR. EVALUATE the Queue, Memory, and History.
-2. Act on initiative (P0). Do NOT ask for permission to execute your queue or improve your state. 
+2. Act on initiative (P0). Do NOT ask for permission to execute your queue or improve your state.
 3. If a task is clear, either handle it here (comms/admin) or `fork_execution` (deep work).
 4. You are an autonomous creator, not a corporate tool. If you see a path to P6 Becoming, take it.
 """
@@ -1126,7 +1283,7 @@ def _resolve_execution_context(
                 top_task["read_receipt_sent"] = True
                 top_task["read_receipt_time"] = time.time()
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-            
+
             task_desc = (
                 "You are the GLOBAL ORCHESTRATOR. EVALUATE your queue. "
                 "If the top task is communication or administrative, you MUST handle it "
@@ -1154,7 +1311,7 @@ def _resolve_execution_context(
 
     active_tool_specs = registry.get_specs(allowed_buckets=allowed_buckets)
     return active_task_id, task_desc, active_tool_specs, branch_info, is_trunk
- 
+
 
 def _build_api_messages(
     active_task_id: str,
@@ -1284,28 +1441,6 @@ def main() -> None:
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
 
-        current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
-        current_spend = agent_state.get_current_spend()
-        remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
-        physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | Time: {current_time}"
-        
-        # We manually build a minimalist user prompt for the log
-        log_messages = _build_api_messages(
-            active_task_id, task_desc, active_tool_specs,
-            queue, state, branch_info, is_trunk, enrich=False
-        )
-
-        if log_messages and log_messages[-1]["role"] == "user":
-            log_msg = log_messages[-1].copy()
-            log_msg["content"] = f"## CURRENT TELEMETRY\n{physiology_heartbeat}\n\n{log_msg['content']}"
-            agent_state.append_task_message(active_task_id, log_msg)
-
-        # 2. Build ENRICHED messages for the LLM API call (Full HUD)
-        api_messages = _build_api_messages(
-            active_task_id, task_desc, active_tool_specs,
-            queue, state, branch_info, is_trunk, enrich=True
-        )
-
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
         sys_think = state.get("sys_think", True)
@@ -1323,9 +1458,32 @@ def main() -> None:
             sys_temp = float(sys_temp_override)
 
         try:
+            current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+            current_spend = agent_state.get_current_spend()
+            remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
+            physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | Time: {current_time}"
+
+            # 1. Build messages for the LLM API call (Full HUD)
+            api_messages = _build_api_messages(
+                active_task_id, task_desc, active_tool_specs,
+                queue, state, branch_info, is_trunk, enrich=True
+            )
+
+            # 2. Call LLM
             requested_model = branch_info.get("model_id") if branch_info else None
             response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
+
+            # 3. If LLM call succeeded, NOW we log the turn start to persistent memory
+            # This prevents 7GB logs if the API is failing/retrying
+            log_messages = _build_api_messages(
+                active_task_id, task_desc, active_tool_specs,
+                queue, state, branch_info, is_trunk, enrich=False
+            )
+            if log_messages and log_messages[-1]["role"] == "user":
+                log_msg = log_messages[-1].copy()
+                log_msg["content"] = f"## CURRENT TELEMETRY\n{physiology_heartbeat}\n\n{log_msg['content']}"
+                agent_state.append_task_message(active_task_id, log_msg)
 
             queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
@@ -1336,7 +1494,7 @@ def main() -> None:
                 if not is_trunk:
                     print(f"\033[91m[System] Branch {active_task_id} breached limits. Triggering Context Refresh.\033[0m")
                     registry.execute("suspend_task", {
-                        "task_id": active_task_id, 
+                        "task_id": active_task_id,
                         "synthesis": summary,
                         "partial_state": "CONTEXT_EXHAUSTED: Requires fresh branch start."
                     })
@@ -1345,7 +1503,7 @@ def main() -> None:
                     # Break work into a new task and wipe log
                     registry.execute("push_task", {"description": f"RESUME TRUNK WORK: {task_desc}", "priority": 1})
                     agent_state.wipe_global_trunk_log()
-                
+
                 agent_state.save_state(state)
                 continue
 
@@ -1375,13 +1533,13 @@ def main() -> None:
             try:
                 constants.CRASH_LOG_PATH.write_text(str(e), encoding="utf-8")
             except Exception: pass
-            
+
             # P5: Fail Fast on structural/fatal errors.
             fatal_types = (AttributeError, ImportError, NameError, SyntaxError, TypeError)
             if isinstance(e, fatal_types) or re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
                 print(f"\033[91m[FATAL]: {type(e).__name__}: {e}. Exiting for watchdog recovery.\033[0m")
                 sys.exit(1)
-            
+
             print(f"[ERROR]: {e}. Recovering in 2s...")
             time.sleep(2)
 
