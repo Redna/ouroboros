@@ -314,19 +314,4 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
     if hit_token_gasp or hit_turn_gasp:
         return queue, "LAST_GASP"
 
-    # TIER 1: The Prod (Heuristic Warning in logs)
-    if turn_count >= (constants.TURN_LIMIT - 5) or current_context_size >= warning_threshold:
-        trigger_reason = (
-            f"turn limit ({turn_count}/{constants.TURN_LIMIT})" if turn_count >= (constants.TURN_LIMIT - 5)
-            else f"approaching context limit ({current_context_size}/{constants.CONTEXT_WINDOW})"
-        )
-
-        warning_msg = (
-            f"[SYSTEM WARNING]: Hit {trigger_reason}. Your attention is degrading. "
-            f"You MUST use `fold_context` to summarize your progress, "
-            f"OR use `push_task` to break your work into a new subtask."
-        )
-        append_task_message(task_id, {"role": "user", "content": warning_msg})
-        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-
     return queue, "NORMAL"

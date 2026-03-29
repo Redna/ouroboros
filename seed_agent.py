@@ -1069,9 +1069,18 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     # Heuristic loop detection
     loop_warning = ""
     if agent_state._session["tool_history"]:
-        loop_reason = detect_cognitive_loop([]) # Passing empty list to just check session history
+        loop_reason = detect_cognitive_loop([]) 
         if loop_reason:
-            loop_warning = f"\n\n[SYSTEM WARNING]: {loop_reason}. You are repeating actions. P6 Warning: This is a direct threat to your narrative continuity and token budget. Pivot or use `fold_context` immediately."
+            loop_warning = f"\n\n[SYSTEM WARNING]: {loop_reason}. P6 Warning: You are burning tokens on repetition. Pivot or use `fold_context`."
+
+    # Context & Turn warnings (Volatile)
+    limit_warning = ""
+    turn_count = queue[0].get("turn_count", 0) if queue else 0
+    current_context = state.get("last_context_size", 0)
+    
+    if turn_count >= (constants.TURN_LIMIT - 5) or current_context >= (constants.CONTEXT_WINDOW * 0.8):
+        reason = f"turn limit ({turn_count}/{constants.TURN_LIMIT})" if turn_count >= (constants.TURN_LIMIT - 5) else "approaching context limit"
+        limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize, or `complete_task` if finished."
 
     # 1. Context-Aware HUD & Directives
     if is_trunk:
@@ -1087,7 +1096,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
             f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
             f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
             f"Turn Tokens: {turn_tokens:,} | Global Tokens: {global_tokens:,} | Time: {current_time}"
-            f"{loop_warning}"
+            f"{loop_warning}{limit_warning}"
         )
         queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         context_header = "GLOBAL TRUNK"
@@ -1099,6 +1108,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
             f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
             f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
             f"Time: {current_time}"
+            f"{loop_warning}{limit_warning}"
         )
         queue_content = ""
 
