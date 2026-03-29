@@ -1,7 +1,7 @@
 import json
 import time
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 
 import constants
 
@@ -271,41 +271,48 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
             
     return False
 
-def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> List[Dict[str, Any]]:
-    """Two-tier sawtooth safety net: Tier 1 warns, Tier 2 guillotines."""
-    if is_trunk or not queue:
-        return queue
+def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], bool]:
+    """Two-tier sawtooth safety net: Tier 1 warns, Tier 2 signals breach."""
+    if not queue:
+        return queue, False
 
     queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
     current_context_size = state.get("last_context_size", 0)
+    turn_count = queue[0]["turn_count"]
 
     # 80% is the prod, 95% is the guillotine
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
     critical_threshold = int(constants.CONTEXT_WINDOW * 0.95)
 
-    hit_turn_limit = queue[0]["turn_count"] >= constants.TURN_LIMIT
+    # TRUNK SAFETY: If Trunk is stuck in a loop or too long, force amnesia.
+    if is_trunk:
+        if turn_count > 50 or current_context_size >= critical_threshold:
+            print(f"[System] Trunk limit hit (Turns: {turn_count}, Tokens: {current_context_size}). Triggering reset.")
+            return queue, True # Signal for reset
+        return queue, False
 
-    # TIER 2: The Guillotine
-    if current_context_size >= critical_threshold:
-        emergency_compact_log(task_id)
-        queue[0]["turn_count"] = 0
-        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-        return queue
+    # BRANCH SAFETY
+    hit_turn_limit = turn_count >= constants.TURN_LIMIT
+    hit_critical_tokens = current_context_size >= critical_threshold
 
-    # TIER 1: The Prod
-    if hit_turn_limit or current_context_size >= warning_threshold:
+    # TIER 2: The Guillotine (Physical Breach)
+    if hit_critical_tokens or hit_turn_limit:
+        print(f"[System] Branch {task_id} physical limit hit. Signaling exhaustion merge.")
+        return queue, True
+
+    # TIER 1: The Prod (Heuristic Warning)
+    if turn_count >= (constants.TURN_LIMIT - 5) or current_context_size >= warning_threshold:
         trigger_reason = (
-            f"{constants.TURN_LIMIT}-turn limit" if hit_turn_limit
+            f"turn limit ({turn_count}/{constants.TURN_LIMIT})" if turn_count >= (constants.TURN_LIMIT - 5)
             else f"approaching context limit ({current_context_size}/{constants.CONTEXT_WINDOW})"
         )
 
         warning_msg = (
             f"[SYSTEM WARNING]: Hit {trigger_reason}. Your attention is degrading. "
-            f"You MUST immediately use the `compress_working_memory` tool to summarize your progress, "
+            f"You MUST use `fold_context` to summarize your progress, "
             f"OR use `push_task` to break your work into a new subtask."
         )
         append_task_message(task_id, {"role": "user", "content": warning_msg})
-        queue[0]["turn_count"] = 0
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
 
-    return queue
+    return queue, False

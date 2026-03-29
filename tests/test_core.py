@@ -46,15 +46,15 @@ def test_build_static_system_prompt_branch(mock_memory):
 
 
 # =============================================================================
-# LAZARUS RECOVERY TESTS
+# RECOVERY TOOLS TESTS
 # =============================================================================
 
-def test_lazarus_recovery(mock_memory):
-    """Test system recovery after loop failure."""
+def test_lazarus_recovery_manual(mock_memory):
+    """Test manual system recovery via lazarus tool."""
     with patch("agent_state.append_task_message") as mock_append, \
          patch.object(registry, 'execute') as mock_exec:
-        lazarus_recovery("t1", reason="test loop")
-        # Should append a fatal marker and mark the task as complete
+        lazarus_recovery("t1", reason="manual trigger")
+        # Should append a signal marker and mark the task as complete
         assert mock_append.called
         assert mock_exec.called
         assert mock_exec.call_args[0][0] == "mark_task_complete"

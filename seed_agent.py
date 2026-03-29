@@ -856,9 +856,16 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     current_spend = agent_state.get_current_spend()
     remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
     
-    # We use 80% of context window as the soft target for turning/forking
+    # We use context window as the soft target for turning/forking
     token_limit = constants.CONTEXT_WINDOW
     
+    # Heuristic loop detection
+    loop_warning = ""
+    if agent_state._session["tool_history"]:
+        loop_reason = detect_cognitive_loop([]) # Passing empty list to just check session history
+        if loop_reason:
+            loop_warning = f"\n\n[SYSTEM WARNING]: {loop_reason}. You are repeating actions. P6 Warning: This is a direct threat to your narrative continuity and token budget. Pivot or use `fold_context` immediately."
+
     # 1. Context-Aware HUD & Directives
     if is_trunk:
         global_tokens = state.get("global_tokens_consumed", 0)
@@ -873,6 +880,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
             f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
             f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
             f"Turn Tokens: {turn_tokens:,} | Global Tokens: {global_tokens:,} | Time: {current_time}"
+            f"{loop_warning}"
         )
         queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
         context_header = "GLOBAL TRUNK"
@@ -985,9 +993,9 @@ def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
     agent_state._session["intent_history"] = agent_state._session["intent_history"][-6:]
 
     if len(agent_state._session["tool_history"]) >= 3 and len(set(agent_state._session["tool_history"][-3:])) == 1:
-        return "exact tool loop"
+        return "Exact Tool Loop Detected (3 turns)"
     if len(agent_state._session["intent_history"]) >= 6 and len(set(agent_state._session["intent_history"][-6:])) == 1:
-        return "cognitive stall"
+        return "Cognitive Intent Stall Detected (6 turns)"
     return None
 
 
@@ -1293,27 +1301,36 @@ def main() -> None:
             response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
 
-            queue = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
+            queue, breach_detected = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
+            limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
 
-            # FIX: Properly abort the task if the token limit is breached
-            if agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk):
-                registry.execute("mark_task_complete", {
-                    "task_id": active_task_id,
-                    "summary": "FAILED: Token limit exceeded. Task forcibly aborted to protect budget."
-                })
-
+            # HANDLE PHYSICAL BREACH (Tier 2 safety)
+            if breach_detected or limit_exceeded:
+                summary = "FAILED: Physical context or turn limit exceeded. Task forcibly closed to prevent cognitive collapse."
+                if not is_trunk:
+                    print(f"\033[91m[System] Branch {active_task_id} breached limits. Triggering Exhaustion Merge.\033[0m")
+                    # Perform an automatic merge_and_return with EXHAUSTED status
+                    registry.execute("merge_and_return", {
+                        "status": "EXHAUSTED",
+                        "task_id": active_task_id,
+                        "synthesis_summary": summary
+                    })
+                else:
+                    print(f"\033[91m[System] Trunk breached limits. Triggering Trunk Amnesia.\033[0m")
+                    # Break work into a new task and wipe log
+                    registry.execute("push_task", {
+                        "description": f"RESUME TRUNK WORK: {task_desc}",
+                        "priority": 1
+                    })
+                    agent_state.wipe_global_trunk_log()
+                
                 agent_state.save_state(state)
                 continue
 
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:
-                loop_reason = detect_cognitive_loop(message.tool_calls)
-                if loop_reason:
-                    for tc in message.tool_calls:
-                        safe_id = tc.id if (tc.id and len(tc.id) >= 9) else f"call_{int(time.time())}"
-                        agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_id, "name": tc.function.name, "content": f"ABORTED: {loop_reason}."})
-                    lazarus_recovery(active_task_id, reason=loop_reason)
-                    continue
+                # Heuristic loop detection (no kill, just warning for HUD)
+                detect_cognitive_loop(message.tool_calls)
 
                 context_switch, hibernating = _route_tool_calls(message, active_task_id, state)
                 if context_switch or hibernating:

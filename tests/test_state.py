@@ -10,11 +10,23 @@ def test_redact_secrets():
         assert "[REDACTED]" in redacted or "[REDACTED_TOKEN]" in redacted
         assert "123456789:" not in redacted
 
-def test_update_state_variable(mock_memory):
-    args = {"key": "test_key", "value": "test_value"}
-    result = update_state_variable(args)
-    assert "Working state successfully updated" in result
+from agent_state import enforce_context_limits
+import constants
+
+def test_enforce_context_limits_branch_exhaustion(mock_memory):
+    """Test that a branch hitting limits signals a breach."""
+    state = {"last_context_size": int(constants.CONTEXT_WINDOW * 0.96)}
+    queue = [{"task_id": "b1", "priority": 1, "turn_count": 5}]
     
-    state_file = mock_memory / "working_state.json"
-    state = json.loads(state_file.read_text())
-    assert state["test_key"] == "test_value"
+    with patch("agent_state.append_task_message"):
+        new_q, breach = enforce_context_limits(state, queue, "b1", is_trunk=False)
+        assert breach is True
+
+def test_enforce_context_limits_trunk_amnesia(mock_memory):
+    """Test that Trunk hitting limits signals amnesia."""
+    # Hit turn limit
+    state = {"last_context_size": 1000}
+    queue = [{"task_id": "global_trunk", "priority": 1, "turn_count": 51}]
+    
+    new_q, breach = enforce_context_limits(state, queue, "global_trunk", is_trunk=True)
+    assert breach is True
