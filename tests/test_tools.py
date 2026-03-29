@@ -11,11 +11,42 @@ from seed_agent import (
     generate_repo_map,
     fold_context,
     send_telegram_message,
+    complete_task,
+    suspend_task,
     web_search,
     store_memory,
     ToolRegistry
 )
 import json
+
+def test_complete_task(mock_memory):
+    """Test task completion and archival."""
+    task_id = "test_complete"
+    q_path = mock_memory / "task_queue.json"
+    q_path.write_text(json.dumps([{"task_id": task_id, "priority": 1}]))
+    
+    with patch("agent_state.append_task_archive") as mock_archive:
+        result = complete_task({"task_id": task_id, "synthesis": "Done."})
+        assert "closed" in result or "SIGNAL_MERGE" in result
+        assert mock_archive.called
+        assert json.loads(q_path.read_text()) == []
+
+def test_suspend_task(mock_memory):
+    """Test task suspension and partial state saving."""
+    task_id = "test_suspend"
+    q_path = mock_memory / "task_queue.json"
+    q_path.write_text(json.dumps([{"task_id": task_id, "priority": 1}]))
+    
+    result = suspend_task({
+        "task_id": task_id, 
+        "synthesis": "Pausing.", 
+        "partial_state": "step=10"
+    })
+    assert "suspended" in result or "SIGNAL_MERGE" in result
+    
+    queue = json.loads(q_path.read_text())
+    assert queue[0]["status"] == "SUSPENDED"
+    assert queue[0]["partial_state"] == "step=10"
 
 def test_fold_context(mock_memory):
     """Test sawtooth context folding logic."""

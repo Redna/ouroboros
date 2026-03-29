@@ -1,6 +1,6 @@
 import json
 from agent_state import load_state, save_state
-from seed_agent import push_task, fork_execution, merge_and_return
+from seed_agent import push_task, fork_execution, complete_task, suspend_task
 
 def test_push_task(mock_memory):
     result = push_task({"description": "new task", "priority": 2})
@@ -29,34 +29,27 @@ def test_fork_execution(mock_memory):
     assert state["active_branch"]["objective"] == "Rewrite database schema"
     assert state["active_branch"]["tool_buckets"] == ["filesystem"]
 
-def test_merge_and_return(mock_memory):
-    # Setup an active branch first
-    save_state({
-        "active_branch": {
-            "task_id": "task_merge_test_1", 
-            "objective": "test", 
-            "tool_buckets": []
-        }
-    })
-
-    args = {
-        "status": "SUSPENDED", 
-        "synthesis_summary": "I hit a blocker", 
-        "partial_state": "Files downloaded, but not parsed"
-    }
-
-    result = merge_and_return(args)
-    
-    # Check the state is cleared
+def test_complete_task_orchestration(mock_memory):
+    # Setup an active branch
     state = load_state()
-    assert state.get("active_branch") is None
+    state["active_branch"] = {"task_id": "t1", "objective": "test", "tool_buckets": []}
+    save_state(state)
     
-    # Check the payload formatting
-    assert result.startswith("SYSTEM_SIGNAL_MERGE:")
-    payload_str = result.split(":", 1)[1]
-    payload = json.loads(payload_str)
+    (mock_memory / "task_queue.json").write_text(json.dumps([{"task_id": "t1", "priority": 1}]))
+
+    result = complete_task({"task_id": "t1", "synthesis": "Done."})
+    assert "SIGNAL_MERGE" in result
+    assert load_state().get("active_branch") is None
+
+def test_suspend_task_orchestration(mock_memory):
+    # Setup an active branch
+    state = load_state()
+    state["active_branch"] = {"task_id": "t1", "objective": "test", "tool_buckets": []}
+    save_state(state)
     
-    assert payload["status"] == "SUSPENDED"
-    assert payload["task_id"] == "task_merge_test_1"
-    assert payload["summary"] == "I hit a blocker"
-    assert payload["partial_state"] == "Files downloaded, but not parsed"
+    (mock_memory / "task_queue.json").write_text(json.dumps([{"task_id": "t1", "priority": 1}]))
+
+    result = suspend_task({"task_id": "t1", "synthesis": "Pausing.", "partial_state": "v=1"})
+    assert "SIGNAL_MERGE" in result
+    assert load_state().get("active_branch") is None
+    assert load_state().get("partial_state_t1") == "v=1"

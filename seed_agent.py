@@ -331,7 +331,7 @@ def fold_context(args: dict) -> str:
 
 
 @registry.tool(
-    description="Message Creator.",
+    description="Send a Telegram message to the creator. Use this for reporting progress, providing results of an interrupt, or when verbal peer-to-peer communication is required.",
     parameters={"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["text"]},
     bucket="global"
 )
@@ -405,42 +405,92 @@ def push_task(args):
     return f"Queued {tid} with priority {priority}."
 
 @registry.tool(
-    description="Close active task.",
-    parameters={"type": "object", "properties": {"task_id": {"type": "string"}, "summary": {"type": "string"}}},
+    description="Complete and archive the active task. Use this ONLY when the objective is 100% met.",
+    parameters={
+        "type": "object", 
+        "properties": {
+            "task_id": {"type": "string"}, 
+            "synthesis": {"type": "string", "description": "autopsy following the DELTA PATTERN: 1. State Delta, 2. Negative Knowledge, 3. Handoff."}
+        }, 
+        "required": ["task_id", "synthesis"]
+    },
     bucket="global"
 )
-def mark_task_complete(args):
+def complete_task(args):
     task_id = args.get("task_id")
-    summary = args.get("summary", "No summary provided.")
-    agent_state.append_task_archive(task_id, summary)
+    synthesis = args.get("synthesis", "No synthesis provided.")
+    agent_state.append_task_archive(task_id, synthesis)
 
     q = agent_state.load_task_queue()
     completed_task = next((t for t in q if t.get("task_id") == task_id), None)
 
-    # FIX: Do not spam the Trunk with alerts. The Merge signal handles Trunk notifications.
     if completed_task and completed_task.get("parent_task_id"):
         parent_id = completed_task.get("parent_task_id")
         if parent_id != "global_trunk":
-            msg = {"role": "user", "content": f"[SYSTEM ALERT]: Subtask {task_id} complete.\nResult Summary: {summary}"}
+            msg = {"role": "user", "content": f"[SYSTEM ALERT]: Subtask {task_id} complete.\nSynthesis: {synthesis}"}
             agent_state.append_task_message(parent_id, msg)
 
     q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
 
     state = agent_state.load_state()
-    # If the active branch is this task, we must clear it so the loop properly drops to trunk instead of hanging
-    if isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id:
+    # If in a branch, trigger merge
+    is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
+    
+    if is_branch:
         suspended = state.get("suspended_branches", [])
-        if suspended:
-            state["active_branch"] = suspended.pop()
-            state["suspended_branches"] = suspended
-        else:
-            state["active_branch"] = None
+        state["active_branch"] = suspended.pop() if suspended else None
         
     for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
         if key in state: del state[key]
     agent_state.save_state(state)
+
+    if is_branch:
+        payload = json.dumps({"status": "COMPLETED", "task_id": task_id, "summary": synthesis})
+        return f"SYSTEM_SIGNAL_MERGE:{payload}"
     return f"Task {task_id} closed."
+
+@registry.tool(
+    description="Suspend the active task. Use this when blocked, hitting token limits, or needing Trunk-level orchestration. Progress is saved via partial_state.",
+    parameters={
+        "type": "object", 
+        "properties": {
+            "task_id": {"type": "string"}, 
+            "synthesis": {"type": "string", "description": "Pause summary following the DELTA PATTERN."}, 
+            "partial_state": {"type": "string", "description": "Technical context (variables, line numbers) needed to resume."}
+        }, 
+        "required": ["task_id", "synthesis"]
+    },
+    bucket="global"
+)
+def suspend_task(args):
+    task_id = args.get("task_id")
+    synthesis = args.get("synthesis", "No synthesis provided.")
+    partial_state = args.get("partial_state", "")
+
+    q = agent_state.load_task_queue()
+    for t in q:
+        if t.get("task_id") == task_id:
+            t["status"] = "SUSPENDED"
+            t["partial_state"] = partial_state
+            break
+    constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
+
+    state = agent_state.load_state()
+    is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
+
+    if is_branch:
+        suspended = state.get("suspended_branches", [])
+        suspended.append(state["active_branch"]) # Re-park explicitly
+        state["active_branch"] = None # Drop to trunk
+        
+    state[f"partial_state_{task_id}"] = partial_state
+    agent_state.save_state(state)
+
+    if is_branch:
+        payload = json.dumps({"status": "SUSPENDED", "task_id": task_id, "summary": synthesis, "partial_state": partial_state})
+        return f"SYSTEM_SIGNAL_MERGE:{payload}"
+    return f"Task {task_id} suspended."
 
 @registry.tool(
     description="Update working memory.",
@@ -742,46 +792,6 @@ def fork_execution(args):
 
 
 @registry.tool(
-    description="Yield control back to the global context.",
-    parameters={
-        "type": "object", 
-        "properties": {
-            "status": {"type": "string", "enum": ["COMPLETED", "SUSPENDED", "BLOCKED"]}, 
-            "synthesis_summary": {"type": "string", "description": "High-level overview following the DELTA PATTERN: 1. State Delta, 2. Negative Knowledge, 3. Handoff."}, 
-            "partial_state": {"type": "string"}
-        }, 
-        "required": ["status"]
-    },
-    bucket="execution_control"
-)
-def merge_and_return(args):
-    status = args.get("status", "COMPLETED")
-    synthesis_summary = args.get("synthesis_summary", "")
-    partial_state = args.get("partial_state", "")
-
-    state = agent_state.load_state()
-    branch_info = state.get("active_branch", {})
-    task_id = branch_info.get("task_id", "unknown")
-
-    suspended = state.get("suspended_branches", [])
-    if suspended:
-        state["active_branch"] = suspended.pop()
-        state["suspended_branches"] = suspended
-    else:
-        state["active_branch"] = None
-        
-    agent_state.save_state(state)
-
-    payload = json.dumps({
-        "status": status,
-        "task_id": task_id,
-        "summary": synthesis_summary,
-        "partial_state": partial_state
-    })
-    return f"SYSTEM_SIGNAL_MERGE:{payload}"
-
-
-@registry.tool(
     description="Resume a previously suspended branch. Use this when the top task in the queue is a suspended branch and you have finished the interrupt that caused the suspension.",
     parameters={
         "type": "object",
@@ -800,6 +810,13 @@ def resume_branch(args):
     q = agent_state.load_task_queue()
     if any(t.get("priority", 1) >= 999 for t in q):
         return "Error: Cannot resume branch while a Priority 999 interrupt is pending. You MUST handle or close the interrupt first."
+
+    # Get partial state from queue if it exists
+    partial_state = ""
+    for t in q:
+        if t.get("task_id") == task_id:
+            partial_state = t.get("partial_state", "")
+            break
 
     state = agent_state.load_state()
     suspended = state.get("suspended_branches", [])
@@ -825,10 +842,11 @@ def resume_branch(args):
     state["suspended_branches"] = suspended
     agent_state.save_state(state)
 
-    agent_state.append_task_message(task_id, {
-        "role": "user",
-        "content": f"[SYSTEM RESUME]: Task resumed by Trunk. Synthesis of interrupt: {synthesis}"
-    })
+    content = f"[SYSTEM RESUME]: Task resumed by Trunk. Synthesis of interrupt: {synthesis}"
+    if partial_state:
+        content += f"\n\n[RESUMED PARTIAL STATE]: {partial_state}"
+
+    agent_state.append_task_message(task_id, {"role": "user", "content": content})
 
     return f"SYSTEM_SIGNAL_FORK:{task_id}"
 
@@ -842,9 +860,9 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
         "content": f"[SYSTEM OVERRIDE]: Task aborted due to {reason}. Stuck in a repetitive loop."
     })
 
-    registry.execute("mark_task_complete", {
+    registry.execute("complete_task", {
         "task_id": active_task_id,
-        "summary": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
+        "synthesis": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
     })
 
     state = agent_state.load_state()
@@ -1079,9 +1097,9 @@ def _resolve_execution_context(
         top_task["turn_count"] = top_task.get("turn_count", 0) + 1
         if top_task["turn_count"] > 3:
             print(f"[HAL] Auto-closing persistent interrupt {top_task.get('task_id')}.")
-            registry.execute("mark_task_complete", {
+            registry.execute("complete_task", {
                 "task_id": top_task.get("task_id"),
-                "summary": "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work."
+                "synthesis": "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work."
             })
             queue = agent_state.load_task_queue()
             has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
@@ -1110,9 +1128,9 @@ def _resolve_execution_context(
                 constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             
             task_desc = (
-                "You are the global orchestrator. EVALUATE your queue. "
+                "You are the GLOBAL ORCHESTRATOR. EVALUATE your queue. "
                 "If the top task is communication or administrative, you MUST handle it "
-                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `mark_task_complete`. "
+                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `complete_task`. "
                 "NEVER leave an interrupt task in the queue once responded to. "
                 "If a Priority 999 task exists, you CANNOT resume or fork a branch. Handle the interrupt first. "
                 "If the top task is a previously suspended branch and NO interrupts are pending, you MUST use `resume_branch` to thaw it. "
@@ -1314,12 +1332,17 @@ def main() -> None:
 
             # HANDLE PHYSICAL BREACH (Tier 3 safety)
             if limit_status == "BREACH" or limit_exceeded:
-                summary = "FAILED: Physical context or turn limit exceeded. Task forcibly closed to prevent cognitive collapse."
+                summary = "FAILED: Physical context or turn limit exceeded. Task forcibly suspended to prevent cognitive collapse."
                 if not is_trunk:
-                    print(f"\033[91m[System] Branch {active_task_id} breached limits. Triggering Exhaustion Merge.\033[0m")
-                    registry.execute("merge_and_return", {"status": "EXHAUSTED", "task_id": active_task_id, "synthesis_summary": summary})
+                    print(f"\033[91m[System] Branch {active_task_id} breached limits. Triggering Context Refresh.\033[0m")
+                    registry.execute("suspend_task", {
+                        "task_id": active_task_id, 
+                        "synthesis": summary,
+                        "partial_state": "CONTEXT_EXHAUSTED: Requires fresh branch start."
+                    })
                 else:
                     print(f"\033[91m[System] Trunk breached limits. Triggering Trunk Amnesia.\033[0m")
+                    # Break work into a new task and wipe log
                     registry.execute("push_task", {"description": f"RESUME TRUNK WORK: {task_desc}", "priority": 1})
                     agent_state.wipe_global_trunk_log()
                 

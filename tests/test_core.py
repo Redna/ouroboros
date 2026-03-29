@@ -57,7 +57,7 @@ def test_lazarus_recovery_manual(mock_memory):
         # Should append a signal marker and mark the task as complete
         assert mock_append.called
         assert mock_exec.called
-        assert mock_exec.call_args[0][0] == "mark_task_complete"
+        assert mock_exec.call_args[0][0] == "complete_task"
 
 
 # =============================================================================
