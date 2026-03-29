@@ -1475,6 +1475,16 @@ def main() -> None:
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
 
+        # ENFORCE ROLLBACK MODE
+        if state.get("rollback_mode"):
+            print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
+            active_tool_specs = [
+                t for t in active_tool_specs 
+                if t["function"]["name"] in ["fold_context", "complete_task"]
+            ]
+            state["rollback_mode"] = False # Unset so it only applies for one turn
+            agent_state.save_state(state)
+
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
         sys_think = state.get("sys_think", True)
@@ -1522,24 +1532,31 @@ def main() -> None:
             queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
 
-            # HANDLE PHYSICAL BREACH (Tier 3 safety)
+            # HANDLE PHYSICAL BREACH (Tier 3 safety - Atomic Rollback)
             if limit_status == "BREACH" or limit_exceeded:
-                summary = "FAILED: Physical context or turn limit exceeded. Task forcibly suspended to prevent cognitive collapse."
-                if not is_trunk:
-                    print(f"\033[91m[System] Branch {active_task_id} breached limits. Triggering Context Refresh.\033[0m")
-                    registry.execute("suspend_task", {
-                        "task_id": active_task_id,
-                        "synthesis": summary,
-                        "partial_state": "CONTEXT_EXHAUSTED: Requires fresh branch start."
-                    })
-                else:
-                    print(f"\033[91m[System] Trunk breached limits. Triggering Trunk Amnesia.\033[0m")
-                    # Break work into a new task and wipe log
-                    registry.execute("push_task", {"description": f"RESUME TRUNK WORK: {task_desc}", "priority": 1})
-                    agent_state.wipe_global_trunk_log()
-
+                print(f"\033[91m[System] {active_task_id} breached limits. Triggering Atomic Rollback.\033[0m")
+                
+                # 1. Rollback the log (removes the bloated turn)
+                agent_state.rollback_task_log(active_task_id)
+                
+                # 2. Adjust queue turn_count
+                if queue:
+                    queue[0]["turn_count"] = max(0, queue[0].get("turn_count", 1) - 1)
+                    constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+                
+                # 3. Inject Critical Directive
+                rollback_msg = (
+                    "[SYSTEM ROLLBACK]: Your last action caused a critical context breach and has been REVERTED. "
+                    "You are at maximum capacity. You MUST use `fold_context` or `complete_task` now. "
+                    "All other tools have been temporarily disabled to prevent a system crash."
+                )
+                agent_state.append_task_message(active_task_id, {"role": "user", "content": rollback_msg})
+                
+                # 4. Enforce Rollback Mode on next turn
+                state["rollback_mode"] = True
                 agent_state.save_state(state)
                 continue
+
 
             # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)
             if limit_status == "LAST_GASP":

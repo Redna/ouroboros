@@ -101,6 +101,44 @@ def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_dict) + "\n")
 
+def rollback_task_log(task_id: str) -> None:
+    """Reverts the task log to undo the last action that caused a context breach."""
+    if not task_id: return
+    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists(): return
+    
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
+            
+        # We want to remove the most recent User prompt (the telemetry turn-start)
+        # AND the preceding Assistant action (and its tool outputs) to truly rewind time.
+        # Find the last User prompt that is NOT the very first initialization prompt.
+        if len(messages) > 1:
+            # Drop messages from the end until we've removed one full turn 
+            # A full turn ends with a User prompt (which we just appended) and 
+            # is preceded by Tool/Assistant messages.
+            
+            # Step 1: Remove the last message if it's a 'user' message (the one we just appended)
+            if messages and messages[-1].get("role") == "user":
+                messages.pop()
+                
+            # Step 2: Remove any 'tool' messages
+            while messages and messages[-1].get("role") == "tool":
+                messages.pop()
+                
+            # Step 3: Remove the 'assistant' message that caused the tool calls
+            if messages and messages[-1].get("role") == "assistant":
+                messages.pop()
+
+        with open(log_path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(json.dumps(msg) + "\n")
+                
+        print(f"[System] Rollback executed for {task_id}. Reverted 1 turn.")
+    except Exception as e:
+        print(f"[System] Error rolling back {task_id}: {e}")
+
 def load_chat_history() -> List[Dict[str, Any]]:
     if constants.CHAT_HISTORY_PATH.exists():
         try: return json.loads(constants.CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
