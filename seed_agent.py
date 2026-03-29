@@ -789,6 +789,10 @@ def resume_branch(args):
     task_id = args.get("task_id")
     synthesis = args.get("synthesis", "No synthesis provided.")
 
+    q = agent_state.load_task_queue()
+    if any(t.get("priority", 1) >= 999 for t in q):
+        return "Error: Cannot resume branch while a Priority 999 interrupt is pending. You MUST handle or close the interrupt first."
+
     state = agent_state.load_state()
     suspended = state.get("suspended_branches", [])
     
@@ -1093,7 +1097,8 @@ def _resolve_execution_context(
                 "If the top task is communication or administrative, you MUST handle it "
                 "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `mark_task_complete`. "
                 "NEVER leave an interrupt task in the queue once responded to. "
-                "If the top task is a previously suspended branch, you MUST use `resume_branch` to thaw it. "
+                "If a Priority 999 task exists, you CANNOT resume or fork a branch. Handle the interrupt first. "
+                "If the top task is a previously suspended branch and NO interrupts are pending, you MUST use `resume_branch` to thaw it. "
                 "If the top task requires deep work (file editing, bash, searching), "
                 "you MUST use `fork_execution` to spawn a BRANCH."
             )
