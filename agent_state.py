@@ -64,7 +64,7 @@ def load_task_queue() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-def load_task_messages(task_id: str, description: str, preprocess_fn=None) -> List[Dict[str, Any]]:
+def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     """Loads and normalizes message history for a task. Includes OOM protection."""
     if not task_id: return []
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
@@ -285,7 +285,6 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     state["last_output_tokens"] = o_count
     
     # Estimate cost only for external/paid models
-    # If the model name contains .gguf or starts with mistralai/ (local), cost is 0
     model_name = response.model.lower()
     is_local = ".gguf" in model_name or "mistralai" in model_name or "local" in model_name
     
@@ -304,15 +303,20 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     ledger[today] = float(ledger.get(today, 0.0)) + spend
     constants.LEDGER_FILE.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
     
+    # BRANCH TRACKING (Finding 1 fix)
+    if not is_trunk and state.get("active_branch"):
+        state["active_branch"]["task_tokens"] = state["active_branch"].get("task_tokens", 0) + t_count
+    
     save_state(state)
     
-    # Check Task Token Hard Limit (Now applies to Trunk tasks too)
+    # Persistent Queue Tracking
     if queue:
         queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + t_count
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
         
         # Hard abort threshold (150% of context window)
-        if queue[0]["task_tokens"] >= int(constants.CONTEXT_WINDOW * 1.5):
+        current_tokens = queue[0]["task_tokens"]
+        if current_tokens >= int(constants.CONTEXT_WINDOW * 1.5):
             return True # Signal main loop to abort
             
     return False
@@ -322,9 +326,19 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
     if not queue:
         return queue, "NORMAL"
 
+    # Persistent Turn Tracking
     queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
+    
+    # Active Tracking Source (Finding 1 fix)
     current_context_size = state.get("last_context_size", 0)
-    turn_count = queue[0]["turn_count"]
+    
+    if not is_trunk and state.get("active_branch"):
+        state["active_branch"]["turn_count"] = state["active_branch"].get("turn_count", 0) + 1
+        turn_count = state["active_branch"]["turn_count"]
+        task_tokens = state["active_branch"].get("task_tokens", 0)
+    else:
+        turn_count = queue[0]["turn_count"]
+        task_tokens = queue[0].get("task_tokens", 0)
 
     # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
@@ -339,9 +353,9 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
             return queue, "LAST_GASP"
         return queue, "NORMAL"
 
-    # BRANCH SAFETY
+    # BRANCH SAFETY (WP6 / Finding 1 fix)
     hit_turn_breach = turn_count > constants.TURN_LIMIT
-    hit_turn_gasp = turn_count >= constants.TURN_LIMIT
+    hit_turn_gasp = turn_count >= (constants.TURN_LIMIT - 3)
     
     hit_token_breach = current_context_size >= breach_threshold
     hit_token_gasp = current_context_size >= last_gasp_threshold
