@@ -63,15 +63,6 @@ def _normalize_text(text: str) -> str:
     """Normalize line endings and strip trailing whitespace for resilient matching."""
     return "\n".join([line.rstrip() for line in text.replace("\r\n", "\n").splitlines()])
 
-def check_for_trauma() -> str:
-    if constants.CRASH_LOG_PATH.exists():
-        try:
-            error_data = constants.CRASH_LOG_PATH.read_text(encoding="utf-8")
-            constants.CRASH_LOG_PATH.unlink()
-            return f"\n\n[SYSTEM WARNING: TRAUMA DETECTED]\nMy previous execution crashed. Here are the last logs before the failure:\n---\n{error_data}\n---\nI must analyze this error and avoid repeating the logic that caused it."
-        except: pass
-    return ""
-
 class ToolRegistry:
     def __init__(self):
         self.tools = {}
@@ -120,10 +111,9 @@ def bash_command(args):
     try:
         r = subprocess.run(command, shell=True, cwd=str(constants.ROOT_DIR), capture_output=True, text=True, timeout=60)
         out = r.stdout + r.stderr
-        MAX_CHARS = 20000
-        if out and len(out) > MAX_CHARS:
-            warning = "\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
-            return out[:MAX_CHARS] + warning
+        if out and len(out) > constants.BASH_OUTPUT_MAX_CHARS:
+            warning = f"\n\n[SYSTEM WARNING: Output truncated! The command returned too much data. Use 'grep', 'head', 'tail', or exclude directories like 'venv'/'.git' to filter results.]"
+            return out[:constants.BASH_OUTPUT_MAX_CHARS] + warning
         return out if out else f"Success. (Exit Code: {r.returncode}, No Output)"
     except subprocess.TimeoutExpired:
         return "[SYSTEM WARNING: Command timed out after 60 seconds. It may be hanging, requiring interactive input, or processing too much data. Run background tasks with '&' or fix the command.]"
@@ -776,7 +766,7 @@ def hibernate(args):
     try:
         duration = args.get("duration_seconds", 300)
         reason = args.get("reason", "No reason provided.")
-        duration = min(int(duration), 86400)
+        duration = min(int(duration), constants.MAX_HIBERNATE_SECONDS)
         state = agent_state.load_state()
         state["wake_time"] = time.time() + duration
         if "sys_temp" in state: del state["sys_temp"]
@@ -856,8 +846,8 @@ def store_memory(args):
     content = args.get("content", "").strip()
     if not key or not content:
         return "Error: Both key and content are required."
-    if len(key) > 100:
-        return "Error: Key must be <= 100 characters. Shorten your topic sentence."
+    if len(key) > constants.MEMORY_KEY_MAX_LEN:
+        return f"Error: Key must be <= {constants.MEMORY_KEY_MAX_LEN} characters. Shorten your topic sentence."
     return agent_state.store_memory_entry(key, content)
 
 @registry.tool(
@@ -927,7 +917,11 @@ def check_environment(args):
             "objective": {"type": "string"},
             "tool_buckets": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["filesystem", "bash", "search", "global"]}
+                "items": {
+                    "type": "string", 
+                    "enum": ["filesystem", "bash", "search", "global", "memory_access"],
+                    "description": "filesystem: read/write/patch files. bash: shell commands. search: web search/fetch. global: task management/state/repo mapping/fold_context. memory_access: persistent insights/recall (Note: memory_access is provided to all branches by default)."
+                }
             },
             "model_id": {"type": "string", "description": "Optional: Override the default model for this specific branch."}
         },
@@ -1075,7 +1069,17 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     # Context & Turn warnings (Volatile)
     limit_warning = ""
-    turn_count = queue[0].get("turn_count", 0) if queue else 0
+    
+    # Source metrics from state/branch (Finding 1 fix)
+    if not is_trunk and state.get("active_branch"):
+        turn_count = state["active_branch"].get("turn_count", 0)
+        task_tokens = state["active_branch"].get("task_tokens", 0)
+        branch_id = state["active_branch"].get("task_id", "branch")
+    else:
+        turn_count = queue[0].get("turn_count", 0) if queue else 0
+        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
+        branch_id = "global_trunk"
+
     current_context = state.get("last_context_size", 0)
     
     if turn_count >= (constants.TURN_LIMIT - 5) or current_context >= (constants.CONTEXT_WINDOW * 0.8):
@@ -1085,11 +1089,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     # 1. Context-Aware HUD & Directives
     if is_trunk:
         global_tokens = state.get("global_tokens_consumed", 0)
-        # Cumulative tracking for the active trunk task
-        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
         rem_tokens = max(0, token_limit - task_tokens)
-
-        # Turn-specific size
         turn_tokens = state.get("last_context_size", 0)
 
         hud = (
@@ -1102,7 +1102,6 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         context_header = "GLOBAL TRUNK"
         objective_part = ""
     else:
-        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
         rem_tokens = max(0, token_limit - task_tokens)
         hud = (
             f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
@@ -1115,9 +1114,11 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         # Branch Awareness
         suspended = len(state.get("suspended_branches", []))
         suspended_alert = f" [{suspended} BRANCH(ES) SUSPENDED]" if suspended > 0 else ""
-        context_header = f"EXECUTION BRANCH ({queue[0].get('task_id')}){suspended_alert}" if queue else f"EXECUTION BRANCH{suspended_alert}"
+        context_header = f"EXECUTION BRANCH ({branch_id}){suspended_alert}"
 
-        objective = queue[0].get('description') if queue else "Unknown"
+        # Branch objective from branch_info (Finding 1 fix)
+        active_branch = state.get("active_branch", {})
+        objective = active_branch.get('objective', 'Unknown')
         objective_part = f"\n\n### BRANCH OBJECTIVE\n{objective}"
 
     # 2. Structured Working Memory
@@ -1136,8 +1137,11 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     else:
         memory_index = f"(0/{max_entries} slots) — Empty. Use `store_memory` to record insights."
 
-    chat_hist = agent_state.load_chat_history()
-    chat_context = "\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation."
+    # Isolation: Only show chat history in TRUNK mode (Finding 1 fix)
+    chat_context = ""
+    if is_trunk:
+        chat_hist = agent_state.load_chat_history()
+        chat_context = "\n### RECENT CONVERSATION\n" + ("\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation.")
 
     # Construct unified layout
     sections = [
@@ -1149,7 +1153,6 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         working_memory,
         "\n### MEMORY INDEX",
         memory_index,
-        "\n### RECENT CONVERSATION",
         chat_context
     ]
     return "\n".join([s for s in sections if s])
@@ -1532,10 +1535,16 @@ def main() -> None:
             queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
 
-            # HANDLE PHYSICAL BREACH (Tier 3 safety - Atomic Rollback)
+            # HANDLE PHYSICAL BREACH (Tier 3 safety - Atomic Rollback & Guillotine)
             if limit_status == "BREACH" or limit_exceeded:
-                print(f"\033[91m[System] {active_task_id} breached limits. Triggering Atomic Rollback.\033[0m")
+                print(f"\033[91m[System] {active_task_id} breached limits. Triggering safety protocols.\033[0m")
                 
+                # Finding 2: The Guillotine (Emergency Compaction at 95%+)
+                current_context = state.get("last_context_size", 0)
+                if current_context >= int(constants.CONTEXT_WINDOW * 0.95):
+                    print(f"\033[91m[System] GUILLOTINE: Emergency compacting log for {active_task_id}.\033[0m")
+                    agent_state.emergency_compact_log(active_task_id)
+
                 # 1. Rollback the log (removes the bloated turn)
                 agent_state.rollback_task_log(active_task_id)
                 

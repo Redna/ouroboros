@@ -30,6 +30,7 @@ SCHEDULED_TASKS_PATH = MEMORY_DIR / "scheduled_tasks.json"
 STATE_PATH = MEMORY_DIR / ".agent_state.json"
 MEMORY_STORE_PATH = MEMORY_DIR / "agent_memory.json"
 MEMORY_MAX_ENTRIES = int(os.environ.get("OUROBOROS_MEMORY_MAX_ENTRIES", "50"))
+MEMORY_KEY_MAX_LEN = 100
 TASK_ARCHIVE_PATH = MEMORY_DIR / "task_archive.jsonl"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
