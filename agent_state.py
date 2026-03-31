@@ -147,6 +147,31 @@ def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
             _session["cached_messages"] = []
         _session["cached_messages"].append(message_dict)
 
+def amend_last_tool_message(task_id: str, suffix: str) -> None:
+    """Appends a string to the last tool or user message in the log without creating a new message."""
+    if not task_id: return
+    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists(): return
+    
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
+            
+        for msg in reversed(messages):
+            if msg.get("role") in ["tool", "user"]:
+                msg["content"] = str(msg.get("content", "")) + "\n\n" + suffix
+                break
+                
+        with open(log_path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(json.dumps(msg) + "\n")
+                
+        if _session.get("current_task_id") == task_id:
+            _session["cached_messages"] = messages
+            
+    except Exception as e:
+        print(f"[System] Error amending last tool message for {task_id}: {e}")
+
 def rollback_task_log(task_id: str) -> None:
     """Reverts the task log to undo the last action that caused a context breach."""
     if not task_id: return
@@ -157,24 +182,14 @@ def rollback_task_log(task_id: str) -> None:
         with open(log_path, "r", encoding="utf-8") as f:
             messages = [json.loads(line) for line in f if line.strip()]
             
-        # We want to remove the most recent User prompt (the telemetry turn-start)
-        # AND the preceding Assistant action (and its tool outputs) to truly rewind time.
-        # Find the last User prompt that is NOT the very first initialization prompt.
+        # We want to remove the most recent turn (assistant + tool responses)
         if len(messages) > 1:
-            # Drop messages from the end until we've removed one full turn 
-            # A full turn ends with a User prompt (which we just appended) and 
-            # is preceded by Tool/Assistant messages.
-            
-            # Step 1: Remove the last message if it's a 'user' message (the one we just appended)
-            if messages and messages[-1].get("role") == "user":
+            # Step 1: Remove any 'tool' messages at the end
+            while len(messages) > 1 and messages[-1].get("role") == "tool":
                 messages.pop()
                 
-            # Step 2: Remove any 'tool' messages
-            while messages and messages[-1].get("role") == "tool":
-                messages.pop()
-                
-            # Step 3: Remove the 'assistant' message that caused the tool calls
-            if messages and messages[-1].get("role") == "assistant":
+            # Step 2: Remove the 'assistant' message that caused the tool calls
+            if len(messages) > 1 and messages[-1].get("role") == "assistant":
                 messages.pop()
 
         with open(log_path, "w", encoding="utf-8") as f:
@@ -375,8 +390,8 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
 
     # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
-    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.95)
-    breach_threshold = int(constants.CONTEXT_WINDOW * 0.98)
+    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.90)
+    breach_threshold = int(constants.CONTEXT_WINDOW * 0.95)
 
     # TRUNK SAFETY
     if is_trunk:
