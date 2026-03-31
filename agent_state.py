@@ -65,7 +65,7 @@ def load_task_queue() -> List[Dict[str, Any]]:
         return []
 
 def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
-    """Loads and normalizes message history for a task. Includes OOM protection."""
+    """Loads message history for a task without heuristic normalization. Includes OOM protection."""
     if not task_id: return []
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     
@@ -79,8 +79,10 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    try: raw_messages.append(json.loads(line.strip()))
-                    except json.JSONDecodeError: continue
+                    try: 
+                        raw_messages.append(json.loads(line.strip()))
+                    except json.JSONDecodeError: 
+                        continue
 
     if not raw_messages:
         msg = {"role": "user", "content": f"Begin execution of task: {description}"}

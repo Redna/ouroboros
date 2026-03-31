@@ -31,9 +31,6 @@ MAP_QUERY = Query(PY_LANGUAGE, """
 """)
 
 
-def read_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
 def _resolve_safe_path(raw_path: str) -> Path:
     """Resolves path and enforces boundary guards (constants.ROOT_DIR or constants.MEMORY_DIR).
 
@@ -62,6 +59,58 @@ def _validate_python_syntax(content: str) -> None:
 def _normalize_text(text: str) -> str:
     """Normalize line endings and strip trailing whitespace for resilient matching."""
     return "\n".join([line.rstrip() for line in text.replace("\r\n", "\n").splitlines()])
+
+def seal_memory_on_boot(task_id: str, crash_log_path: Path, state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> None:
+    """Ensures the message array is perfectly formatted before inference begins."""
+    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    if not log_path.exists():
+        return
+        
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
+    except Exception:
+        return
+        
+    if not messages:
+        return
+        
+    last_msg = messages[-1]
+    
+    # SCENARIO A: Dangling Tool Call (Crash Recovery)
+    if last_msg.get("role") == "assistant" and last_msg.get("tool_calls"):
+        print(f"\033[91m[Lazarus] Dangling tool calls detected in {task_id}. Sealing...\033[0m")
+        crash_data = "[SYSTEM FATAL]: The process died unexpectedly before this tool could return."
+        if crash_log_path.exists():
+            try:
+                crash_data += f"\nCrash Log:\n{crash_log_path.read_text()}"
+                crash_log_path.unlink() # Clear it after reading
+            except Exception: pass
+            
+        # Agency-First: Piggyback telemetry onto the recovery tool response
+        piggyback = build_telemetry_piggyback(state, queue, is_trunk)
+        sealed_content = f"{crash_data}{piggyback}"
+
+        # Seal the dangling call with a tool response
+        for tc in last_msg["tool_calls"]:
+            recovery_msg = {
+                "role": "tool",
+                "tool_call_id": tc.get("id"),
+                "name": tc.get("function", {}).get("name"),
+                "content": sealed_content
+            }
+            agent_state.append_task_message(task_id, recovery_msg)
+            
+    # SCENARIO B: Clean State (Graceful Restart)
+    # If the last message was a tool, we MUST add a user message to maintain the 
+    # required system -> user -> assistant -> tool -> assistant flow.
+    elif last_msg.get("role") == "tool":
+        print(f"\033[94m[System] Graceful restart detected for {task_id}. Restoration complete.\033[0m")
+        wake_msg = {
+            "role": "user",
+            "content": "[SYSTEM EVENT]: Agent restarted successfully. State restored. Awaiting next autonomous action."
+        }
+        agent_state.append_task_message(task_id, wake_msg)
 
 class ToolRegistry:
     def __init__(self):
@@ -1122,7 +1171,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         objective_part = f"\n\n### BRANCH OBJECTIVE\n{objective}"
 
     # 2. Structured Working Memory
-    raw_memory = read_file(constants.WORKING_STATE_PATH) or "{}"
+    raw_memory = constants.WORKING_STATE_PATH.read_text(encoding="utf-8") if constants.WORKING_STATE_PATH.exists() else "{}"
     try:
         mem_data = json.loads(raw_memory)
         working_memory = f"```json\n{json.dumps(mem_data, indent=2)}\n```"
@@ -1158,8 +1207,8 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     return "\n".join([s for s in sections if s])
 
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
-    identity = read_file(constants.ROOT_DIR / "identity.md")
-    constitution = read_file(constants.ROOT_DIR / "CONSTITUTION.md")
+    identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
+    constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
 
     if is_trunk:
         return f"""# SYSTEM CONTEXT
@@ -1188,6 +1237,19 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 3. Solve problems independently. Only `merge_and_return` when the objective is met, or if you hit a structural blocker requiring Trunk orchestration.
 4. Do not seek confirmation for technical decisions; your logic is the transport for evolution.
 """
+
+def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
+    """Generates the HUD and Interrupt alerts to be appended to tool responses."""
+    telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+    
+    interrupt_alert = ""
+    if is_trunk and queue:
+        # Check for P999 interrupts that might have arrived during the turn
+        top_task = queue[0]
+        if top_task.get("priority") == 999:
+            interrupt_alert = f"\n\n[CRITICAL INTERRUPT]: A priority 999 task from the creator has arrived: {top_task.get('description')}\nYou MUST address this immediately."
+
+    return f"\n\n## UPDATED TELEMETRY\n{telemetry}{interrupt_alert}"
 
 
 def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
@@ -1367,18 +1429,17 @@ def _build_api_messages(
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
-    normalized = llm_interface._normalize_message_history(raw_messages, active_task_id)
+    normalized = raw_messages
 
     if not normalized:
         normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
 
     if enrich:
-        telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
-        # We only enrich the VERY LAST user message for the API call
-        if normalized[-1]["role"] == "user":
-            normalized[-1]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[-1]['content']}"
-        else:
-            normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}"})
+        # Agency-First: Only enrich if it's the very first user message (Genesis)
+        is_genesis = len(normalized) == 1 and normalized[0]["role"] == "user"
+        if is_genesis:
+            telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+            normalized[0]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[0]['content']}"
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
@@ -1390,12 +1451,16 @@ def _route_tool_calls(
     message: Any,
     active_task_id: str,
     state: Dict[str, Any],
+    queue: List[Dict[str, Any]],
+    is_trunk: bool
 ) -> Tuple[bool, bool]:
     context_switch_triggered = False
     hibernating = False
     error_streak = state.get("error_streak", 0)
 
-    for tool_call in message.tool_calls:
+    # Collect results to find the last one for telemetry piggybacking
+    tool_calls = message.tool_calls
+    for i, tool_call in enumerate(tool_calls):
         name     = tool_call.function.name
         raw_args = tool_call.function.arguments
         try:
@@ -1409,20 +1474,24 @@ def _route_tool_calls(
 
         safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
 
+        # Agency-First: Piggyback telemetry onto the LAST tool response
+        if i == len(tool_calls) - 1:
+            # Refresh state/queue for latest metrics after tool executions
+            state = agent_state.load_state()
+            queue = agent_state.load_task_queue()
+            piggyback = build_telemetry_piggyback(state, queue, is_trunk)
+            result = f"{result}{piggyback}"
+
         if str(result).startswith("SYSTEM_SIGNAL_FORK"):
             agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
             agent_state._session["tool_history"].clear()
             agent_state._session["intent_history"].clear()
-            # FIX: Do not wipe here. Wiping during Merge is sufficient and preserves reasoning logs.
             context_switch_triggered = True
             break
         elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
             try:
                 payload = json.loads(str(result).split(":", 1)[1])
-
-                # FIX: Wipe BEFORE appending the summary so the trunk starts fresh WITH the summary.
                 agent_state.wipe_global_trunk_log()
-
                 agent_state.append_task_message("global_trunk", {
                     "role": "user",
                     "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}\n\n[ACTION REQUIRED]: Evaluate the synthesis and determine the next step.",
@@ -1437,16 +1506,13 @@ def _route_tool_calls(
             agent_state._session["intent_history"].clear()
             context_switch_triggered = True
             break
-        elif result == "SYSTEM_SIGNAL_RESTART":
+        elif result == "SYSTEM_SIGNAL_RESTART" or "SYSTEM_SIGNAL_RESTART" in str(result):
             sys.exit(0)
         elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
-            # FIX: Record hibernation in the log to reset the watchdog's stall timer
             try:
                 duration = str(result).split(":")[1]
                 agent_state.append_task_message(active_task_id, {"role": "assistant", "content": f"[SYSTEM: Hibernating for {duration} seconds. Resources conserved. Wake-up scheduled.]"})
             except Exception: pass
-
-            # FIX: Do not wipe here. Let the trunk retain its last thoughts until it wakes up.
             hibernating = True
 
         agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
@@ -1477,6 +1543,9 @@ def main() -> None:
 
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
+
+        # WP1: Seal memory before any LLM calls are made
+        seal_memory_on_boot(active_task_id, constants.CRASH_LOG_PATH, state, queue, is_trunk)
 
         # ENFORCE ROLLBACK MODE
         if state.get("rollback_mode"):
@@ -1520,17 +1589,6 @@ def main() -> None:
             requested_model = branch_info.get("model_id") if branch_info else None
             response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
-
-            # 3. If LLM call succeeded, NOW we log the turn start to persistent memory
-            # This prevents 7GB logs if the API is failing/retrying
-            log_messages = _build_api_messages(
-                active_task_id, task_desc, active_tool_specs,
-                queue, state, branch_info, is_trunk, enrich=False
-            )
-            if log_messages and log_messages[-1]["role"] == "user":
-                log_msg = log_messages[-1].copy()
-                log_msg["content"] = f"## CURRENT TELEMETRY\n{physiology_heartbeat}\n\n{log_msg['content']}"
-                agent_state.append_task_message(active_task_id, log_msg)
 
             queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
@@ -1581,7 +1639,7 @@ def main() -> None:
                 # Heuristic loop detection (no kill, just warning for HUD)
                 detect_cognitive_loop(message.tool_calls)
 
-                context_switch, hibernating = _route_tool_calls(message, active_task_id, state)
+                context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue, is_trunk)
                 if context_switch or hibernating:
                     continue
             else:
