@@ -1770,11 +1770,12 @@ def main() -> None:
                 
                 # 3. Inject Critical Directive
                 rollback_msg = (
-                    "[SYSTEM ROLLBACK]: Your last action caused a critical context breach and has been REVERTED. "
-                    "You are at maximum capacity. You MUST use `fold_context` or `complete_task` now. "
+                    "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
+                    "The last turn has been REVERTED. You are at maximum capacity. "
+                    "You MUST use `fold_context` or `complete_task` (merge) now. "
                     "All other tools have been temporarily disabled to prevent a system crash."
                 )
-                agent_state.append_task_message(active_task_id, {"role": "user", "content": rollback_msg})
+                agent_state.amend_last_tool_message(active_task_id, rollback_msg)
                 
                 # 4. Enforce Rollback Mode on next turn
                 state["rollback_mode"] = True
@@ -1789,7 +1790,7 @@ def main() -> None:
                     "You MUST use the DELTA PATTERN to synthesize your progress and merge/fold now: "
                     "1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."
                 )
-                agent_state.append_task_message(active_task_id, {"role": "user", "content": gasp_msg})
+                agent_state.amend_last_tool_message(active_task_id, gasp_msg)
 
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:
