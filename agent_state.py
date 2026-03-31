@@ -1,11 +1,45 @@
 import json
 import time
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import constants
 
-_session: Dict[str, Any] = {"tool_history": [], "intent_history": [], "is_first_call": True}
+def safe_load_json(file_path: Path, default_structure: Any) -> Any:
+    """Defensively loads JSON, falling back to defaults if corrupted or structurally incompatible."""
+    if not file_path.exists():
+        return default_structure
+        
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+        
+        # Type enforcement: If we expect a dict but got a list (schema change), reject it
+        if isinstance(default_structure, dict) and not isinstance(data, dict):
+            raise ValueError("Incompatible schema: Expected dict")
+        if isinstance(default_structure, list) and not isinstance(data, list):
+            raise ValueError("Incompatible schema: Expected list")
+            
+        return data
+        
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[System] Warning: Memory structure incompatible or corrupted ({e}). Reinitializing {file_path.name}.")
+        # Backup the future/corrupted memory before overwriting
+        backup_path = file_path.with_suffix(file_path.suffix + ".bak")
+        try:
+            shutil.copy(file_path, backup_path)
+        except Exception:
+            pass # Failsafe if disk is full
+        
+        return default_structure
+
+_session: Dict[str, Any] = {
+    "tool_history": [], 
+    "intent_history": [], 
+    "is_first_call": True,
+    "current_task_id": None,
+    "cached_messages": []
+}
 
 def initialize_memory() -> None:
     """Ensure essential memory directory and base files exist."""
@@ -21,52 +55,52 @@ def initialize_memory() -> None:
     }
     
     for path, default_val in defaults.items():
-        if not path.exists():
-            path.write_text(json.dumps(default_val, indent=2), encoding="utf-8")
+        # Defensive initialization: load and re-save to ensure schema/integrity
+        data = safe_load_json(path, default_val)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             
     # Initialize structured memory store
-    if not constants.MEMORY_STORE_PATH.exists():
-        default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
-        constants.MEMORY_STORE_PATH.write_text(json.dumps(default_memory, indent=2), encoding="utf-8")
+    default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
+    memory_store_data = safe_load_json(constants.MEMORY_STORE_PATH, default_memory)
+    constants.MEMORY_STORE_PATH.write_text(json.dumps(memory_store_data, indent=2), encoding="utf-8")
 
 def get_current_spend() -> float:
-    if not constants.LEDGER_FILE.exists():
-        return 0.0
+    data = safe_load_json(constants.LEDGER_FILE, {})
     try:
-        data = json.loads(constants.LEDGER_FILE.read_text())
         today = time.strftime("%Y-%m-%d")
         return float(data.get(today, 0.0))
     except Exception:
         return 0.0
 
 def load_state() -> Dict[str, Any]:
-    state = {"offset": 0, "creator_id": None, "cognitive_load": 0}
-    if constants.STATE_PATH.exists():
-        try: 
-            loaded = json.loads(constants.STATE_PATH.read_text(encoding="utf-8"))
-            state.update(loaded)
-        except Exception: pass
+    default_state = {"offset": 0, "creator_id": None, "cognitive_load": 0}
+    state = safe_load_json(constants.STATE_PATH, default_state)
+    
+    # Ensure critical keys exist (Schema Normalization)
+    for key, value in default_state.items():
+        if key not in state:
+            state[key] = value
     return state
 
 def save_state(state_dict: Dict[str, Any]) -> None:
     constants.STATE_PATH.write_text(json.dumps(state_dict, indent=2), encoding="utf-8")
 
 def load_task_queue() -> List[Dict[str, Any]]:
-    # Simple direct read would be better, but we used read_file in seed_agent.py
-    # Here we'll just read from constants.TASK_QUEUE_PATH directly
-    if not constants.TASK_QUEUE_PATH.exists():
-        return []
+    q = safe_load_json(constants.TASK_QUEUE_PATH, [])
     try:
-        q = json.loads(constants.TASK_QUEUE_PATH.read_text(encoding="utf-8") or "[]")
-        if isinstance(q, list):
-            q.sort(key=lambda x: x.get("priority", 1), reverse=True)
+        q.sort(key=lambda x: x.get("priority", 1), reverse=True)
         return q
     except Exception:
-        return []
+        return q
 
 def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
-    """Loads message history for a task without heuristic normalization. Includes OOM protection."""
+    """Loads message history, utilizing an in-memory cache for high-frequency turns."""
     if not task_id: return []
+    
+    # Return cache if we are continuing the same task in the same process
+    if _session.get("current_task_id") == task_id and _session.get("cached_messages"):
+        return _session["cached_messages"]
+        
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     
     # OOM Protection: If log is > 50MB, force emergency compaction before loading
@@ -86,8 +120,12 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
 
     if not raw_messages:
         msg = {"role": "user", "content": f"Begin execution of task: {description}"}
-        append_task_message(task_id, msg)
+        append_task_message(task_id, msg) # This will also update the cache
         return [msg]
+    
+    # Warm up the cache
+    _session["current_task_id"] = task_id
+    _session["cached_messages"] = raw_messages
     
     return raw_messages
 
@@ -102,6 +140,12 @@ def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
 
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_dict) + "\n")
+        
+    # Keep cache synchronized
+    if _session.get("current_task_id") == task_id:
+        if "cached_messages" not in _session or _session["cached_messages"] is None:
+            _session["cached_messages"] = []
+        _session["cached_messages"].append(message_dict)
 
 def rollback_task_log(task_id: str) -> None:
     """Reverts the task log to undo the last action that caused a context breach."""
@@ -137,15 +181,16 @@ def rollback_task_log(task_id: str) -> None:
             for msg in messages:
                 f.write(json.dumps(msg) + "\n")
                 
+        # SYNC CACHE
+        if _session.get("current_task_id") == task_id:
+            _session["cached_messages"] = messages
+            
         print(f"[System] Rollback executed for {task_id}. Reverted 1 turn.")
     except Exception as e:
         print(f"[System] Error rolling back {task_id}: {e}")
 
 def load_chat_history() -> List[Dict[str, Any]]:
-    if constants.CHAT_HISTORY_PATH.exists():
-        try: return json.loads(constants.CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
-        except Exception: pass
-    return []
+    return safe_load_json(constants.CHAT_HISTORY_PATH, [])
 
 def append_chat_history(role: str, text: str) -> None:
     history = load_chat_history()
@@ -157,12 +202,8 @@ def append_chat_history(role: str, text: str) -> None:
 
 def _load_memory_store() -> Dict[str, Any]:
     """Loads the full memory store from disk."""
-    if not constants.MEMORY_STORE_PATH.exists():
-        return {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
-    try:
-        return json.loads(constants.MEMORY_STORE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
+    default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
+    return safe_load_json(constants.MEMORY_STORE_PATH, default_memory)
 
 def _save_memory_store(store: Dict[str, Any]) -> None:
     """Writes the full memory store to disk."""
@@ -259,6 +300,10 @@ def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
+                
+        # SYNC CACHE
+        if _session.get("current_task_id") == task_id:
+            _session["cached_messages"] = compacted
     except Exception as e:
         print(f"[System] Error in emergency compaction {task_id}: {e}")
 
@@ -267,10 +312,15 @@ def wipe_global_trunk_log() -> None:
     log_path = constants.MEMORY_DIR / "task_log_global_trunk.jsonl"
     if log_path.exists():
         log_path.unlink()
+    
+    # SYNC CACHE
+    if _session.get("current_task_id") == "global_trunk":
+        _session["cached_messages"] = []
+        
     print("[System] Global Trunk log wiped (Amnesia protocol).")
 
 def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str, is_trunk: bool) -> bool:
-    """Updates global usage tokens and ledger spend from response usage."""
+    """Updates global usage tokens. Financial tracking is offloaded to the Ouroboros Gate."""
     if not hasattr(response, "usage"): return False
     
     t_count = response.usage.total_tokens
@@ -285,25 +335,6 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     state["last_context_size"] = t_count
     state["last_input_tokens"] = i_count
     state["last_output_tokens"] = o_count
-    
-    # Estimate cost only for external/paid models
-    model_name = response.model.lower()
-    is_local = ".gguf" in model_name or "mistralai" in model_name or "local" in model_name
-    
-    if is_local:
-        spend = 0.0
-    else:
-        cost_per_1m = 2.00
-        spend = (t_count / 1_000_000) * cost_per_1m
-    
-    ledger = {}
-    if constants.LEDGER_FILE.exists():
-        try: ledger = json.loads(constants.LEDGER_FILE.read_text(encoding="utf-8"))
-        except: pass
-    
-    today = time.strftime("%Y-%m-%d")
-    ledger[today] = float(ledger.get(today, 0.0)) + spend
-    constants.LEDGER_FILE.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
     
     # BRANCH TRACKING (Finding 1 fix)
     if not is_trunk and state.get("active_branch"):
