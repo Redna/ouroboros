@@ -1678,6 +1678,15 @@ def main() -> None:
     agent_state.initialize_memory()
     print(f"Awaking Native ReAct Mode (JSONL). Model: {constants.MODEL} | Thinking: {'ON' if constants.ENABLE_THINKING else 'OFF'}")
 
+    # WP1: Seal memory ONCE on boot before the loop starts
+    state = agent_state.load_state()
+    queue = agent_state.load_task_queue()
+    try:
+        active_task_id, _, _, _, is_trunk = _resolve_execution_context(state, queue)
+        seal_memory_on_boot(active_task_id, constants.CRASH_LOG_PATH, state, queue, is_trunk)
+    except Exception as e:
+        print(f"[System] Warning: Could not perform boot sealing ({e}). Proceeding to loop.")
+
     while True:
         state = agent_state.load_state()
         queue = agent_state.load_task_queue()
@@ -1694,9 +1703,6 @@ def main() -> None:
 
         active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
             _resolve_execution_context(state, queue)
-
-        # WP1: Seal memory before any LLM calls are made
-        seal_memory_on_boot(active_task_id, constants.CRASH_LOG_PATH, state, queue, is_trunk)
 
         # ENFORCE ROLLBACK MODE
         if state.get("rollback_mode"):
