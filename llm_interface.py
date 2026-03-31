@@ -12,11 +12,16 @@ client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=
 
 def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
     active_model = requested_model if requested_model else constants.DEFAULT_MODEL
+    
+    # Force the agent to use its agency if tools are available
+    tool_choice = "required" if tools else None
+    
     try:
         response = client.chat.completions.create(
             model=active_model,
             messages=messages,
             tools=tools,
+            tool_choice=tool_choice,
             temperature=temperature,
             top_p=top_p,
             presence_penalty=presence_penalty,
@@ -41,26 +46,52 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
     processed = []
     cutoff_idx = len(messages) - retain_full_last_n
     
+    # Agency-First: Thinking/Reasoning shedding for older turns (n-3)
+    thinking_cutoff_idx = len(messages) - 3
+    
+    # Add Turn Indexing [TURN X] for spatial awareness (Volatile only)
+    turn_idx = 1
+    
     for i, msg in enumerate(messages):
-        if i == 0 or i >= cutoff_idx:
-            processed.append(msg)
-            continue
-            
         new_msg = msg.copy()
         role = new_msg.get("role")
+        
+        # Turn indexing for volatile messages
+        if role in ["user", "assistant"]:
+            content = new_msg.get("content", "")
+            new_msg["content"] = f"[TURN {turn_idx}] {content}"
+            turn_idx += 1
+
+        # Strip Thinking from older assistant turns (Finding 10)
+        if role == "assistant" and i < thinking_cutoff_idx:
+            if "thinking" in new_msg:
+                new_msg.pop("thinking")
+            if "reasoning_content" in new_msg:
+                new_msg.pop("reasoning_content")
+
+        if i == 0 or i >= cutoff_idx:
+            processed.append(new_msg)
+            continue
+            
         content_str = str(new_msg.get("content", ""))
         
+        # WP: Telemetry Compression (Context Rot Prevention)
+        # Handle both ## CURRENT TELEMETRY (Genesis) and ## UPDATED TELEMETRY (Piggyback)
+        for marker in ["## UPDATED TELEMETRY", "## CURRENT TELEMETRY"]:
+            if marker in content_str:
+                parts = content_str.split(marker)
+                prefix = parts[0].strip()
+                telemetry_block = parts[1]
+                
+                # Extract Physiology Heartbeat
+                lines = telemetry_block.splitlines()
+                heartbeat = next((l for l in lines if "[PHYSIOLOGY]" in l), "[HEARTBEAT: Metrics Archived]")
+                
+                new_msg["content"] = f"{prefix}\n\n[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
+                content_str = new_msg["content"] # Update for subsequent trim checks
+
         if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
             new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
-            
-        elif role == "user" and "## CURRENT TELEMETRY" in content_str:
-            if len(content_str) > constants.SYSTEM_METRICS_TRIM_CHARS:
-                header = "## CURRENT TELEMETRY"
-                # Preserve the [PHYSIOLOGY] line as a heartbeat for rationale
-                lines = content_str.splitlines()
-                heartbeat = next((l for l in lines if "[PHYSIOLOGY]" in l), "[HEARTBEAT: Metrics Archived]")
-                prefix = content_str.split(header)[0].strip()
-                new_msg["content"] = f"{prefix}\n{header}: {heartbeat} (Old structure archived to save tokens)"
             
         elif role == "assistant" and new_msg.get("tool_calls"):
             trimmed_calls = []
@@ -80,44 +111,3 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         processed.append(new_msg)
         
     return processed
-
-def _normalize_message_history(messages: List[Dict[str, Any]], task_id: str) -> List[Dict[str, Any]]:
-    """Enforce user-start, merge adjacent same-role messages, and heal dangling states."""
-    # Enforce user start
-    while messages and messages[0].get("role") != "user":
-        messages.pop(0)
-    if not messages:
-        return []
-
-    # Merge adjacent non-tool messages
-    normalized: List[Dict[str, Any]] = []
-    for msg in messages:
-        if not normalized:
-            normalized.append(msg)
-            continue
-        last = normalized[-1]
-        role, last_role = msg.get("role"), last.get("role")
-        if role == last_role and role in ["user", "assistant"] and not msg.get("tool_calls") and not last.get("tool_calls"):
-            last["content"] = f"{last.get('content', '')}\n{msg.get('content', '')}".strip()
-            continue
-        normalized.append(msg)
-
-    # Note: Dangling state healing (append_task_message) is tricky here 
-    # as it might cause circular imports if agent_state.py is involved.
-    # We will assume seed_agent handles the appending for now.
-    
-    # Add Turn Indexing [TURN X] for spatial awareness (Volatile only)
-    indexed: List[Dict[str, Any]] = []
-    turn_idx = 1
-    for msg in normalized:
-        role = msg.get("role")
-        if role in ["user", "assistant"]:
-            new_msg = msg.copy()
-            content = new_msg.get("content", "")
-            new_msg["content"] = f"[TURN {turn_idx}] {content}"
-            indexed.append(new_msg)
-            turn_idx += 1
-        else:
-            indexed.append(msg)
-            
-    return indexed
