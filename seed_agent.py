@@ -139,11 +139,16 @@ class ToolRegistry:
             if allowed_buckets is None or t["bucket"] in allowed_buckets
         ]
 
-    def execute(self, name, args):
+    def execute(self, name, args, call_id=None):
         if name not in self.tools:
             return f"Error: Tool '{name}' not found."
         try:
-            result = self.tools[name]["handler"](args)
+            handler = self.tools[name]["handler"]
+            # Only pass call_id to tools that explicitly support it
+            if name == "fork_execution":
+                result = handler(args, call_id=call_id)
+            else:
+                result = handler(args)
             return llm_interface.redact_secrets(str(result))
         except Exception as e:
             return llm_interface.redact_secrets(f"Error executing {name}: {e}")
@@ -168,6 +173,46 @@ def bash_command(args):
         return "[SYSTEM WARNING: Command timed out after 60 seconds. It may be hanging, requiring interactive input, or processing too much data. Run background tasks with '&' or fix the command.]"
     except Exception as e:
         return f"Error: {e}"
+
+@registry.tool(
+    description="Run the test suite to verify code changes before committing. Use this after modifying code and BEFORE committing.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "test_path": {"type": "string", "description": "Optional specific test file to run (e.g., 'tests/test_core.py'). Leave empty to run the full suite."}
+        }
+    },
+    bucket="bash"
+)
+def run_tests(args: dict) -> str:
+    """Executes pytest via uv. High-signal verification for self-evolution."""
+    test_path = args.get("test_path", "tests/")
+    try:
+        # Run pytest via uv to match the pre-commit environment
+        result = subprocess.run(
+            f"uv run pytest {test_path} -v --tb=short",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        
+        if result.returncode == 0:
+            # For success, keep it dense
+            return f"✅ All tests passed successfully.\n{output[-500:]}"
+            
+        # For failure, truncate massive tracebacks but keep the summary
+        if len(output) > 2000:
+            output = output[:1000] + "\n\n... [TRUNCATED] ...\n\n" + output[-1000:]
+            
+        return f"❌ TESTS FAILED. You must fix the code or update the tests before committing.\n\n{output}"
+        
+    except subprocess.TimeoutExpired:
+        return "❌ TESTS FAILED: Pytest execution timed out. You may have introduced an infinite loop."
+    except Exception as e:
+        return f"SYSTEM ERROR running tests: {e}"
 
 @registry.tool(
     description="Overwrite file.",
@@ -213,7 +258,33 @@ def patch_file(args):
 
         occurrence_count = norm_content.count(norm_search)
         if occurrence_count == 0:
-            return "Error: 'search_text' not found. Ensure your snippet matches the file (ignoring trailing spaces). Use 'read_file' to check the target."
+            # WP: Actionable Feedback for Failed Patches
+            lines = content.splitlines()
+            search_lines = search_text.splitlines()
+            
+            error_msg = f"Error: Exact `search_text` not found in {file_path.name}.\n"
+            error_msg += "This is usually caused by incorrect leading spaces or missing blank lines.\n"
+
+            # Find potential matches by looking for the first non-empty line of the search block
+            first_search_line = next((l.strip() for l in search_lines if l.strip()), None)
+            potential_matches = []
+            
+            if first_search_line:
+                for i, line in enumerate(lines):
+                    if first_search_line in line:
+                        start = max(0, i - 2)
+                        end = min(len(lines), i + len(search_lines) + 2)
+                        snippet = "\n".join(lines[start:end])
+                        potential_matches.append(snippet)
+            
+            if potential_matches:
+                error_msg += "\nDid you mean to target this section? Pay close attention to the indentation:\n"
+                error_msg += "```python\n" + potential_matches[0] + "\n```\n"
+                error_msg += "Adjust your `search_text` to match the file exactly and try again."
+            else:
+                error_msg += "Could not find any lines matching the start of your search block. Use `read_file` to check the current file contents."
+            
+            return error_msg
         elif occurrence_count > 1:
             return f"Error: 'search_text' appears {occurrence_count} times. Please provide a more unique block."
 
@@ -336,7 +407,7 @@ def generate_repo_map(args: dict) -> str:
         },
         "required": ["task_id", "synthesis", "steps_to_drop"]
     },
-    bucket="global"
+    bucket="execution_control"
 )
 def fold_context(args: dict) -> str:
     task_id = args.get("task_id")
@@ -634,7 +705,7 @@ def push_task(args):
         },
         "required": ["task_id", "synthesis"]
     },
-    bucket="global"
+    bucket="execution_control"
 )
 def complete_task(args):
     task_id = args.get("task_id")
@@ -656,6 +727,14 @@ def complete_task(args):
     state = agent_state.load_state()
     # If in a branch, trigger merge
     is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
+    
+    # Capture parent info before popping state
+    parent_info = None
+    if is_branch:
+        parent_info = {
+            "parent_task_id": state["active_branch"].get("parent_task_id", "global_trunk"),
+            "fork_tool_call_id": state["active_branch"].get("fork_tool_call_id")
+        }
 
     if is_branch:
         suspended = state.get("suspended_branches", [])
@@ -666,7 +745,13 @@ def complete_task(args):
     agent_state.save_state(state)
 
     if is_branch:
-        payload = json.dumps({"status": "COMPLETED", "task_id": task_id, "summary": synthesis})
+        payload = json.dumps({
+            "status": "COMPLETED", 
+            "task_id": task_id, 
+            "summary": synthesis,
+            "parent_task_id": parent_info["parent_task_id"],
+            "fork_tool_call_id": parent_info["fork_tool_call_id"]
+        })
         return f"SYSTEM_SIGNAL_MERGE:{payload}"
     return f"Task {task_id} closed."
 
@@ -681,7 +766,7 @@ def complete_task(args):
         },
         "required": ["task_id", "synthesis"]
     },
-    bucket="global"
+    bucket="execution_control"
 )
 def suspend_task(args):
     task_id = args.get("task_id")
@@ -698,6 +783,14 @@ def suspend_task(args):
 
     state = agent_state.load_state()
     is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
+    
+    # Capture parent info before modifying state
+    parent_info = None
+    if is_branch:
+        parent_info = {
+            "parent_task_id": state["active_branch"].get("parent_task_id", "global_trunk"),
+            "fork_tool_call_id": state["active_branch"].get("fork_tool_call_id")
+        }
 
     if is_branch:
         suspended = state.get("suspended_branches", [])
@@ -708,7 +801,14 @@ def suspend_task(args):
     agent_state.save_state(state)
 
     if is_branch:
-        payload = json.dumps({"status": "SUSPENDED", "task_id": task_id, "summary": synthesis, "partial_state": partial_state})
+        payload = json.dumps({
+            "status": "SUSPENDED", 
+            "task_id": task_id, 
+            "summary": synthesis, 
+            "partial_state": partial_state,
+            "parent_task_id": parent_info["parent_task_id"],
+            "fork_tool_call_id": parent_info["fork_tool_call_id"]
+        })
         return f"SYSTEM_SIGNAL_MERGE:{payload}"
     return f"Task {task_id} suspended."
 
@@ -935,6 +1035,25 @@ def forget_memory(args):
     return agent_state.forget_memory_entry(key)
 
 @registry.tool(
+    description="Reflect on the current state, progress, or blockers. Use this tool when you need to think, pause, or if you are stuck and need to break a cycle of failing tool calls. This satisfies the forced tool usage requirement without mutating the environment.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "reflection": {"type": "string", "description": "Internal monologue, synthesis of findings, or reasoning about the current situation."},
+            "status": {"type": "string", "description": "Optional status update (e.g., 'continuing', 'stuck', 'pivoting')."}
+        },
+        "required": ["reflection"]
+    },
+    bucket="system_control"
+)
+def reflect(args: dict) -> str:
+    """Satisfy forced tool usage while allowing the agent to think."""
+    reflection = args.get("reflection", "")
+    status = args.get("status", "continuing")
+    return f"Reflection logged. System status: {status}. You may proceed with the next action."
+
+
+@registry.tool(
     description="Signal the watchdog to restart the agent process. Use this AFTER committing your changes via bash_command('git commit'). The git pre-commit hook enforces mypy and pytest automatically — if those fail, the commit (and therefore this restart) will be blocked.",
     parameters={"type": "object", "properties": {}},
     bucket="system_control"
@@ -945,7 +1064,7 @@ def request_restart(args):
 @registry.tool(
     description="Query the gateway to discover available local and external cognitive engines and check the financial budget.",
     parameters={"type": "object", "properties": {}},
-    bucket="global"
+    bucket="system_control"
 )
 def check_environment(args):
     try:
@@ -964,25 +1083,31 @@ def check_environment(args):
         "properties": {
             "task_id": {"type": "string"},
             "objective": {"type": "string"},
+            "context_brief": {"type": "string", "description": "A summary of what the Trunk knows, previous findings, and why this branch is needed."},
             "tool_buckets": {
                 "type": "array",
                 "items": {
                     "type": "string", 
-                    "enum": ["filesystem", "bash", "search", "global", "memory_access"],
-                    "description": "filesystem: read/write/patch files. bash: shell commands. search: web search/fetch. global: task management/state/repo mapping/fold_context. memory_access: persistent insights/recall (Note: memory_access is provided to all branches by default)."
+                    "enum": ["filesystem", "bash", "search", "memory_access"],
+                    "description": "filesystem: read/write/patch files. bash: shell commands. search: web search/fetch. memory_access: persistent insights/recall (Note: memory_access is provided to all branches by default)."
                 }
             },
             "model_id": {"type": "string", "description": "Optional: Override the default model for this specific branch."}
         },
-        "required": ["task_id", "objective", "tool_buckets"]
+        "required": ["task_id", "objective", "context_brief", "tool_buckets"]
     },
     bucket="global"
 )
-def fork_execution(args):
+def fork_execution(args, call_id=None):
     task_id = args.get("task_id", f"task_{int(time.time())}")
     objective = args.get("objective", "No objective provided.")
+    context_brief = args.get("context_brief", "No additional context provided.")
     tool_buckets = args.get("tool_buckets", ["filesystem", "bash"])
     model_id = args.get("model_id")
+
+    # OS-Level Security: Prevent Privilege Escalation
+    if "global" in tool_buckets:
+        return "SYSTEM ERROR: Branches cannot request the 'global' tool bucket. Context isolation violation."
 
     # Get parent ID from current context
     state = agent_state.load_state()
@@ -999,8 +1124,10 @@ def fork_execution(args):
         "task_id": task_id,
         "parent_task_id": parent_id,
         "objective": objective,
+        "context_brief": context_brief,
         "tool_buckets": tool_buckets,
-        "model_id": model_id
+        "model_id": model_id,
+        "fork_tool_call_id": call_id  # WP: Persist call ID
     }
     agent_state.save_state(state)
 
@@ -1225,15 +1352,19 @@ def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str,
 """
 
     objective = branch_info.get("objective", "") if branch_info else "No objective provided."
-    return f"""# SYSTEM CONTEXT
-{identity}
+    context_brief = branch_info.get("context_brief", "No additional context provided.") if branch_info else ""
+    return f"""# EXECUTION BRANCH
+You are operating in an isolated Execution Branch.
 
-## CONSTITUTION
-{constitution}
+## YOUR OBJECTIVE
+{objective}
 
-## BRANCH DIRECTIVES
-1. You are in an ISOLATED BRANCH. You have full authority to complete your OBJECTIVE.
-2. OBJECTIVE: {objective}
+## CONTEXT BRIEF FROM TRUNK
+{context_brief}
+
+## DIRECTIVES
+1. Focus entirely on completing the objective.
+2. You only have access to a restricted set of tools.
 3. Solve problems independently. Only `merge_and_return` when the objective is met, or if you hit a structural blocker requiring Trunk orchestration.
 4. Do not seek confirmation for technical decisions; your logic is the transport for evolution.
 """
@@ -1463,16 +1594,17 @@ def _route_tool_calls(
     for i, tool_call in enumerate(tool_calls):
         name     = tool_call.function.name
         raw_args = tool_call.function.arguments
+        
+        safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
+        
         try:
             args   = json.loads(raw_args)
-            result = registry.execute(name, args)
+            result = registry.execute(name, args, call_id=safe_call_id)
         except json.JSONDecodeError:
             result = "SYSTEM ERROR: Invalid JSON arguments."
 
         is_error = "Error:" in str(result) or "SYSTEM ERROR" in str(result)
         error_streak = error_streak + 1 if is_error else 0
-
-        safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
 
         # Agency-First: Piggyback telemetry onto the LAST tool response
         if i == len(tool_calls) - 1:
@@ -1491,11 +1623,30 @@ def _route_tool_calls(
         elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
             try:
                 payload = json.loads(str(result).split(":", 1)[1])
-                agent_state.wipe_global_trunk_log()
-                agent_state.append_task_message("global_trunk", {
-                    "role": "user",
-                    "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}\n\n[ACTION REQUIRED]: Evaluate the synthesis and determine the next step.",
-                })
+                
+                # Option A: Native ReAct Resolution
+                # We inject the synthesis directly as the tool output for the original 'fork_execution' call.
+                parent_id = payload.get("parent_task_id", "global_trunk")
+                fork_call_id = payload.get("fork_tool_call_id")
+                
+                if parent_id == "global_trunk":
+                    agent_state.wipe_global_trunk_log()
+
+                if fork_call_id:
+                    merge_msg = {
+                        "role": "tool",
+                        "tool_call_id": fork_call_id,
+                        "name": "fork_execution",
+                        "content": f"[BRANCH MERGE SUCCESSFUL]\nStatus: {payload.get('status')}\nSynthesis:\n{payload.get('summary', '')}"
+                    }
+                    agent_state.append_task_message(parent_id, merge_msg)
+                else:
+                    # Fallback to User message if no call ID was tracked
+                    agent_state.append_task_message(parent_id, {
+                        "role": "user",
+                        "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}\n\n[ACTION REQUIRED]: Evaluate the synthesis and determine the next step.",
+                    })
+
                 if payload.get("status") == "SUSPENDED" and payload.get("partial_state"):
                     post_merge_state = agent_state.load_state()
                     post_merge_state[f"partial_state_{payload.get('task_id')}"] = payload.get("partial_state")

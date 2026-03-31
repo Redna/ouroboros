@@ -1,6 +1,14 @@
 from unittest.mock import patch, MagicMock
-from seed_agent import bash_command, write_file, read_file_tool, send_telegram_message, web_search, store_memory
+from seed_agent import bash_command, write_file, read_file_tool, send_telegram_message, web_search, store_memory, reflect
 import json
+
+def test_reflect():
+    result = reflect({"reflection": "I am thinking about the code structure.", "status": "stuck"})
+    assert "Reflection logged" in result
+    assert "stuck" in result
+    
+    result = reflect({"reflection": "Moving forward."})
+    assert "continuing" in result
 
 def test_bash_command():
     with patch("subprocess.run") as mock_run:
