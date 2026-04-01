@@ -1251,6 +1251,10 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         turn_count = state["active_branch"].get("turn_count", 0)
         task_tokens = state["active_branch"].get("task_tokens", 0)
         branch_id = state["active_branch"].get("task_id", "branch")
+    elif is_trunk:
+        turn_count = state.get("trunk_turns", 0)
+        task_tokens = state.get("trunk_tokens", 0)
+        branch_id = "global_trunk"
     else:
         turn_count = queue[0].get("turn_count", 0) if queue else 0
         task_tokens = queue[0].get("task_tokens", 0) if queue else 0

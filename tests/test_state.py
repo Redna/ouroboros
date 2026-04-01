@@ -24,8 +24,8 @@ def test_enforce_context_limits_branch_exhaustion(mock_memory):
 def test_enforce_context_limits_trunk_amnesia(mock_memory):
     """Test that Trunk hitting limits signals amnesia."""
     # Hit turn limit
-    state = {"last_context_size": 1000}
-    queue = [{"task_id": "global_trunk", "priority": 1, "turn_count": 51}]
+    state = {"last_context_size": 1000, "trunk_turns": 51}
+    queue = [{"task_id": "global_trunk", "priority": 1}]
     
     new_q, status = enforce_context_limits(state, queue, "global_trunk", is_trunk=True)
     assert status == "BREACH"

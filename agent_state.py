@@ -332,6 +332,12 @@ def wipe_global_trunk_log() -> None:
     if _session.get("current_task_id") == "global_trunk":
         _session["cached_messages"] = []
         
+    # WP: Reset Trunk session metrics
+    state = load_state()
+    state["trunk_tokens"] = 0
+    state["trunk_turns"] = 0
+    save_state(state)
+        
     print("[System] Global Trunk log wiped (Amnesia protocol).")
 
 def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str, is_trunk: bool) -> bool:
@@ -354,6 +360,8 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     # BRANCH TRACKING (Finding 1 fix)
     if not is_trunk and state.get("active_branch"):
         state["active_branch"]["task_tokens"] = state["active_branch"].get("task_tokens", 0) + t_count
+    elif is_trunk:
+        state["trunk_tokens"] = state.get("trunk_tokens", 0) + t_count
     
     save_state(state)
     
@@ -371,11 +379,6 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
 
 def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], str]:
     """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
-    if not queue:
-        return queue, "NORMAL"
-
-    # Persistent Turn Tracking
-    queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
     
     # Active Tracking Source (Finding 1 fix)
     current_context_size = state.get("last_context_size", 0)
@@ -384,9 +387,19 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
         state["active_branch"]["turn_count"] = state["active_branch"].get("turn_count", 0) + 1
         turn_count = state["active_branch"]["turn_count"]
         task_tokens = state["active_branch"].get("task_tokens", 0)
+    elif is_trunk:
+        state["trunk_turns"] = state.get("trunk_turns", 0) + 1
+        turn_count = state["trunk_turns"]
+        task_tokens = state.get("trunk_tokens", 0)
     else:
-        turn_count = queue[0]["turn_count"]
-        task_tokens = queue[0].get("task_tokens", 0)
+        # Fallback for tasks in queue when NOT in a branch (Direct Trunk Tasks)
+        if queue:
+            queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
+            turn_count = queue[0]["turn_count"]
+            task_tokens = queue[0].get("task_tokens", 0)
+        else:
+            turn_count = 0
+            task_tokens = 0
 
     # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
