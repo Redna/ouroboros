@@ -330,6 +330,14 @@ def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
                 
+        # WP: Update State Metrics to reflect truncation (Finding 11)
+        state = load_state()
+        if task_id == "global_trunk":
+            state["trunk_turns"] = 2 # Genesis + Synthesis
+        elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
+            state["active_branch"]["turn_count"] = 2
+        save_state(state)
+
         # SYNC CACHE
         if _session.get("current_task_id") == task_id:
             _session["cached_messages"] = compacted
