@@ -310,20 +310,31 @@ def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
         # Preserve the task start (usually message 0)
         first_msg = messages[0]
 
-        # Safely find a cutoff for the most recent messages (e.g., last 20)
-        cutoff = len(messages) - 20
-        while cutoff < len(messages) and messages[cutoff].get("role") != "user":
-            cutoff += 1  # Ensure we cut at a user message to avoid breaking tool chains
-
-        if cutoff >= len(messages):
-            cutoff = len(messages) - 10  # Fallback
+        # SAFE BOUNDARY FINDING: Look backwards to find the last complete interaction cycle
+        safe_cutoff = len(messages) - 1
+        found_safe_boundary = False
+        
+        # Traverse backwards up to the last 40 messages looking for a clean break
+        search_limit = max(1, len(messages) - 40)
+        for i in range(len(messages) - 1, search_limit - 1, -1):
+            if messages[i].get("role") == "user":
+                safe_cutoff = i
+                found_safe_boundary = True
+                break
+                
+        if not found_safe_boundary:
+            # Absolute fallback: wipe the middle entirely, start from last message
+            # just to escape the loop, assuming the last message isn't a dangling tool
+            safe_cutoff = len(messages) - 2
+            while safe_cutoff > 1 and messages[safe_cutoff].get("role") == "tool":
+                safe_cutoff -= 1
 
         emergency_notice = {
             "role": "user",
-            "content": "[SYSTEM OVERRIDE]: Emergency compaction triggered. You failed to compress your memory in time. Middle history has been wiped to prevent a crash."
+            "content": "[SYSTEM OVERRIDE]: Emergency compaction triggered. Middle history wiped to prevent cognitive collapse."
         }
 
-        compacted = [first_msg, emergency_notice] + messages[cutoff:]
+        compacted = [first_msg, emergency_notice] + messages[safe_cutoff:]
 
         print(f"[System] Emergency compaction for {task_id} ({len(lines)} lines -> {len(compacted)})")
         with open(log_path, "w", encoding="utf-8") as f:
