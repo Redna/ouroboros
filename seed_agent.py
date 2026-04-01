@@ -403,21 +403,21 @@ def generate_repo_map(args: dict) -> str:
         "properties": {
             "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk' or branch ID)."},
             "synthesis": {"type": "string", "description": "Dense summary following the DELTA PATTERN: 1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."},
-            "steps_to_drop": {"type": "integer", "description": "Number of recent tool/assistant turns to delete."}
+            "drop_turns": {"type": "integer", "description": "Optional: Number of recent tool/assistant turns to delete. If omitted or 0, folds ALL history except the initial objective."}
         },
-        "required": ["task_id", "synthesis", "steps_to_drop"]
+        "required": ["task_id", "synthesis"]
     },
-    bucket="execution_control"
+    bucket="context_control"
 )
 def fold_context(args: dict) -> str:
     task_id = args.get("task_id")
     synthesis = args.get("synthesis")
     try:
-        steps_to_drop = int(args.get("steps_to_drop", 0))
+        drop_turns = int(args.get("drop_turns", 0))
     except (ValueError, TypeError):
-        return "Error: 'steps_to_drop' must be an integer."
+        return "Error: 'drop_turns' must be an integer."
 
-    if not task_id or steps_to_drop <= 0:
+    if not task_id or drop_turns < 0:
         return "Error: Invalid parameters for context folding."
 
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
@@ -430,18 +430,31 @@ def fold_context(args: dict) -> str:
     except Exception as e:
         return f"Error reading log: {e}"
 
-    if len(messages) <= steps_to_drop + 1:
-        return f"Error: Not enough history to fold safely (History: {len(messages)}, Drop: {steps_to_drop})."
+    if len(messages) <= 2:
+        return f"Error: Not enough history to fold safely."
 
-    # Slice the messages to remove the tail
-    cutoff = len(messages) - (steps_to_drop * 2) # Each turn is roughly 2 messages (assistant + tool)
-    if cutoff < 1: cutoff = 1 # Keep at least the genesis message
+    if drop_turns == 0:
+        # Default: keep only genesis message
+        cutoff = 1
+        turns_dropped = (len(messages) - 1) // 2
+    else:
+        if len(messages) <= drop_turns * 2 + 1:
+             # Dropping too much, default to dropping all but genesis
+             cutoff = 1
+             turns_dropped = (len(messages) - 1) // 2
+        else:
+             # Slice the messages to remove the tail
+             cutoff = len(messages) - (drop_turns * 2) # Each turn is roughly 2 messages (assistant + tool)
+             turns_dropped = drop_turns
+             if cutoff < 1: 
+                 cutoff = 1 # Keep at least the genesis message
+                 turns_dropped = (len(messages) - 1) // 2
     
     preserved = messages[:cutoff]
 
     knowledge_block = {
         "role": "user",
-        "content": f"[FOCUS SYNTHESIS - PREVIOUS {steps_to_drop} STEPS ARCHIVED]: {synthesis}"
+        "content": f"[FOCUS SYNTHESIS - PREVIOUS {turns_dropped} STEPS ARCHIVED]: {synthesis}"
     }
 
     try:
@@ -453,15 +466,15 @@ def fold_context(args: dict) -> str:
         # WP: Update State Metrics to reflect the folding (Finding 11)
         state = agent_state.load_state()
         if task_id == "global_trunk":
-            state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - steps_to_drop)
+            state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - turns_dropped)
         elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
-            state["active_branch"]["turn_count"] = max(1, state["active_branch"].get("turn_count", 1) - steps_to_drop)
+            state["active_branch"]["turn_count"] = max(1, state["active_branch"].get("turn_count", 1) - turns_dropped)
         agent_state.save_state(state)
 
     except Exception as e:
         return f"Error writing log during fold: {e}"
 
-    return f"Context successfully folded for {task_id}. {steps_to_drop} turns replaced with synthesis."
+    return f"Context successfully folded for {task_id}. {turns_dropped} turns replaced with synthesis."
 
 
 @registry.tool(
@@ -630,6 +643,33 @@ def git_push(args):
 
 
 @registry.tool(
+    description="Remove a completed or obsolete task from the queue. Trunk uses this after handling an interrupt or administrative task. NEVER use this on 'global_trunk'.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "synthesis": {"type": "string", "description": "Brief summary of how it was handled."}
+        },
+        "required": ["task_id", "synthesis"]
+    },
+    bucket="global"
+)
+def dismiss_queue_item(args):
+    task_id = args.get("task_id")
+    synthesis = args.get("synthesis", "No synthesis provided.")
+    
+    if task_id == "global_trunk":
+        return "Error: Cannot dismiss the global trunk."
+        
+    agent_state.append_task_archive(task_id, synthesis)
+
+    q = agent_state.load_task_queue()
+    q = [t for t in q if t.get("task_id") != task_id]
+    constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2), encoding="utf-8")
+    
+    return f"Task {task_id} dismissed from queue."
+
+@registry.tool(
     description="Queue a task, optionally scheduling it for the future. Omit run_after_timestamp for immediate queueing. Provide a UNIX timestamp to defer activation until that time.",
     parameters={
         "type": "object",
@@ -716,7 +756,7 @@ def push_task(args):
         },
         "required": ["task_id", "synthesis"]
     },
-    bucket="execution_control"
+    bucket="branch_control"
 )
 def complete_task(args):
     task_id = args.get("task_id")
@@ -777,7 +817,7 @@ def complete_task(args):
         },
         "required": ["task_id", "synthesis"]
     },
-    bucket="execution_control"
+    bucket="branch_control"
 )
 def suspend_task(args):
     task_id = args.get("task_id")
@@ -1279,11 +1319,17 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     
     if turn_count >= (turn_limit - 5) or current_context >= (constants.CONTEXT_WINDOW * 0.8):
         reason = f"turn limit ({turn_count}/{turn_limit})" if turn_count >= (turn_limit - 5) else "approaching context limit"
-        limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize, or `complete_task` if finished."
+        if is_trunk:
+            limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize and clear history."
+        else:
+            limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize, `complete_task` if finished, or `suspend_task` if blocked."
 
     # Rollback mode warning (Finding 11)
     if state.get("rollback_mode"):
-        limit_warning += "\n\n[SYSTEM EMERGENCY]: ROLLBACK MODE ACTIVE. Only `fold_context` and `complete_task` are available. You MUST resolve the breach now."
+        if is_trunk:
+            limit_warning += "\n\n[SYSTEM EMERGENCY]: ROLLBACK MODE ACTIVE. Only `fold_context` is available. You MUST resolve the breach now."
+        else:
+            limit_warning += "\n\n[SYSTEM EMERGENCY]: ROLLBACK MODE ACTIVE. Only `fold_context`, `complete_task`, and `suspend_task` are available. You MUST resolve the breach now."
 
     # 1. Context-Aware HUD & Directives
     if is_trunk:
@@ -1527,7 +1573,7 @@ def _resolve_execution_context(
 
     if is_trunk:
         active_task_id = "global_trunk"
-        allowed_buckets = ["global", "memory_access", "system_control", "search", "execution_control"]
+        allowed_buckets = ["global", "memory_access", "system_control", "search", "context_control"]
 
         if queue:
             top_task = queue[0]
@@ -1544,7 +1590,7 @@ def _resolve_execution_context(
             task_desc = (
                 "You are the GLOBAL ORCHESTRATOR. EVALUATE your queue. "
                 "If the top task is communication or administrative, you MUST handle it "
-                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `complete_task`. "
+                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `dismiss_queue_item`. "
                 "NEVER leave an interrupt task in the queue once responded to. "
                 "If a Priority 999 task exists, you CANNOT resume or fork a branch. Handle the interrupt first. "
                 "If the top task is a previously suspended branch and NO interrupts are pending, you MUST use `resume_branch` to thaw it. "
@@ -1561,7 +1607,7 @@ def _resolve_execution_context(
         assert branch_info is not None
         active_task_id = branch_info.get("task_id", f"branch_{int(time.time())}")
 
-        allowed_buckets = branch_info.get("tool_buckets", []) + ["execution_control", "system_control", "memory_access"]
+        allowed_buckets = branch_info.get("tool_buckets", []) + ["branch_control", "context_control", "system_control", "memory_access"]
         task_desc = branch_info.get("objective", "")
         if partial_state := state.get(f"partial_state_{active_task_id}"):
             task_desc += f"\n\n[RESUME STATE]: {partial_state}"
@@ -1734,9 +1780,10 @@ def main() -> None:
         # ENFORCE ROLLBACK MODE
         if state.get("rollback_mode"):
             print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
+            allowed_rollback_tools = ["fold_context"] if is_trunk else ["fold_context", "complete_task", "suspend_task"]
             active_tool_specs = [
                 t for t in active_tool_specs 
-                if t["function"]["name"] in ["fold_context", "complete_task", "suspend_task"]
+                if t["function"]["name"] in allowed_rollback_tools
             ]
             state["rollback_mode"] = False # Unset so it only applies for one turn
             agent_state.save_state(state)
@@ -1796,12 +1843,19 @@ def main() -> None:
                     constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
                 
                 # 3. Inject Critical Directive
-                rollback_msg = (
-                    "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
-                    "The last turn has been REVERTED. You are at maximum capacity. "
-                    "You MUST use `fold_context` or `complete_task` (merge) now. "
-                    "All other tools have been temporarily disabled to prevent a system crash."
-                )
+                if is_trunk:
+                    rollback_msg = (
+                        "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
+                        "The last turn has been REVERTED. You are at maximum capacity. "
+                        "You MUST use `fold_context` now. All other tools have been temporarily disabled to prevent a system crash."
+                    )
+                else:
+                    rollback_msg = (
+                        "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
+                        "The last turn has been REVERTED. You are at maximum capacity. "
+                        "You MUST use `fold_context`, `complete_task`, or `suspend_task` now. "
+                        "All other tools have been temporarily disabled to prevent a system crash."
+                    )
                 agent_state.amend_last_tool_message(active_task_id, rollback_msg)
                 
                 # 4. Enforce Rollback Mode on next turn
@@ -1812,11 +1866,17 @@ def main() -> None:
 
             # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)
             if limit_status == "LAST_GASP":
-                gasp_msg = (
-                    "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
-                    "You MUST use the DELTA PATTERN to synthesize your progress and merge/fold now: "
-                    "1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."
-                )
+                if is_trunk:
+                    gasp_msg = (
+                        "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
+                        "You MUST use `fold_context` to synthesize your progress and compress your history now."
+                    )
+                else:
+                    gasp_msg = (
+                        "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
+                        "You MUST use the DELTA PATTERN to synthesize your progress and `fold_context`, `complete_task`, or `suspend_task` now: "
+                        "1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."
+                    )
                 agent_state.amend_last_tool_message(active_task_id, gasp_msg)
 
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
