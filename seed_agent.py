@@ -1778,7 +1778,9 @@ def main() -> None:
             _resolve_execution_context(state, queue)
 
         # ENFORCE ROLLBACK MODE
+        was_in_rollback = False
         if state.get("rollback_mode"):
+            was_in_rollback = True
             print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
             allowed_rollback_tools = ["fold_context"] if is_trunk else ["fold_context", "complete_task", "suspend_task"]
             active_tool_specs = [
@@ -1836,7 +1838,7 @@ def main() -> None:
                 print(f"\033[91m[System] {active_task_id} breached limits. Triggering safety protocols.\033[0m")
                 
                 # Finding 11: Trunk Amnesia Hard Abort (WP)
-                if is_trunk and state.get("rollback_mode"):
+                if is_trunk and was_in_rollback:
                     print("\033[91m[System] PERSISTENT BREACH in Trunk. Triggering Trunk Amnesia protocol.\033[0m")
                     agent_state.wipe_global_trunk_log()
                     state["rollback_mode"] = False
