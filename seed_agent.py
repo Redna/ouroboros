@@ -1253,7 +1253,7 @@ def resume_branch(args):
     return f"SYSTEM_SIGNAL_FORK:{task_id}"
 
 
-def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> None:
+def lazarus_recovery(active_task_id: str, is_trunk: bool = False, reason: str = "cognitive loop") -> None:
     print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
 
     # FIX: Stop overwriting logs. Append terminal failure message instead.
@@ -1262,10 +1262,16 @@ def lazarus_recovery(active_task_id: str, reason: str = "cognitive loop") -> Non
         "content": f"[SYSTEM OVERRIDE]: Task aborted due to {reason}. Stuck in a repetitive loop."
     })
 
-    registry.execute("complete_task", {
-        "task_id": active_task_id,
-        "synthesis": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
-    })
+    if is_trunk and active_task_id == "global_trunk":
+        # Trunk cannot be closed, but we can signal a reset
+        pass
+    else:
+        # Use dismiss_queue_item if it's an orchestrator task, else complete_task
+        tool_name = "dismiss_queue_item" if is_trunk else "complete_task"
+        registry.execute(tool_name, {
+            "task_id": active_task_id,
+            "synthesis": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
+        })
 
     state = agent_state.load_state()
     if state.get("active_branch") and state["active_branch"].get("task_id") == active_task_id:
@@ -1555,13 +1561,16 @@ def _resolve_execution_context(
     if has_interrupt and queue and queue[0].get("priority") == 999:
         top_task = queue[0]
         top_task["turn_count"] = top_task.get("turn_count", 0) + 1
+        
+        # Save the incremented turn count to disk immediately
+        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+
         if top_task["turn_count"] > 3:
             print(f"[HAL] Auto-closing persistent interrupt {top_task.get('task_id')}.")
-            registry.execute("complete_task", {
-                "task_id": top_task.get("task_id"),
-                "synthesis": "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work."
-            })
-            queue = agent_state.load_task_queue()
+            # WP: Use internal logic instead of registry to avoid bucket issues and ensure atomicity
+            agent_state.append_task_archive(str(top_task.get("task_id")), "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work.")
+            queue = [t for t in queue if t.get("task_id") != top_task.get("task_id")]
+            constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
             has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
 
     if has_interrupt:
@@ -1827,7 +1836,6 @@ def main() -> None:
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
 
             # --- EMERGENCY EGRESS OVERRIDE (Finding 11) ---
-            # If the model is trying to save itself, do NOT guillotine the turn.
             is_emergency_save = False
             if message.tool_calls:
                 emergency_tools = ["fold_context", "complete_task", "suspend_task", "dismiss_queue_item"]
@@ -1837,19 +1845,15 @@ def main() -> None:
             if (limit_status == "BREACH" or limit_exceeded) and not is_emergency_save:
                 print(f"\033[91m[System] {active_task_id} breached limits. Triggering safety protocols.\033[0m")
                 
-                # Finding 11: Trunk Amnesia Hard Abort (WP)
-                if is_trunk and was_in_rollback:
-                    print("\033[91m[System] PERSISTENT BREACH in Trunk. Triggering Trunk Amnesia protocol.\033[0m")
-                    agent_state.wipe_global_trunk_log()
+                # Finding 11: Auto-Folding (The "Force Fold" Egress)
+                # If we've already tried rolling back and we're still breaching, or if the context is critical,
+                # we force a fold now to prevent a crash.
+                if is_trunk or state.get("rollback_mode"):
+                    print(f"\033[91m[System] FORCE FOLD: Automatic context truncation for {active_task_id}.\033[0m")
+                    agent_state.emergency_compact_log(active_task_id)
                     state["rollback_mode"] = False
                     agent_state.save_state(state)
                     continue
-
-                # Finding 2: The Guillotine (Emergency Compaction at 95%+)
-                current_context = state.get("last_context_size", 0)
-                if current_context >= int(constants.CONTEXT_WINDOW * 0.95):
-                    print(f"\033[91m[System] GUILLOTINE: Emergency compacting log for {active_task_id}.\033[0m")
-                    agent_state.emergency_compact_log(active_task_id)
 
                 # 1. Rollback the log (removes the bloated turn)
                 agent_state.rollback_task_log(active_task_id)
@@ -1864,14 +1868,13 @@ def main() -> None:
                     rollback_msg = (
                         "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
                         "The last turn has been REVERTED. You are at maximum capacity. "
-                        "You MUST use `fold_context` now. All other tools have been temporarily disabled to prevent a system crash."
+                        "You MUST use `fold_context` now. All other tools have been temporarily disabled."
                     )
                 else:
                     rollback_msg = (
                         "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
                         "The last turn has been REVERTED. You are at maximum capacity. "
-                        "You MUST use `fold_context`, `complete_task`, or `suspend_task` now. "
-                        "All other tools have been temporarily disabled to prevent a system crash."
+                        "You MUST use `fold_context`, `complete_task`, or `suspend_task` now."
                     )
                 agent_state.amend_last_tool_message(active_task_id, rollback_msg)
                 
@@ -1899,7 +1902,10 @@ def main() -> None:
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:
                 # Heuristic loop detection (no kill, just warning for HUD)
-                detect_cognitive_loop(message.tool_calls, state)
+                loop_reason = detect_cognitive_loop(message.tool_calls, state)
+                if loop_reason and "LAZARUS" in loop_reason:
+                    lazarus_recovery(active_task_id, is_trunk, loop_reason)
+                    continue
 
                 context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue, is_trunk)
                 if context_switch or hibernating:
