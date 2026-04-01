@@ -336,6 +336,9 @@ def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
             state["trunk_turns"] = 2 # Genesis + Synthesis
         elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
             state["active_branch"]["turn_count"] = 2
+        
+        # Reset last_context_size to force a re-evaluation based on the next turn's reality
+        state["last_context_size"] = 0 
         save_state(state)
 
         # SYNC CACHE

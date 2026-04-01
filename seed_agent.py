@@ -1832,8 +1832,9 @@ def main() -> None:
             response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
 
-            queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
+            # WP: Update metrics BEFORE enforcing limits so thresholds use current data (Finding 11)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
+            queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
 
             # --- EMERGENCY EGRESS OVERRIDE (Finding 11) ---
             is_emergency_save = False
