@@ -434,7 +434,9 @@ def fold_context(args: dict) -> str:
         return f"Error: Not enough history to fold safely (History: {len(messages)}, Drop: {steps_to_drop})."
 
     # Slice the messages to remove the tail
-    cutoff = len(messages) - steps_to_drop
+    cutoff = len(messages) - (steps_to_drop * 2) # Each turn is roughly 2 messages (assistant + tool)
+    if cutoff < 1: cutoff = 1 # Keep at least the genesis message
+    
     preserved = messages[:cutoff]
 
     knowledge_block = {
@@ -447,6 +449,15 @@ def fold_context(args: dict) -> str:
             for msg in preserved:
                 f.write(json.dumps(msg) + "\n")
             f.write(json.dumps(knowledge_block) + "\n")
+            
+        # WP: Update State Metrics to reflect the folding (Finding 11)
+        state = agent_state.load_state()
+        if task_id == "global_trunk":
+            state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - steps_to_drop)
+        elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
+            state["active_branch"]["turn_count"] = max(1, state["active_branch"].get("turn_count", 1) - steps_to_drop)
+        agent_state.save_state(state)
+
     except Exception as e:
         return f"Error writing log during fold: {e}"
 
@@ -1239,8 +1250,9 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     # Heuristic loop detection
     loop_warning = ""
     if agent_state._session["tool_history"]:
-        loop_reason = detect_cognitive_loop([]) 
+        loop_reason = detect_cognitive_loop([], state)
         if loop_reason:
+
             loop_warning = f"\n\n[SYSTEM WARNING]: {loop_reason}. P6 Warning: You are burning tokens on repetition. Pivot or use `fold_context`."
 
     # Context & Turn warnings (Volatile)
@@ -1262,9 +1274,16 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     current_context = state.get("last_context_size", 0)
     
-    if turn_count >= (constants.TURN_LIMIT - 5) or current_context >= (constants.CONTEXT_WINDOW * 0.8):
-        reason = f"turn limit ({turn_count}/{constants.TURN_LIMIT})" if turn_count >= (constants.TURN_LIMIT - 5) else "approaching context limit"
+    # Source limit from state (Finding 11: Branch vs Trunk limits)
+    turn_limit = 50 if is_trunk else constants.TURN_LIMIT
+    
+    if turn_count >= (turn_limit - 5) or current_context >= (constants.CONTEXT_WINDOW * 0.8):
+        reason = f"turn limit ({turn_count}/{turn_limit})" if turn_count >= (turn_limit - 5) else "approaching context limit"
         limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize, or `complete_task` if finished."
+
+    # Rollback mode warning (Finding 11)
+    if state.get("rollback_mode"):
+        limit_warning += "\n\n[SYSTEM EMERGENCY]: ROLLBACK MODE ACTIVE. Only `fold_context` and `complete_task` are available. You MUST resolve the breach now."
 
     # 1. Context-Aware HUD & Directives
     if is_trunk:
@@ -1387,7 +1406,7 @@ def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]]
     return f"\n\n## UPDATED TELEMETRY\n{telemetry}{interrupt_alert}"
 
 
-def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
+def detect_cognitive_loop(tool_calls: List[Any], state: Dict[str, Any]) -> Optional[str]:
     for tc in tool_calls:
         name = tc.function.name
         raw_args = tc.function.arguments
@@ -1405,6 +1424,10 @@ def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
                 intent = f"bash:{cmd[:50]}"
             except Exception: pass
         agent_state._session["intent_history"].append(intent)
+        
+        # Update persisted state with current action
+        state["last_action"] = intent
+        state["intent_history"] = agent_state._session["intent_history"][-5:]
 
     agent_state._session["tool_history"] = agent_state._session["tool_history"][-6:]
     agent_state._session["intent_history"] = agent_state._session["intent_history"][-6:]
@@ -1504,7 +1527,7 @@ def _resolve_execution_context(
 
     if is_trunk:
         active_task_id = "global_trunk"
-        allowed_buckets = ["global", "memory_access", "system_control", "search"]
+        allowed_buckets = ["global", "memory_access", "system_control", "search", "execution_control"]
 
         if queue:
             top_task = queue[0]
@@ -1799,7 +1822,7 @@ def main() -> None:
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:
                 # Heuristic loop detection (no kill, just warning for HUD)
-                detect_cognitive_loop(message.tool_calls)
+                detect_cognitive_loop(message.tool_calls, state)
 
                 context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue, is_trunk)
                 if context_switch or hibernating:

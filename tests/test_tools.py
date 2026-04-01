@@ -78,8 +78,8 @@ def test_fold_context(mock_memory):
     with open(log_path, "r") as f:
         final_msgs = [json.loads(line) for line in f if line.strip()]
         
-    # Should have 3 preserved + 1 synthesis = 4 messages
-    assert len(final_msgs) == 4
+    # Should have 1 preserved (genesis) + 1 synthesis = 2 messages
+    assert len(final_msgs) == 2
     assert final_msgs[0]["content"] == "Start"
     assert "FOCUS SYNTHESIS" in final_msgs[-1]["content"]
     assert "Successfully calculated X." in final_msgs[-1]["content"]

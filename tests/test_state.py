@@ -12,10 +12,10 @@ def test_redact_secrets():
 
 from agent_state import enforce_context_limits
 import constants
-
 def test_enforce_context_limits_branch_exhaustion(mock_memory):
     """Test that a branch hitting limits signals a breach."""
-    state = {"last_context_size": int(constants.CONTEXT_WINDOW * 0.92)}
+    # New thresholds: gasp=85%, breach=90%
+    state = {"last_context_size": int(constants.CONTEXT_WINDOW * 0.86)}
     queue = [{"task_id": "b1", "priority": 1, "turn_count": 5}]
 
     with patch("agent_state.append_task_message"):

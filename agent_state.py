@@ -159,7 +159,13 @@ def amend_last_tool_message(task_id: str, suffix: str) -> None:
             
         for msg in reversed(messages):
             if msg.get("role") in ["tool", "user"]:
-                msg["content"] = str(msg.get("content", "")) + "\n\n" + suffix
+                content = str(msg.get("content", ""))
+                # WP: De-duplicate suffix to prevent infinite loops (Finding 11)
+                if suffix in content:
+                    print(f"[System] Warning already present in {task_id}. Skipping amend.")
+                    return
+
+                msg["content"] = content + "\n\n" + suffix
                 break
                 
         with open(log_path, "w", encoding="utf-8") as f:
@@ -199,6 +205,14 @@ def rollback_task_log(task_id: str) -> None:
         # SYNC CACHE
         if _session.get("current_task_id") == task_id:
             _session["cached_messages"] = messages
+            
+        # WP: Decrement turn count to allow recovery (Finding 11)
+        state = load_state()
+        if task_id == "global_trunk":
+            state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - 1)
+        elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
+            state["active_branch"]["turn_count"] = max(1, state["active_branch"].get("turn_count", 1) - 1)
+        save_state(state)
             
         print(f"[System] Rollback executed for {task_id}. Reverted 1 turn.")
     except Exception as e:
@@ -401,22 +415,22 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], t
             turn_count = 0
             task_tokens = 0
 
-    # Thresholds
+    # Thresholds (Finding 11: More headroom for Agency-First recovery)
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
-    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.90)
-    breach_threshold = int(constants.CONTEXT_WINDOW * 0.95)
+    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.85)
+    breach_threshold = int(constants.CONTEXT_WINDOW * 0.90)
 
     # TRUNK SAFETY
     if is_trunk:
         if turn_count > 50 or current_context_size >= breach_threshold:
             return queue, "BREACH"
-        if turn_count > 45 or current_context_size >= last_gasp_threshold:
+        if turn_count >= 45 or current_context_size >= last_gasp_threshold:
             return queue, "LAST_GASP"
         return queue, "NORMAL"
 
     # BRANCH SAFETY (WP6 / Finding 1 fix)
     hit_turn_breach = turn_count > constants.TURN_LIMIT
-    hit_turn_gasp = turn_count >= (constants.TURN_LIMIT - 3)
+    hit_turn_gasp = turn_count >= (constants.TURN_LIMIT - 5)
     
     hit_token_breach = current_context_size >= breach_threshold
     hit_token_gasp = current_context_size >= last_gasp_threshold
