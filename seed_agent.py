@@ -1736,7 +1736,7 @@ def main() -> None:
             print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
             active_tool_specs = [
                 t for t in active_tool_specs 
-                if t["function"]["name"] in ["fold_context", "complete_task"]
+                if t["function"]["name"] in ["fold_context", "complete_task", "suspend_task"]
             ]
             state["rollback_mode"] = False # Unset so it only applies for one turn
             agent_state.save_state(state)
