@@ -1824,10 +1824,25 @@ def main() -> None:
             queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
             limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
 
+            # --- EMERGENCY EGRESS OVERRIDE (Finding 11) ---
+            # If the model is trying to save itself, do NOT guillotine the turn.
+            is_emergency_save = False
+            if message.tool_calls:
+                emergency_tools = ["fold_context", "complete_task", "suspend_task", "dismiss_queue_item"]
+                is_emergency_save = any(tc.function.name in emergency_tools for tc in message.tool_calls)
+
             # HANDLE PHYSICAL BREACH (Tier 3 safety - Atomic Rollback & Guillotine)
-            if limit_status == "BREACH" or limit_exceeded:
+            if (limit_status == "BREACH" or limit_exceeded) and not is_emergency_save:
                 print(f"\033[91m[System] {active_task_id} breached limits. Triggering safety protocols.\033[0m")
                 
+                # Finding 11: Trunk Amnesia Hard Abort (WP)
+                if is_trunk and state.get("rollback_mode"):
+                    print("\033[91m[System] PERSISTENT BREACH in Trunk. Triggering Trunk Amnesia protocol.\033[0m")
+                    agent_state.wipe_global_trunk_log()
+                    state["rollback_mode"] = False
+                    agent_state.save_state(state)
+                    continue
+
                 # Finding 2: The Guillotine (Emergency Compaction at 95%+)
                 current_context = state.get("last_context_size", 0)
                 if current_context >= int(constants.CONTEXT_WINDOW * 0.95):
@@ -1865,7 +1880,7 @@ def main() -> None:
 
 
             # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)
-            if limit_status == "LAST_GASP":
+            if limit_status == "LAST_GASP" and not is_emergency_save:
                 if is_trunk:
                     gasp_msg = (
                         "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
