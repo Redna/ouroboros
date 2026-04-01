@@ -433,24 +433,29 @@ def fold_context(args: dict) -> str:
     if len(messages) <= 2:
         return f"Error: Not enough history to fold safely."
 
+    assistant_msg = messages[-1]
+    # We must ensure we don't drop the assistant message itself, so we calculate drop based on previous messages
     if drop_turns == 0:
         # Default: keep only genesis message
         cutoff = 1
-        turns_dropped = (len(messages) - 1) // 2
+        turns_dropped = (len(messages) - 2) // 2
     else:
-        if len(messages) <= drop_turns * 2 + 1:
+        if len(messages) <= drop_turns * 2 + 2:
              # Dropping too much, default to dropping all but genesis
              cutoff = 1
-             turns_dropped = (len(messages) - 1) // 2
+             turns_dropped = (len(messages) - 2) // 2
         else:
-             # Slice the messages to remove the tail
-             cutoff = len(messages) - (drop_turns * 2) # Each turn is roughly 2 messages (assistant + tool)
+             # Slice the messages to remove the tail, excluding the current assistant message
+             cutoff = len(messages) - 1 - (drop_turns * 2)
              turns_dropped = drop_turns
              if cutoff < 1: 
-                 cutoff = 1 # Keep at least the genesis message
-                 turns_dropped = (len(messages) - 1) // 2
+                 cutoff = 1
+                 turns_dropped = (len(messages) - 2) // 2
     
     preserved = messages[:cutoff]
+
+    if turns_dropped < 1:
+        turns_dropped = 1
 
     knowledge_block = {
         "role": "user",
@@ -462,6 +467,7 @@ def fold_context(args: dict) -> str:
             for msg in preserved:
                 f.write(json.dumps(msg) + "\n")
             f.write(json.dumps(knowledge_block) + "\n")
+            f.write(json.dumps(assistant_msg) + "\n")
             
         # WP: Update State Metrics to reflect the folding (Finding 11)
         state = agent_state.load_state()
