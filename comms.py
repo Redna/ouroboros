@@ -53,17 +53,14 @@ def send_telegram_action(chat_id: int, action: str = "typing"):
 
 def queue_creator_message(new_message: str, update_id: int):
     """
-    Injects a creator message directly into the active log (Stream of Consciousness).
+    Injects a creator Sticky Note directly into the Singular Stream.
     """
-    queue = agent_state.load_task_queue()
-    tid = f"task_msg_{update_id}"
-    
-    # Check for existing task_id to prevent duplicates (IDEMPOTENCY)
-    # We can check chat history for idempotency or assume the bot handles it.
-    # To be safe, we append the direct system message.
-    agent_state.append_task_message("global_trunk", {
+    agent_state.append_task_message("singular_stream", {
         "role": "user",
-        "content": f"[SYSTEM OVERRIDE: CREATOR MESSAGE RECEIVED] {new_message}"
+        "content": (
+            "[SYSTEM OVERRIDE: CREATOR MESSAGE RECEIVED]\n"
+            f"{new_message}"
+        )
     })
 
 def poll_telegram(s: Dict[str, Any], q: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:

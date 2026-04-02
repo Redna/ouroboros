@@ -48,7 +48,6 @@ def initialize_memory() -> None:
         constants.STATE_PATH: {"offset": 0, "creator_id": None, "cognitive_load": 0},
         constants.CHAT_HISTORY_PATH: [],
         constants.TASK_QUEUE_PATH: [],
-        constants.WORKING_STATE_PATH: {},
         constants.SCHEDULED_TASKS_PATH: []
     }
     
@@ -176,22 +175,21 @@ def amend_last_tool_message(task_id: str, suffix: str) -> None:
     except Exception as e:
         print(f"[System] Error amending last tool message for {task_id}: {e}")
 
-def rollback_task_log(task_id: str) -> None:
-    """Reverts the task log to undo the last action that caused a context breach."""
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+def rollback_task_log() -> None:
+    """Reverts the singular stream log to undo the last action that caused a context breach."""
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
     if not log_path.exists(): return
-    
+
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             messages = [json.loads(line) for line in f if line.strip()]
-            
+
         # We want to remove the most recent turn (assistant + tool responses)
         if len(messages) > 1:
             # Step 1: Remove any 'tool' messages at the end
             while len(messages) > 1 and messages[-1].get("role") == "tool":
                 messages.pop()
-                
+
             # Step 2: Remove the 'assistant' message that caused the tool calls
             if len(messages) > 1 and messages[-1].get("role") == "assistant":
                 messages.pop()
@@ -199,19 +197,19 @@ def rollback_task_log(task_id: str) -> None:
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in messages:
                 f.write(json.dumps(msg) + "\n")
-                
+
         # SYNC CACHE
-        if _session.get("current_task_id") == task_id:
+        if _session.get("current_task_id") == "singular_stream":
             _session["cached_messages"] = messages
-            
+
         # Unified Stream turn tracking
         state = load_state()
-        state["stream_turns"] = max(1, state.get("stream_turns", 1) - 1)
+        state["timeline_turns"] = max(1, state.get("timeline_turns", 1) - 1)
         save_state(state)
-            
-        print(f"[System] Rollback executed for {task_id}. Reverted 1 turn.")
+
+        print(f"[System] Rollback executed for singular_stream. Reverted 1 turn.")
     except Exception as e:
-        print(f"[System] Error rolling back {task_id}: {e}")
+        print(f"[System] Error rolling back singular_stream: {e}")
 
 def load_chat_history() -> List[Dict[str, Any]]:
     return safe_load_json(constants.CHAT_HISTORY_PATH, [])
@@ -285,13 +283,13 @@ def append_task_archive(task_id: str, summary: str) -> None:
     with open(constants.TASK_ARCHIVE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
-def autonomic_fold(task_id: str) -> None:
+def autonomic_fold() -> None:
     """
     Autonomic Failsafe (Tier 3 safety). Triggers if the agent hits critical context thresholds.
     Performs a 'Belly Amputation' automatically to prevent a crash.
+    Hardcoded to the Singular Stream — there are no branches.
     """
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
     if not log_path.exists(): return
 
     try:
@@ -303,7 +301,7 @@ def autonomic_fold(task_id: str) -> None:
         # Head: Genesis User + First Assistant
         head_size = 2
         head = messages[:head_size]
-        
+
         # Tail: Last 10 turns (approx 20 messages)
         tail_size = min(20, len(messages) - head_size)
         tail = messages[-tail_size:] if tail_size > 0 else []
@@ -318,88 +316,71 @@ def autonomic_fold(task_id: str) -> None:
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
-                
+
         # Update State Metrics to reflect truncation
         state = load_state()
         turns_dropped = (len(messages) - len(compacted)) // 2
-        state["stream_turns"] = max(1, state.get("stream_turns", 1) - turns_dropped)
-        
+        state["timeline_turns"] = max(1, state.get("timeline_turns", 1) - turns_dropped)
+
         # Reset last_context_size to force a re-evaluation
-        state["last_context_size"] = 0 
+        state["last_context_size"] = 0
         save_state(state)
 
         # SYNC CACHE
-        if _session.get("current_task_id") == task_id:
+        if _session.get("current_task_id") == "singular_stream":
             _session["cached_messages"] = compacted
-            
-        print(f"\033[91m[System] Autonomic Reflex triggered for {task_id}. Amputated {turns_dropped} turns.\033[0m")
+
+        print(f"\033[91m[System] Autonomic Reflex triggered. Amputated {turns_dropped} turns.\033[0m")
     except Exception as e:
-        print(f"[System] Error in autonomic reflex {task_id}: {e}")
+        print(f"[System] Error in autonomic reflex: {e}")
 
-def wipe_global_trunk_log() -> None:
-    """Explicitly clears the global trunk log to maintain 'Trunk Amnesia' during context switches."""
-    log_path = constants.MEMORY_DIR / "task_log_global_trunk.jsonl"
-    if log_path.exists():
-        log_path.unlink()
-    
-    # SYNC CACHE
-    if _session.get("current_task_id") == "global_trunk":
-        _session["cached_messages"] = []
-        
-    # WP: Reset Trunk session metrics
-    state = load_state()
-    state["trunk_tokens"] = 0
-    state["trunk_turns"] = 0
-    save_state(state)
-        
-    print("[System] Global Trunk log wiped (Amnesia protocol).")
 
-def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str) -> bool:
+def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any) -> bool:
     """Updates global usage tokens. Financial tracking is offloaded to the Ouroboros Gate."""
     if not hasattr(response, "usage"): return False
-    
+
     t_count = response.usage.total_tokens
     i_count = response.usage.prompt_tokens
     o_count = response.usage.completion_tokens
-    
+
     state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + t_count
     state["global_input_tokens"] = state.get("global_input_tokens", 0) + i_count
     state["global_output_tokens"] = state.get("global_output_tokens", 0) + o_count
-    
+
     # Store turn metrics for UI HUD
     state["last_context_size"] = t_count
     state["last_input_tokens"] = i_count
     state["last_output_tokens"] = o_count
-    
+
     # Unified Stream token tracking
     state["stream_tokens"] = state.get("stream_tokens", 0) + t_count
-    
+
     save_state(state)
-    
+
     # Persistent Queue Tracking
     if queue:
         queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + t_count
         constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-        
+
         # Hard abort threshold (150% of context window)
         current_tokens = queue[0]["task_tokens"]
         if current_tokens >= int(constants.CONTEXT_WINDOW * 1.5):
             return True # Signal main loop to abort
-            
+
     return False
 
-def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str) -> Tuple[List[Dict[str, Any]], str]:
+def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], str]:
     """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
 
     current_context_size = state.get("last_context_size", 0)
 
-    state["stream_turns"] = state.get("stream_turns", 0) + 1
-    turn_count = state["stream_turns"]
+    state["timeline_turns"] = state.get("timeline_turns", 0) + 1
+    turn_count = state["timeline_turns"]
 
     # Thresholds
-    warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
-    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.85)
-    breach_threshold = int(constants.CONTEXT_WINDOW * 0.90)
+    warning_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_WARN_THRESHOLD)
+    last_gasp_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_LAST_GASP_THRESHOLD)
+    breach_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_BREACH_THRESHOLD)
 
     if turn_count > 50 or current_context_size >= breach_threshold:
         return queue, "BREACH"

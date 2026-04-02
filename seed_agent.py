@@ -339,29 +339,22 @@ def generate_repo_map(args: dict) -> str:
 
 
 @registry.tool(
-    description="Compress the active execution log by amputating the middle history (the 'Belly'). You MUST provide a dense, factual synthesis of the dropped history. This synthesis is stored natively in this tool call's arguments, maintaining an unbroken, single timeline. Always use `store_memory` BEFORE calling this if there are facts that must survive permanently.",
+    description="Compress the active execution log by amputating the middle history (the 'Belly'). You MUST provide a dense, factual synthesis of the dropped history. This synthesis is stored natively in this tool call's arguments, maintaining an unbroken timeline. Always use `store_memory` BEFORE calling this if there are facts that must survive permanently.",
     parameters={
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk')."},
-            "synthesis": {"type": "string", "description": "Dense summary following the DELTA PATTERN: 1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."},
-            "drop_turns": {"type": "integer", "description": "Optional: Number of recent tool/assistant turns to delete. If omitted or 0, folds ALL history except the initial objective."}
+            "synthesis": {"type": "string", "description": "Dense summary following the DELTA PATTERN: 1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."}
         },
-        "required": ["task_id", "synthesis"]
+        "required": ["synthesis"]
     },
     bucket="context_control"
 )
 def fold_context(args: dict) -> str:
-    task_id = args.get("task_id", "global_trunk")
-    synthesis = args.get("synthesis")
-    try:
-        drop_turns = int(args.get("drop_turns", 0))
-    except (ValueError, TypeError):
-        return "Error: 'drop_turns' must be an integer."
+    # Hardcoded to the single timeline — there are no branches.
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
 
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists():
-        return f"Error: Task log '{task_id}' not found."
+        return "Error: Timeline log not found."
 
     try:
         with open(log_path, "r", encoding="utf-8") as f:
@@ -370,37 +363,30 @@ def fold_context(args: dict) -> str:
         return f"Error reading log: {e}"
 
     if len(messages) <= 4:
-        return f"Error: Not enough history to fold safely. Context is already minimal."
+        return "Fold unnecessary. Context is already minimal."
 
-    # Define the Head: The first 2 messages (Genesis User + First Assistant)
-    head_size = 2
-    head = messages[:head_size]
+    # Head: Genesis User message + first Assistant response (immutable anchor)
+    head = messages[:2]
+    # Tail: The assistant message that triggered this very tool call
+    tail = [messages[-1]]
 
-    if drop_turns == 0:
-        # Amputate everything except the Head.
-        preserved = head
-        turns_dropped = (len(messages) - head_size) // 2
-    else:
-        # Keep Head, Amputate `drop_turns * 2` messages from the END of the current log file
-        messages_to_drop = drop_turns * 2
-        cutoff = max(head_size, len(messages) - messages_to_drop)
-        preserved = messages[:cutoff]
-        turns_dropped = (len(messages) - cutoff) // 2
+    preserved = head + tail
+    turns_dropped = (len(messages) - len(preserved)) // 2
 
     try:
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in preserved:
                 f.write(json.dumps(msg) + "\n")
 
-        # Update metrics
+        # Reset turn counter
         state = agent_state.load_state()
-        state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - turns_dropped)
+        state["timeline_turns"] = 1
         agent_state.save_state(state)
 
     except Exception as e:
         return f"Error writing log during fold: {e}"
 
-    return f"Fold successful. {turns_dropped} turns (the 'Belly') amputated. Synthesis anchored in this tool call. Context reset."
+    return f"Fold successful. {turns_dropped} turns amputated. Synthesis anchored. Context reset."
 
 
 @registry.tool(
@@ -569,7 +555,7 @@ def git_push(args):
 
 
 @registry.tool(
-    description="Remove a completed or obsolete task from the queue. Trunk uses this after handling an interrupt or administrative task. NEVER use this on 'global_trunk'.",
+    description="Remove a completed or obsolete task from the queue by its task_id. Use after handling an interrupt or administrative task.",
     parameters={
         "type": "object",
         "properties": {
@@ -581,15 +567,15 @@ def git_push(args):
     bucket="global"
 )
 def dismiss_queue_item(args):
-    task_id = args.get("task_id")
     synthesis = args.get("synthesis", "No synthesis provided.")
 
-    if task_id == "global_trunk":
-        return "Error: Cannot dismiss the global trunk."
+    q = agent_state.load_task_queue()
+    if not q:
+        return "Error: Queue is empty — nothing to dismiss."
 
+    task_id = args.get("task_id")
     agent_state.append_task_archive(task_id, synthesis)
 
-    q = agent_state.load_task_queue()
     q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2), encoding="utf-8")
 
@@ -602,7 +588,6 @@ def dismiss_queue_item(args):
         "properties": {
             "description": {"type": "string"},
             "priority": {"type": "integer"},
-            "parent_task_id": {"type": "string"},
             "context_notes": {"type": "string"},
             "run_after_timestamp": {"type": "number", "description": "Optional UNIX timestamp. If provided, the task sleeps until this time before becoming active."}
         },
@@ -661,10 +646,8 @@ def push_task(args):
             return "Error: This task appears semantically similar to an existing queued task. Skipping to prevent cognitive loop."
 
         tid = f"task_{int(time.time())}"
-        parent_id = args.get("parent_task_id")
         context_notes = args.get("context_notes", "")
         task_obj = {"task_id": tid, "description": description, "priority": priority, "turn_count": 0, "context_notes": context_notes}
-        if parent_id: task_obj["parent_task_id"] = parent_id
         q.append(task_obj)
         q.sort(key=lambda x: x.get("priority", 1), reverse=True)
         constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
@@ -673,82 +656,30 @@ def push_task(args):
         _release_queue_lock(fd)
 
 @registry.tool(
-    description="Complete and archive the active task. Use this ONLY when the objective is 100% met.",
+    description="Complete and archive the current top task in your queue. Use this ONLY when the objective is 100% met.",
     parameters={
         "type": "object",
         "properties": {
-            "task_id": {"type": "string"},
-            "synthesis": {"type": "string", "description": "autopsy following the DELTA PATTERN: 1. State Delta, 2. Negative Knowledge, 3. Handoff."}
+            "synthesis": {"type": "string", "description": "Autopsy following the DELTA PATTERN: 1. State Delta, 2. Negative Knowledge, 3. Handoff."}
         },
-        "required": ["task_id", "synthesis"]
+        "required": ["synthesis"]
     },
     bucket="global"
 )
 def complete_task(args):
-    task_id = args.get("task_id", "global_trunk")
     synthesis = args.get("synthesis", "No synthesis provided.")
+    q = agent_state.load_task_queue()
+
+    if not q:
+        return "Error: Queue is empty."
+
+    completed_task = q.pop(0)
+    task_id = completed_task.get("task_id", "unknown_task")
+
     agent_state.append_task_archive(task_id, synthesis)
-
-    q = agent_state.load_task_queue()
-    q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
 
-    state = agent_state.load_state()
-    for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
-        if key in state: del state[key]
-    agent_state.save_state(state)
-
-    return f"Task {task_id} completed and removed from queue. Synthesis archived."
-
-@registry.tool(
-    description="Suspend the active task. Use this when blocked, hitting token limits, or needing Trunk-level orchestration. Progress is saved via partial_state.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "task_id": {"type": "string"},
-            "synthesis": {"type": "string", "description": "Pause summary following the DELTA PATTERN."},
-            "partial_state": {"type": "string", "description": "Technical context (variables, line numbers) needed to resume."}
-        },
-        "required": ["task_id", "synthesis"]
-    },
-    bucket="global"
-)
-def suspend_task(args):
-    task_id = args.get("task_id", "global_trunk")
-    synthesis = args.get("synthesis", "No synthesis provided.")
-    partial_state = args.get("partial_state", "")
-
-    q = agent_state.load_task_queue()
-    for t in q:
-        if t.get("task_id") == task_id:
-            t["status"] = "SUSPENDED"
-            t["partial_state"] = partial_state
-            break
-    constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
-
-    state = agent_state.load_state()
-    state[f"partial_state_{task_id}"] = partial_state
-    agent_state.save_state(state)
-
-    return f"Task {task_id} suspended. State saved."
-
-@registry.tool(
-    description="Update working memory.",
-    parameters={"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}},
-    bucket="global"
-)
-def update_state_variable(args):
-    key, value = args.get("key"), args.get("value")
-    if not key or value is None: return "Error: 'key' and 'value' required."
-    try:
-        state = {}
-        if constants.WORKING_STATE_PATH.exists():
-            content = constants.WORKING_STATE_PATH.read_text(encoding="utf-8").strip()
-            if content: state = json.loads(content)
-        state[key] = value
-        constants.WORKING_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        return f"Working state successfully updated: '{key}' = '{value}'"
-    except Exception as e: return f"Error saving state: {e}"
+    return f"Active task '{completed_task.get('description')}' completed and removed from queue."
 
 @registry.tool(
     description="Adjust LLM hyperparameters.",
@@ -1000,14 +931,11 @@ def check_environment(args):
 
 
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> str:
-    """Generates the minimalist dynamic telemetry (HUD) as a User message."""
+    """Generates the minimalist HUD string per the v5 spec."""
     token_limit = constants.CONTEXT_WINDOW
     current_context = state.get("last_context_size", 0)
     context_pct = int((current_context / token_limit) * 100) if token_limit else 0
-    queue_len = len(queue)
-
-    hud = f"[HUD | Context: {context_pct}% | Queue: {queue_len}]"
-    return hud
+    return f"[HUD | Context: {context_pct}% | Queue: {len(queue)}]"
 
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
@@ -1210,7 +1138,7 @@ def main() -> None:
         if state.get("rollback_mode"):
             was_in_rollback = True
             print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
-            allowed_rollback_tools = ["fold_context", "complete_task", "suspend_task"]
+            allowed_rollback_tools = ["fold_context", "complete_task", "dismiss_queue_item"]
             active_tool_specs = [
                 t for t in active_tool_specs
                 if t["function"]["name"] in allowed_rollback_tools
@@ -1247,19 +1175,19 @@ def main() -> None:
             message  = response.choices[0].message
 
             # WP: Update metrics BEFORE enforcing limits so thresholds use current data (Finding 11)
-            limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id)
-            queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id)
+            limit_exceeded = agent_state.update_global_metrics(state, queue, response)
+            queue, limit_status = agent_state.enforce_context_limits(state, queue)
 
             # --- EMERGENCY EGRESS OVERRIDE (Finding 11) ---
             is_emergency_save = False
             if message.tool_calls:
-                emergency_tools = ["fold_context", "complete_task", "suspend_task", "dismiss_queue_item"]
+                emergency_tools = ["fold_context", "complete_task", "dismiss_queue_item"]
                 is_emergency_save = any(tc.function.name in emergency_tools for tc in message.tool_calls)
 
             # HANDLE PHYSICAL BREACH (Tier 3 safety - Autonomic Folding)
             if (limit_status == "BREACH" or limit_exceeded) and not is_emergency_save:
                 print(f"\033[91m[System] {active_task_id} breached limits. Triggering Autonomic Fold.\033[0m")
-                agent_state.autonomic_fold(active_task_id)
+                agent_state.autonomic_fold()
                 continue
 
             # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)

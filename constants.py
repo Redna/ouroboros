@@ -24,7 +24,11 @@ TURN_LIMIT = 30
 MAX_HIBERNATE_SECONDS = 86400
 MIN_REWRITE_CONTENT_LEN = 50
 
-WORKING_STATE_PATH = MEMORY_DIR / "working_state.json"
+# --- Context Safety Thresholds (env-tunable, P5) ---
+CONTEXT_WARN_THRESHOLD      = float(os.environ.get("OUROBOROS_WARN_PCT",      "0.80"))
+CONTEXT_LAST_GASP_THRESHOLD = float(os.environ.get("OUROBOROS_LAST_GASP_PCT", "0.85"))
+CONTEXT_BREACH_THRESHOLD    = float(os.environ.get("OUROBOROS_BREACH_PCT",    "0.90"))
+
 TASK_QUEUE_PATH = MEMORY_DIR / "task_queue.json"
 SCHEDULED_TASKS_PATH = MEMORY_DIR / "scheduled_tasks.json"
 STATE_PATH = MEMORY_DIR / ".agent_state.json"
