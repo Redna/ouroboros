@@ -175,41 +175,7 @@ def amend_last_tool_message(task_id: str, suffix: str) -> None:
     except Exception as e:
         print(f"[System] Error amending last tool message for {task_id}: {e}")
 
-def rollback_task_log() -> None:
-    """Reverts the singular stream log to undo the last action that caused a context breach."""
-    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
-    if not log_path.exists(): return
 
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            messages = [json.loads(line) for line in f if line.strip()]
-
-        # We want to remove the most recent turn (assistant + tool responses)
-        if len(messages) > 1:
-            # Step 1: Remove any 'tool' messages at the end
-            while len(messages) > 1 and messages[-1].get("role") == "tool":
-                messages.pop()
-
-            # Step 2: Remove the 'assistant' message that caused the tool calls
-            if len(messages) > 1 and messages[-1].get("role") == "assistant":
-                messages.pop()
-
-        with open(log_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg) + "\n")
-
-        # SYNC CACHE
-        if _session.get("current_task_id") == "singular_stream":
-            _session["cached_messages"] = messages
-
-        # Unified Stream turn tracking
-        state = load_state()
-        state["timeline_turns"] = max(1, state.get("timeline_turns", 1) - 1)
-        save_state(state)
-
-        print(f"[System] Rollback executed for singular_stream. Reverted 1 turn.")
-    except Exception as e:
-        print(f"[System] Error rolling back singular_stream: {e}")
 
 def load_chat_history() -> List[Dict[str, Any]]:
     return safe_load_json(constants.CHAT_HISTORY_PATH, [])

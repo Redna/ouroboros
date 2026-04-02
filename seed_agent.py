@@ -1142,18 +1142,6 @@ def main() -> None:
             state["force_fold"] = False  # Unset — applies for this one turn only
             agent_state.save_state(state)
 
-        # ENFORCE ROLLBACK MODE
-        was_in_rollback = False
-        if state.get("rollback_mode"):
-            was_in_rollback = True
-            print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
-            allowed_rollback_tools = ["fold_context", "complete_task", "dismiss_queue_item"]
-            active_tool_specs = [
-                t for t in active_tool_specs
-                if t["function"]["name"] in allowed_rollback_tools
-            ]
-            state["rollback_mode"] = False # Unset so it only applies for one turn
-            agent_state.save_state(state)
 
         sys_temp_override = state.get("sys_temp")
         sys_top_p = state.get("sys_top_p", 0.95)
@@ -1187,25 +1175,27 @@ def main() -> None:
             limit_exceeded = agent_state.update_global_metrics(state, queue, response)
             queue, limit_status = agent_state.enforce_context_limits(state, queue)
 
-            # --- EMERGENCY EGRESS OVERRIDE (Finding 11) ---
-            is_emergency_save = False
-            if message.tool_calls:
-                emergency_tools = ["fold_context", "complete_task", "dismiss_queue_item"]
-                is_emergency_save = any(tc.function.name in emergency_tools for tc in message.tool_calls)
+            # --- EMERGENCY EGRESS OVERRIDE ---
+            # Let fold_context execute even when at BREACH threshold.
+            is_emergency_save = bool(
+                message.tool_calls and
+                any(tc.function.name == "fold_context" for tc in message.tool_calls)
+            )
 
-            # HANDLE PHYSICAL BREACH (Tier 3 safety - Autonomic Folding)
+            # HANDLE PHYSICAL BREACH (Tier 3 safety - Force Fold)
             if (limit_status == "BREACH" or limit_exceeded) and not is_emergency_save:
                 print(f"\033[91m[System] {active_task_id} breached limits. Triggering Autonomic Fold.\033[0m")
                 agent_state.autonomic_fold()
                 continue
 
-            # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)
+            # HANDLE LAST GASP (Tier 2 safety - engage force_fold for next turn)
             if limit_status == "LAST_GASP" and not is_emergency_save:
                 gasp_msg = (
-                    "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
-                    "You MUST use `fold_context` to synthesize your progress and compress your history now."
+                    "[CRITICAL]: Context Exhaustion Imminent. "
+                    "Your next turn is restricted to `fold_context` only. Call it now."
                 )
                 agent_state.amend_last_tool_message(active_task_id, gasp_msg)
+                agent_state.autonomic_fold()  # Engage force_fold for the following turn
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses

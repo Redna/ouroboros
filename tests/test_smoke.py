@@ -128,11 +128,21 @@ def test_autonomic_fold_sets_flag_not_truncates(tmp_path, monkeypatch):
     )
 
 
-def test_rollback_task_log_no_args():
-    """rollback_task_log must take zero arguments (hardcoded to singular_stream)."""
-    from agent_state import rollback_task_log
-    params = list(inspect.signature(rollback_task_log).parameters.keys())
-    assert params == [], f"rollback_task_log must take zero args, got: {params} (WP9)"
+def test_rollback_task_log_removed():
+    """rollback_task_log must be gone — force_fold replaces it."""
+    import agent_state
+    assert not hasattr(agent_state, "rollback_task_log"), (
+        "rollback_task_log must be removed; force_fold handles context recovery now"
+    )
+
+
+def test_no_rollback_mode_in_main_loop():
+    """rollback_mode block must be gone from seed_agent.py."""
+    root = pathlib.Path(__file__).parent.parent
+    src = (root / "seed_agent.py").read_text(encoding="utf-8")
+    assert "rollback_mode" not in src, (
+        '"rollback_mode" still present in seed_agent.py — must be purged'
+    )
 
 
 # ---------------------------------------------------------------------------
