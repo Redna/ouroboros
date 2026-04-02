@@ -13,8 +13,8 @@ client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=
 def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
     active_model = requested_model if requested_model else constants.DEFAULT_MODEL
     
-    # Agency-First: Use 'auto' to allow the model to decide when to call tools
-    tool_choice = "auto" if tools else None
+    # Force the agent to use its agency if tools are available
+    tool_choice = "required" if tools else None
     
     try:
         response = client.chat.completions.create(
