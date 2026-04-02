@@ -34,17 +34,14 @@ MAP_QUERY = Query(PY_LANGUAGE, """
 def _resolve_safe_path(raw_path: str) -> Path:
     """Resolves path and enforces boundary guards (constants.ROOT_DIR or constants.MEMORY_DIR).
 
-    SECURITY: Resolves symlinks first to prevent symlink escape attacks.
     """
     p = Path(raw_path)
     if not p.is_absolute():
         p = constants.ROOT_DIR / p
 
-    # SECURITY: Resolve ALL symlinks before boundary check (prevents symlink escape)
     try:
         p = p.resolve(strict=True)
     except FileNotFoundError:
-        # For non-existent files, resolve parent and check boundary there
         p = p.parent.resolve(strict=True) / p.name
 
     if not str(p).startswith(str(constants.ROOT_DIR)) and not str(p).startswith(str(constants.MEMORY_DIR)):
@@ -86,6 +83,9 @@ def seal_memory_on_boot(task_id: str, crash_log_path: Path, state: Dict[str, Any
                 crash_data += f"\nCrash Log:\n{crash_log_path.read_text()}"
                 crash_log_path.unlink() # Clear it after reading
             except Exception: pass
+        else:
+            # P5: Cleanup - Ensure we don't carry over stale crash state if log is missing
+            pass
 
         # Agency-First: Piggyback telemetry onto the recovery tool response
         piggyback = build_telemetry_piggyback(state, queue, is_trunk)
@@ -1078,8 +1078,8 @@ def lazarus_recovery(active_task_id: str, is_trunk: bool = False, reason: str = 
 
     agent_state.save_state(state)
 
-    agent_state._session["tool_history"].clear()
-    agent_state._session["intent_history"].clear()
+    agent_state.clear_session_history()
+    time.sleep(2)
 
     time.sleep(2)
 
@@ -1094,7 +1094,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     # Heuristic loop detection
     if agent_state._session["tool_history"]:
-        loop_reason = detect_cognitive_loop([], state)
+        loop_reason = detect_cognitive_loop([])
         if loop_reason:
             hud += f" [WARNING: {loop_reason}. Use fold_context.]"
 
@@ -1142,11 +1142,14 @@ def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]]
     return f"\n\n{telemetry}"
 
 
-def detect_cognitive_loop(tool_calls: List[Any], state: Dict[str, Any]) -> Optional[str]:
+def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
+    # Use session-bound history for loop detection
+    history = agent_state._session
+    
     for tc in tool_calls:
         name = tc.function.name
         raw_args = tc.function.arguments
-        state["tool_history"].append(f"{name}:{raw_args}")
+        history["tool_history"].append(f"{name}:{raw_args}")
 
         intent = name
         if name in ["read_file_tool", "write_file", "patch_file"]:
@@ -1159,17 +1162,14 @@ def detect_cognitive_loop(tool_calls: List[Any], state: Dict[str, Any]) -> Optio
                 cmd = json.loads(raw_args).get('command', '')
                 intent = f"bash:{cmd[:50]}"
             except Exception: pass
-        state["intent_history"].append(intent)
+        history["intent_history"].append(intent)
         
-        # Update persisted state with current action
-        state["last_action"] = intent
+    history["tool_history"] = history["tool_history"][-6:]
+    history["intent_history"] = history["intent_history"][-6:]
 
-    state["tool_history"] = state["tool_history"][-6:]
-    state["intent_history"] = state["intent_history"][-6:]
-
-    if len(state["tool_history"]) >= 3 and len(set(state["tool_history"][-3:])) == 1:
+    if len(history["tool_history"]) >= 3 and len(set(history["tool_history"][-3:])) == 1:
         return "Exact Tool Loop Detected (3 turns)"
-    if len(state["intent_history"]) >= 6 and len(set(state["intent_history"][-6:])) == 1:
+    if len(history["intent_history"]) >= 6 and len(set(history["intent_history"][-6:])) == 1:
         return "Cognitive Intent Stall Detected (6 turns)"
     return None
 
@@ -1414,7 +1414,7 @@ def main() -> None:
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:
                 # Heuristic loop detection (no kill, just warning for HUD)
-                loop_reason = detect_cognitive_loop(message.tool_calls, state)
+                loop_reason = detect_cognitive_loop(message.tool_calls)
                 if loop_reason and "LAZARUS" in loop_reason:
                     lazarus_recovery(active_task_id, is_trunk, loop_reason)
                     continue

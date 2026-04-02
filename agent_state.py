@@ -41,6 +41,11 @@ _session: Dict[str, Any] = {
     "cached_messages": []
 }
 
+def clear_session_history() -> None:
+    """Resets cognitive history for the current session."""
+    _session["tool_history"] = []
+    _session["intent_history"] = []
+
 def initialize_memory() -> None:
     """Ensure essential memory directory and base files exist."""
     constants.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
