@@ -144,11 +144,7 @@ class ToolRegistry:
             return f"Error: Tool '{name}' not found."
         try:
             handler = self.tools[name]["handler"]
-            # Only pass call_id to tools that explicitly support it
-            if name == "fork_execution":
-                result = handler(args, call_id=call_id)
-            else:
-                result = handler(args)
+            result = handler(args)
             return llm_interface.redact_secrets(str(result))
         except Exception as e:
             return llm_interface.redact_secrets(f"Error executing {name}: {e}")
@@ -740,7 +736,7 @@ def push_task(args):
         },
         "required": ["task_id", "synthesis"]
     },
-    bucket="branch_control"
+    bucket="global"
 )
 def complete_task(args):
     task_id = args.get("task_id", "global_trunk")
@@ -769,7 +765,7 @@ def complete_task(args):
         },
         "required": ["task_id", "synthesis"]
     },
-    bucket="branch_control"
+    bucket="global"
 )
 def suspend_task(args):
     task_id = args.get("task_id", "global_trunk")
@@ -1302,50 +1298,7 @@ def _route_tool_calls(
             piggyback = build_telemetry_piggyback(state, queue, is_trunk)
             result = f"{result}{piggyback}"
 
-        if str(result).startswith("SYSTEM_SIGNAL_FORK"):
-            agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
-            agent_state._session["tool_history"].clear()
-            agent_state._session["intent_history"].clear()
-            context_switch_triggered = True
-            break
-        elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
-            try:
-                payload = json.loads(str(result).split(":", 1)[1])
-
-                # Option A: Native ReAct Resolution
-                # We inject the synthesis directly as the tool output for the original 'fork_execution' call.
-                parent_id = payload.get("parent_task_id", "global_trunk")
-                fork_call_id = payload.get("fork_tool_call_id")
-
-                if parent_id == "global_trunk":
-                    agent_state.wipe_global_trunk_log()
-
-                if fork_call_id:
-                    merge_msg = {
-                        "role": "tool",
-                        "tool_call_id": fork_call_id,
-                        "name": "fork_execution",
-                        "content": f"[BRANCH MERGE SUCCESSFUL]\nStatus: {payload.get('status')}\nSynthesis:\n{payload.get('summary', '')}"
-                    }
-                    agent_state.append_task_message(parent_id, merge_msg)
-                else:
-                    # Fallback to User message if no call ID was tracked
-                    agent_state.append_task_message(parent_id, {
-                        "role": "user",
-                        "content": f"[SYSTEM NOTE]: Branch '{payload.get('task_id')}' merged back. Status: {payload.get('status')}. Synthesis: {payload.get('summary', '')}\n\n[ACTION REQUIRED]: Evaluate the synthesis and determine the next step.",
-                    })
-
-                if payload.get("status") == "SUSPENDED" and payload.get("partial_state"):
-                    post_merge_state = agent_state.load_state()
-                    post_merge_state[f"partial_state_{payload.get('task_id')}"] = payload.get("partial_state")
-                    agent_state.save_state(post_merge_state)
-            except Exception: pass
-            agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": "SYSTEM_SIGNAL_MERGE_ACKNOWLEDGED"})
-            agent_state._session["tool_history"].clear()
-            agent_state._session["intent_history"].clear()
-            context_switch_triggered = True
-            break
-        elif result == "SYSTEM_SIGNAL_RESTART" or "SYSTEM_SIGNAL_RESTART" in str(result):
+        if result == "SYSTEM_SIGNAL_RESTART" or "SYSTEM_SIGNAL_RESTART" in str(result):
             sys.exit(0)
         elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
             try:

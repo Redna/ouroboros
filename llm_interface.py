@@ -13,8 +13,8 @@ client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=
 def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
     active_model = requested_model if requested_model else constants.DEFAULT_MODEL
     
-    # Force the agent to use its agency if tools are available
-    tool_choice = "required" if tools else None
+    # Agency-First: Use 'auto' to allow the model to decide when to call tools
+    tool_choice = "auto" if tools else None
     
     try:
         response = client.chat.completions.create(
@@ -25,7 +25,7 @@ def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=
             temperature=temperature,
             top_p=top_p,
             presence_penalty=presence_penalty,
-            extra_body={"cache_prompt": True, "top_k": 20, "chat_template_kwargs": {"enable_thinking": think}}
+            extra_body={"cache_prompt": True, "top_k": 20}
         )
         agent_state._session["is_first_call"] = False
         return response
@@ -58,8 +58,9 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         
         # Turn indexing for volatile messages
         if role in ["user", "assistant"]:
-            content = new_msg.get("content", "")
-            new_msg["content"] = f"[TURN {turn_idx}] {content}"
+            content = new_msg.get("content")
+            if content:
+                new_msg["content"] = f"[TURN {turn_idx}] {content}"
             turn_idx += 1
 
         # Strip Thinking from older assistant turns (Finding 10)
