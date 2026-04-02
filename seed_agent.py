@@ -1133,6 +1133,15 @@ def main() -> None:
         active_task_id, task_desc, active_tool_specs = \
             _resolve_execution_context(state, queue)
 
+        # FORCE FOLD MODE: Restrict LLM to fold_context only.
+        # Set by autonomic_fold() when context is critically full.
+        # tool_choice='required' (set in call_llm) means the LLM MUST call it.
+        if state.get("force_fold"):
+            print(f"\033[91m[System] Force Fold Mode: tool surface restricted to fold_context only.\033[0m")
+            active_tool_specs = [t for t in active_tool_specs if t["function"]["name"] == "fold_context"]
+            state["force_fold"] = False  # Unset — applies for this one turn only
+            agent_state.save_state(state)
+
         # ENFORCE ROLLBACK MODE
         was_in_rollback = False
         if state.get("rollback_mode"):

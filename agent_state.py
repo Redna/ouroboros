@@ -100,10 +100,10 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
         
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     
-    # OOM Protection: If log is > 50MB, force emergency compaction before loading
+    # OOM Protection: If log is > 50MB, do a physical emergency truncation before loading
     if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
-        print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Compacting...")
-        autonomic_fold()
+        print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Emergency truncating...")
+        _emergency_truncate_log()
 
     raw_messages = []
     if log_path.exists():
@@ -283,11 +283,12 @@ def append_task_archive(task_id: str, summary: str) -> None:
     with open(constants.TASK_ARCHIVE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
-def autonomic_fold() -> None:
+def _emergency_truncate_log() -> None:
     """
-    Autonomic Failsafe (Tier 3 safety). Triggers if the agent hits critical context thresholds.
-    Performs a 'Belly Amputation' automatically to prevent a crash.
-    Hardcoded to the Singular Stream — there are no branches.
+    Physical OOM failsafe ONLY. Triggered when the log file exceeds 50 MB on disk.
+    Performs hard Head+Tail amputation to prevent the process from running out of memory.
+    This is distinct from autonomic_fold — it is a last-resort disk-level operation,
+    not a cognitive-level tool restriction.
     """
     log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
     if not log_path.exists(): return
@@ -298,43 +299,62 @@ def autonomic_fold() -> None:
 
         if len(messages) <= 4: return
 
-        # Head: Genesis User + First Assistant
-        head_size = 2
-        head = messages[:head_size]
-
-        # Tail: Last 10 turns (approx 20 messages)
-        tail_size = min(20, len(messages) - head_size)
+        head = messages[:2]
+        tail_size = min(20, len(messages) - 2)
         tail = messages[-tail_size:] if tail_size > 0 else []
-
-        emergency_notice = {
-            "role": "user",
-            "content": "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED. The middle of your history (the 'Belly') has been forcefully amputated to prevent a crash. You failed to monitor your HUD and `fold_context` in time. Proceed with remaining context."
-        }
-
-        compacted = head + [emergency_notice] + tail
+        compacted = head + tail
 
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
 
-        # Update State Metrics to reflect truncation
-        state = load_state()
-        turns_dropped = (len(messages) - len(compacted)) // 2
-        state["timeline_turns"] = max(1, state.get("timeline_turns", 1) - turns_dropped)
-
-        # Reset last_context_size to force a re-evaluation
-        state["last_context_size"] = 0
-        save_state(state)
-
-        # SYNC CACHE
         if _session.get("current_task_id") == "singular_stream":
             _session["cached_messages"] = compacted
 
-        print(f"\033[91m[System] Autonomic Reflex triggered. Amputated {turns_dropped} turns.\033[0m")
+        print(f"\033[91m[System] Emergency OOM truncation: amputated {len(messages) - len(compacted)} messages.\033[0m")
     except Exception as e:
-        print(f"[System] Error in autonomic reflex: {e}")
+        print(f"[System] Error in emergency truncation: {e}")
 
 
+def autonomic_fold() -> None:
+    """
+    Autonomic Failsafe (Tier 3 safety). Called when the context limit is breached.
+
+    Instead of physically amputating the log, this injects an unmissable directive
+    into the Singular Stream and sets the 'force_fold' flag in state.
+    On the very next turn, the runtime will restrict the LLM to exactly one tool:
+    `fold_context`. Because tool_choice is 'required', it MUST call it — there is
+    no other path forward. The LLM performs the fold voluntarily, which means the
+    synthesis is agent-authored, not system-amputated.
+    """
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+
+    # Inject the emergency directive into the live stream
+    emergency_notice = {
+        "role": "user",
+        "content": (
+            "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED.\n"
+            "Your available tools have been restricted to `fold_context` only. "
+            "You MUST call it now with a dense synthesis of your progress. "
+            "There is no other path forward."
+        )
+    }
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(emergency_notice) + "\n")
+        # Keep cache synchronized
+        if _session.get("current_task_id") == "singular_stream":
+            if _session.get("cached_messages") is not None:
+                _session["cached_messages"].append(emergency_notice)
+    except Exception as e:
+        print(f"[System] Error injecting autonomic notice: {e}")
+
+    # Set the force_fold flag — the runtime will restrict tools on the next turn
+    state = load_state()
+    state["force_fold"] = True
+    save_state(state)
+
+    print(f"\033[91m[System] Autonomic Reflex: force_fold mode engaged. LLM will be restricted to fold_context.\033[0m")
 def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any) -> bool:
     """Updates global usage tokens. Financial tracking is offloaded to the Ouroboros Gate."""
     if not hasattr(response, "usage"): return False
