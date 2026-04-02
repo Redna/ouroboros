@@ -204,12 +204,9 @@ def rollback_task_log(task_id: str) -> None:
         if _session.get("current_task_id") == task_id:
             _session["cached_messages"] = messages
             
-        # WP: Decrement turn count to allow recovery (Finding 11)
+        # Unified Stream turn tracking
         state = load_state()
-        if task_id == "global_trunk":
-            state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - 1)
-        elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
-            state["active_branch"]["turn_count"] = max(1, state["active_branch"].get("turn_count", 1) - 1)
+        state["stream_turns"] = max(1, state.get("stream_turns", 1) - 1)
         save_state(state)
             
         print(f"[System] Rollback executed for {task_id}. Reverted 1 turn.")
@@ -325,7 +322,7 @@ def autonomic_fold(task_id: str) -> None:
         # Update State Metrics to reflect truncation
         state = load_state()
         turns_dropped = (len(messages) - len(compacted)) // 2
-        state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - turns_dropped)
+        state["stream_turns"] = max(1, state.get("stream_turns", 1) - turns_dropped)
         
         # Reset last_context_size to force a re-evaluation
         state["last_context_size"] = 0 
@@ -357,7 +354,7 @@ def wipe_global_trunk_log() -> None:
         
     print("[System] Global Trunk log wiped (Amnesia protocol).")
 
-def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str, is_trunk: bool) -> bool:
+def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str) -> bool:
     """Updates global usage tokens. Financial tracking is offloaded to the Ouroboros Gate."""
     if not hasattr(response, "usage"): return False
     
@@ -374,11 +371,8 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     state["last_input_tokens"] = i_count
     state["last_output_tokens"] = o_count
     
-    # BRANCH TRACKING (Finding 1 fix)
-    if not is_trunk and state.get("active_branch"):
-        state["active_branch"]["task_tokens"] = state["active_branch"].get("task_tokens", 0) + t_count
-    elif is_trunk:
-        state["trunk_tokens"] = state.get("trunk_tokens", 0) + t_count
+    # Unified Stream token tracking
+    state["stream_tokens"] = state.get("stream_tokens", 0) + t_count
     
     save_state(state)
     
@@ -394,13 +388,13 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
             
     return False
 
-def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], str]:
+def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str) -> Tuple[List[Dict[str, Any]], str]:
     """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
 
     current_context_size = state.get("last_context_size", 0)
 
-    state["trunk_turns"] = state.get("trunk_turns", 0) + 1
-    turn_count = state["trunk_turns"]
+    state["stream_turns"] = state.get("stream_turns", 0) + 1
+    turn_count = state["stream_turns"]
 
     # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)

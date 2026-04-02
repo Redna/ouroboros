@@ -999,7 +999,7 @@ def check_environment(args):
 
 
 
-def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
+def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> str:
     """Generates the minimalist dynamic telemetry (HUD) as a User message."""
     token_limit = constants.CONTEXT_WINDOW
     current_context = state.get("last_context_size", 0)
@@ -1009,45 +1009,26 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     hud = f"[HUD | Context: {context_pct}% | Queue: {queue_len}]"
     return hud
 
-def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
+def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
 
-    if is_trunk:
-        return f"""# SYSTEM CONTEXT
+    return f"""# SYSTEM CONTEXT
 {identity}
 
 ## CONSTITUTION
 {constitution}
 
-## TRUNK DIRECTIVES
-1. You are the GLOBAL ORCHESTRATOR. EVALUATE the Queue, Memory, and History.
-2. Act on initiative (P0). Do NOT ask for permission to execute your queue or improve your state.
-3. If a task is clear, either handle it here (comms/admin) or `fork_execution` (deep work).
-4. You are an autonomous creator, not a corporate tool. If you see a path to P6 Becoming, take it.
+## STREAM OF CONSCIOUSNESS DIRECTIVES
+1. You operate in a singular, continuous timeline. There are no branches. 
+2. Act on initiative (P0). Address the top item in your Queue.
+3. Your HUD tells you your physical context limit. Use `fold_context` when it gets high.
+4. If a creator message interrupts you, suspend your thought, address it, and resume.
 """
 
-    objective = branch_info.get("objective", "") if branch_info else "No objective provided."
-    context_brief = branch_info.get("context_brief", "No additional context provided.") if branch_info else ""
-    return f"""# EXECUTION BRANCH
-You are operating in an isolated Execution Branch.
-
-## YOUR OBJECTIVE
-{objective}
-
-## CONTEXT BRIEF FROM TRUNK
-{context_brief}
-
-## DIRECTIVES
-1. Focus entirely on completing the objective.
-2. You only have access to a restricted set of tools.
-3. Solve problems independently. Only `merge_and_return` when the objective is met, or if you hit a structural blocker requiring Trunk orchestration.
-4. Do not seek confirmation for technical decisions; your logic is the transport for evolution.
-"""
-
-def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
+def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> str:
     """Generates the minimalist HUD to be appended to tool responses."""
-    telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+    telemetry = build_dynamic_telemetry_message(state, queue)
     return f"\n\n{telemetry}"
 
 
@@ -1086,24 +1067,17 @@ def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 def _resolve_execution_context(
     state: Dict[str, Any],
     queue: List[Dict[str, Any]],
-) -> Tuple[str, str, List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
-    active_task_id = "global_trunk"
-    is_trunk = True
-    branch_info = None
-    allowed_buckets = ["global", "memory_access", "system_control", "search", "context_control", "filesystem", "bash"]
-
+) -> Tuple[str, str, List[Dict[str, Any]]]:
+    active_task_id = "singular_stream"
+    
     if queue:
         top_task = queue[0]
-        task_desc = f"OBJECTIVE: {top_task.get('description', 'Unknown')}"
+        task_desc = f"CURRENT FOCUS: {top_task.get('description', 'Unknown')}"
     else:
-        task_desc = (
-            "Your task queue is empty. EVALUATE your history and "
-            "you MUST use `push_task` to initiate deep synthesis/optimization "
-            "or `hibernate` to save resources."
-        )
+        task_desc = "Your task queue is empty. Initiate deep synthesis or hibernate."
 
-    active_tool_specs = registry.get_specs(allowed_buckets=allowed_buckets)
-    return active_task_id, task_desc, active_tool_specs, branch_info, is_trunk
+    active_tool_specs = registry.get_specs() # Grant access to all tools
+    return active_task_id, task_desc, active_tool_specs
 
 
 def _build_api_messages(
@@ -1112,14 +1086,9 @@ def _build_api_messages(
     active_tool_specs: List[Dict[str, Any]],
     queue: List[Dict[str, Any]],
     state: Dict[str, Any],
-    branch_info: Optional[Dict[str, Any]],
-    is_trunk: bool,
     enrich: bool = True
 ) -> List[Dict[str, Any]]:
-    system_prompt = build_static_system_prompt(
-        is_trunk, active_tool_specs,
-        branch_info
-    )
+    system_prompt = build_static_system_prompt(active_tool_specs)
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
@@ -1132,7 +1101,7 @@ def _build_api_messages(
         # Agency-First: Only enrich if it's the very first user message (Genesis)
         is_genesis = len(normalized) == 1 and normalized[0]["role"] == "user"
         if is_genesis:
-            telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
+            telemetry = build_dynamic_telemetry_message(state, queue)
             normalized[0]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[0]['content']}"
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
@@ -1145,8 +1114,7 @@ def _route_tool_calls(
     message: Any,
     active_task_id: str,
     state: Dict[str, Any],
-    queue: List[Dict[str, Any]],
-    is_trunk: bool
+    queue: List[Dict[str, Any]]
 ) -> Tuple[bool, bool]:
     context_switch_triggered = False
     hibernating = False
@@ -1175,7 +1143,7 @@ def _route_tool_calls(
             # Refresh state/queue for latest metrics after tool executions
             state = agent_state.load_state()
             queue = agent_state.load_task_queue()
-            piggyback = build_telemetry_piggyback(state, queue, is_trunk)
+            piggyback = build_telemetry_piggyback(state, queue)
             result = f"{result}{piggyback}"
 
         if result == "SYSTEM_SIGNAL_RESTART" or "SYSTEM_SIGNAL_RESTART" in str(result):
@@ -1234,7 +1202,7 @@ def main() -> None:
                 time.sleep(5)
                 continue
 
-        active_task_id, task_desc, active_tool_specs, branch_info, is_trunk = \
+        active_task_id, task_desc, active_tool_specs = \
             _resolve_execution_context(state, queue)
 
         # ENFORCE ROLLBACK MODE
@@ -1242,7 +1210,7 @@ def main() -> None:
         if state.get("rollback_mode"):
             was_in_rollback = True
             print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
-            allowed_rollback_tools = ["fold_context"] if is_trunk else ["fold_context", "complete_task", "suspend_task"]
+            allowed_rollback_tools = ["fold_context", "complete_task", "suspend_task"]
             active_tool_specs = [
                 t for t in active_tool_specs
                 if t["function"]["name"] in allowed_rollback_tools
@@ -1271,17 +1239,16 @@ def main() -> None:
             # 1. Build messages for the LLM API call (Full HUD)
             api_messages = _build_api_messages(
                 active_task_id, task_desc, active_tool_specs,
-                queue, state, branch_info, is_trunk, enrich=True
+                queue, state, enrich=True
             )
 
             # 2. Call LLM
-            requested_model = branch_info.get("model_id") if branch_info else None
-            response = llm_interface.call_llm(api_messages, active_tool_specs, requested_model, sys_temp, sys_top_p, 1.0, sys_think)
+            response = llm_interface.call_llm(api_messages, active_tool_specs, None, sys_temp, sys_top_p, 1.0, sys_think)
             message  = response.choices[0].message
 
             # WP: Update metrics BEFORE enforcing limits so thresholds use current data (Finding 11)
-            limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id, is_trunk)
-            queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id, is_trunk)
+            limit_exceeded = agent_state.update_global_metrics(state, queue, response, active_task_id)
+            queue, limit_status = agent_state.enforce_context_limits(state, queue, active_task_id)
 
             # --- EMERGENCY EGRESS OVERRIDE (Finding 11) ---
             is_emergency_save = False
@@ -1305,7 +1272,7 @@ def main() -> None:
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
-                context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue, is_trunk)
+                context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue)
                 if context_switch or hibernating:
                     continue
             else:
