@@ -34,17 +34,10 @@ def safe_load_json(file_path: Path, default_structure: Any) -> Any:
         return default_structure
 
 _session: Dict[str, Any] = {
-    "tool_history": [], 
-    "intent_history": [], 
     "is_first_call": True,
     "current_task_id": None,
     "cached_messages": []
 }
-
-def clear_session_history() -> None:
-    """Resets cognitive history for the current session."""
-    _session["tool_history"] = []
-    _session["intent_history"] = []
 
 def initialize_memory() -> None:
     """Ensure essential memory directory and base files exist."""

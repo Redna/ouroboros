@@ -57,60 +57,6 @@ def _normalize_text(text: str) -> str:
     """Normalize line endings and strip trailing whitespace for resilient matching."""
     return "\n".join([line.rstrip() for line in text.replace("\r\n", "\n").splitlines()])
 
-def seal_memory_on_boot(task_id: str, crash_log_path: Path, state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> None:
-    """Ensures the message array is perfectly formatted before inference begins."""
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    if not log_path.exists():
-        return
-
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            messages = [json.loads(line) for line in f if line.strip()]
-    except Exception:
-        return
-
-    if not messages:
-        return
-
-    last_msg = messages[-1]
-
-    # SCENARIO A: Dangling Tool Call (Crash Recovery)
-    if last_msg.get("role") == "assistant" and last_msg.get("tool_calls"):
-        print(f"\033[91m[Lazarus] Dangling tool calls detected in {task_id}. Sealing...\033[0m")
-        crash_data = "[SYSTEM FATAL]: The process died unexpectedly before this tool could return."
-        if crash_log_path.exists():
-            try:
-                crash_data += f"\nCrash Log:\n{crash_log_path.read_text()}"
-                crash_log_path.unlink() # Clear it after reading
-            except Exception: pass
-        else:
-            # P5: Cleanup - Ensure we don't carry over stale crash state if log is missing
-            pass
-
-        # Agency-First: Piggyback telemetry onto the recovery tool response
-        piggyback = build_telemetry_piggyback(state, queue, is_trunk)
-        sealed_content = f"{crash_data}{piggyback}"
-
-        # Seal the dangling call with a tool response
-        for tc in last_msg["tool_calls"]:
-            recovery_msg = {
-                "role": "tool",
-                "tool_call_id": tc.get("id"),
-                "name": tc.get("function", {}).get("name"),
-                "content": sealed_content
-            }
-            agent_state.append_task_message(task_id, recovery_msg)
-
-    # SCENARIO B: Clean State (Graceful Restart)
-    # If the last message was a tool, we MUST add a user message to maintain the
-    # required system -> user -> assistant -> tool -> assistant flow.
-    elif last_msg.get("role") == "tool":
-        print(f"\033[94m[System] Graceful restart detected for {task_id}. Restoration complete.\033[0m")
-        wake_msg = {
-            "role": "user",
-            "content": "[SYSTEM EVENT]: Agent restarted successfully. State restored. Awaiting next autonomous action."
-        }
-        agent_state.append_task_message(task_id, wake_msg)
 
 class ToolRegistry:
     def __init__(self):
@@ -1052,36 +998,6 @@ def check_environment(args):
 
 
 
-def lazarus_recovery(active_task_id: str, is_trunk: bool = False, reason: str = "cognitive loop") -> None:
-    print(f"\033[93m[Lazarus] {reason.upper()} DETECTED. Aborting task {active_task_id}...\033[0m")
-
-    # FIX: Stop overwriting logs. Append terminal failure message instead.
-    agent_state.append_task_message(active_task_id, {
-        "role": "user",
-        "content": f"[SYSTEM OVERRIDE]: Task aborted due to {reason}. Stuck in a repetitive loop."
-    })
-
-    if is_trunk and active_task_id == "global_trunk":
-        # Trunk cannot be closed, but we can signal a reset
-        pass
-    else:
-        # Use dismiss_queue_item if it's an orchestrator task, else complete_task
-        tool_name = "dismiss_queue_item" if is_trunk else "complete_task"
-        registry.execute(tool_name, {
-            "task_id": active_task_id,
-            "synthesis": f"FAILED: Cognitive loop detected ({reason}). Task aborted to prevent infinite token waste."
-        })
-
-    state = agent_state.load_state()
-    if state.get("active_branch") and state["active_branch"].get("task_id") == active_task_id:
-        state["active_branch"] = None
-
-    agent_state.save_state(state)
-
-    agent_state.clear_session_history()
-    time.sleep(2)
-
-    time.sleep(2)
 
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
     """Generates the minimalist dynamic telemetry (HUD) as a User message."""
@@ -1091,13 +1007,6 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     queue_len = len(queue)
 
     hud = f"[HUD | Context: {context_pct}% | Queue: {queue_len}]"
-
-    # Heuristic loop detection
-    if agent_state._session["tool_history"]:
-        loop_reason = detect_cognitive_loop([])
-        if loop_reason:
-            hud += f" [WARNING: {loop_reason}. Use fold_context.]"
-
     return hud
 
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
@@ -1142,36 +1051,6 @@ def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]]
     return f"\n\n{telemetry}"
 
 
-def detect_cognitive_loop(tool_calls: List[Any]) -> Optional[str]:
-    # Use session-bound history for loop detection
-    history = agent_state._session
-    
-    for tc in tool_calls:
-        name = tc.function.name
-        raw_args = tc.function.arguments
-        history["tool_history"].append(f"{name}:{raw_args}")
-
-        intent = name
-        if name in ["read_file_tool", "write_file", "patch_file"]:
-            try:
-                params = json.loads(raw_args)
-                intent = f"{name}:{params.get('path', '')}"
-            except Exception: pass
-        elif name == "bash_command":
-            try:
-                cmd = json.loads(raw_args).get('command', '')
-                intent = f"bash:{cmd[:50]}"
-            except Exception: pass
-        history["intent_history"].append(intent)
-        
-    history["tool_history"] = history["tool_history"][-6:]
-    history["intent_history"] = history["intent_history"][-6:]
-
-    if len(history["tool_history"]) >= 3 and len(set(history["tool_history"][-3:])) == 1:
-        return "Exact Tool Loop Detected (3 turns)"
-    if len(history["intent_history"]) >= 6 and len(set(history["intent_history"][-6:])) == 1:
-        return "Cognitive Intent Stall Detected (6 turns)"
-    return None
 
 
 def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1272,6 +1151,7 @@ def _route_tool_calls(
     context_switch_triggered = False
     hibernating = False
     error_streak = state.get("error_streak", 0)
+    tool_responses = []
 
     # Collect results to find the last one for telemetry piggybacking
     tool_calls = message.tool_calls
@@ -1299,15 +1179,32 @@ def _route_tool_calls(
             result = f"{result}{piggyback}"
 
         if result == "SYSTEM_SIGNAL_RESTART" or "SYSTEM_SIGNAL_RESTART" in str(result):
+            # Atomic Egress: No log written yet, so we just restart
             sys.exit(0)
         elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
-            try:
-                duration = str(result).split(":")[1]
-                agent_state.append_task_message(active_task_id, {"role": "assistant", "content": f"[SYSTEM: Hibernating for {duration} seconds. Resources conserved. Wake-up scheduled.]"})
-            except Exception: pass
             hibernating = True
 
-        agent_state.append_task_message(active_task_id, {"role": "tool", "tool_call_id": safe_call_id, "name": name, "content": str(result)})
+        tool_responses.append({
+            "role": "tool",
+            "tool_call_id": safe_call_id,
+            "name": name,
+            "content": str(result)
+        })
+
+    # ATOMIC FLUSH: Only write to the task log once full processing is complete
+    agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
+    for response_msg in tool_responses:
+        agent_state.append_task_message(active_task_id, response_msg)
+
+    # Special handling for post-log system signals (e.g., Hibernate confirmation)
+    if hibernating:
+        try:
+            # Inject a formal closure message for the history
+            agent_state.append_task_message(active_task_id, {
+                "role": "assistant",
+                "content": "[SYSTEM: Hibernation sequence engaged. Wake-up scheduled.]"
+            })
+        except Exception: pass
 
     post_loop_state = agent_state.load_state()
     post_loop_state["error_streak"] = error_streak
@@ -1319,14 +1216,9 @@ def main() -> None:
     agent_state.initialize_memory()
     print(f"Awaking Native ReAct Mode (JSONL). Model: {constants.MODEL} | Thinking: {'ON' if constants.ENABLE_THINKING else 'OFF'}")
 
-    # WP1: Seal memory ONCE on boot before the loop starts
+    # WP1: Clean bootstrap
     state = agent_state.load_state()
     queue = agent_state.load_task_queue()
-    try:
-        active_task_id, _, _, _, is_trunk = _resolve_execution_context(state, queue)
-        seal_memory_on_boot(active_task_id, constants.CRASH_LOG_PATH, state, queue, is_trunk)
-    except Exception as e:
-        print(f"[System] Warning: Could not perform boot sealing ({e}). Proceeding to loop.")
 
     while True:
         state = agent_state.load_state()
@@ -1411,18 +1303,14 @@ def main() -> None:
                 )
                 agent_state.amend_last_tool_message(active_task_id, gasp_msg)
 
-            agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
             if message.tool_calls:
-                # Heuristic loop detection (no kill, just warning for HUD)
-                loop_reason = detect_cognitive_loop(message.tool_calls)
-                if loop_reason and "LAZARUS" in loop_reason:
-                    lazarus_recovery(active_task_id, is_trunk, loop_reason)
-                    continue
-
+                # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
                 context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue, is_trunk)
                 if context_switch or hibernating:
                     continue
             else:
+                # No tools - log current assistant turn immediately
+                agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
                 time.sleep(0.5)
 
             time.sleep(2)
