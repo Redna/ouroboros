@@ -103,7 +103,7 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     # OOM Protection: If log is > 50MB, force emergency compaction before loading
     if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
         print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Compacting...")
-        autonomic_fold(task_id)
+        autonomic_fold()
 
     raw_messages = []
     if log_path.exists():
