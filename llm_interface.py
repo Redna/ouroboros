@@ -45,44 +45,55 @@ def redact_secrets(text: str) -> str:
 def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = constants.RETAIN_FULL_LAST_N) -> List[Dict[str, Any]]:
     processed = []
     cutoff_idx = len(messages) - retain_full_last_n
+    
+    # Agency-First: Thinking/Reasoning shedding for older turns (n-3)
     thinking_cutoff_idx = len(messages) - 3
+    
+    # Add Turn Indexing [TURN X] for spatial awareness (Volatile only)
     turn_idx = 1
     
     for i, msg in enumerate(messages):
         new_msg = msg.copy()
         role = new_msg.get("role")
-        content_str = str(new_msg.get("content", ""))
         
-        # 1. ALWAYS police massive tool outputs, even on the current turn
-        if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
-            new_msg["content"] = f"[SYSTEM LOG: Output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
-            content_str = new_msg["content"]
-
-        # 2. Turn indexing
+        # Turn indexing for volatile messages
         if role in ["user", "assistant"]:
-            new_msg["content"] = f"[TURN {turn_idx}] {content_str}"
+            content = new_msg.get("content", "")
+            new_msg["content"] = f"[TURN {turn_idx}] {content}"
             turn_idx += 1
 
-        # 3. Strip Thinking from older assistant turns
+        # Strip Thinking from older assistant turns (Finding 10)
         if role == "assistant" and i < thinking_cutoff_idx:
-            new_msg.pop("thinking", None)
-            new_msg.pop("reasoning_content", None)
+            if "thinking" in new_msg:
+                new_msg.pop("thinking")
+            if "reasoning_content" in new_msg:
+                new_msg.pop("reasoning_content")
 
-        # 4. Skip deeper historical trimming for recent context
         if i == 0 or i >= cutoff_idx:
             processed.append(new_msg)
             continue
             
-        # 5. Historical Telemetry and Arguments Compression (Only for older messages)
+        content_str = str(new_msg.get("content", ""))
+        
+        # WP: Telemetry Compression (Context Rot Prevention)
+        # Handle both ## CURRENT TELEMETRY (Genesis) and ## UPDATED TELEMETRY (Piggyback)
         for marker in ["## UPDATED TELEMETRY", "## CURRENT TELEMETRY"]:
             if marker in content_str:
                 parts = content_str.split(marker)
                 prefix = parts[0].strip()
                 telemetry_block = parts[1]
-                heartbeat = next((l for l in telemetry_block.splitlines() if "[PHYSIOLOGY]" in l), "[HEARTBEAT: Archived]")
+                
+                # Extract Physiology Heartbeat
+                lines = telemetry_block.splitlines()
+                heartbeat = next((l for l in lines if "[HUD" in l), "[HEARTBEAT: Metrics Archived]")
+                
                 new_msg["content"] = f"{prefix}\n\n[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
+                content_str = new_msg["content"] # Update for subsequent trim checks
 
-        if role == "assistant" and new_msg.get("tool_calls"):
+        if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
+            new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
+            
+        elif role == "assistant" and new_msg.get("tool_calls"):
             trimmed_calls = []
             for tc in new_msg["tool_calls"]:
                 new_tc = tc.copy()
@@ -90,7 +101,7 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
                     args = json.loads(new_tc.get("function", {}).get("arguments", "{}"))
                     for key in ["content", "patch", "text", "code"]:
                         if key in args and isinstance(args[key], str) and len(args[key]) > constants.TOOL_ARG_TRIM_CHARS:
-                            args[key] = f"(... {len(args[key])} characters archived ...)"
+                            args[key] = f"(... {len(args[key])} characters of {key} archived ...)"
                     new_tc["function"]["arguments"] = json.dumps(args)
                 except Exception:
                     pass

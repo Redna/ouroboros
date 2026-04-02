@@ -65,18 +65,18 @@ def seal_memory_on_boot(task_id: str, crash_log_path: Path, state: Dict[str, Any
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists():
         return
-        
+
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             messages = [json.loads(line) for line in f if line.strip()]
     except Exception:
         return
-        
+
     if not messages:
         return
-        
+
     last_msg = messages[-1]
-    
+
     # SCENARIO A: Dangling Tool Call (Crash Recovery)
     if last_msg.get("role") == "assistant" and last_msg.get("tool_calls"):
         print(f"\033[91m[Lazarus] Dangling tool calls detected in {task_id}. Sealing...\033[0m")
@@ -86,7 +86,7 @@ def seal_memory_on_boot(task_id: str, crash_log_path: Path, state: Dict[str, Any
                 crash_data += f"\nCrash Log:\n{crash_log_path.read_text()}"
                 crash_log_path.unlink() # Clear it after reading
             except Exception: pass
-            
+
         # Agency-First: Piggyback telemetry onto the recovery tool response
         piggyback = build_telemetry_piggyback(state, queue, is_trunk)
         sealed_content = f"{crash_data}{piggyback}"
@@ -100,9 +100,9 @@ def seal_memory_on_boot(task_id: str, crash_log_path: Path, state: Dict[str, Any
                 "content": sealed_content
             }
             agent_state.append_task_message(task_id, recovery_msg)
-            
+
     # SCENARIO B: Clean State (Graceful Restart)
-    # If the last message was a tool, we MUST add a user message to maintain the 
+    # If the last message was a tool, we MUST add a user message to maintain the
     # required system -> user -> assistant -> tool -> assistant flow.
     elif last_msg.get("role") == "tool":
         print(f"\033[94m[System] Graceful restart detected for {task_id}. Restoration complete.\033[0m")
@@ -196,19 +196,19 @@ def run_tests(args: dict) -> str:
             text=True,
             timeout=60
         )
-        
+
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        
+
         if result.returncode == 0:
             # For success, keep it dense
             return f"✅ All tests passed successfully.\n{output[-500:]}"
-            
+
         # For failure, truncate massive tracebacks but keep the summary
         if len(output) > 2000:
             output = output[:1000] + "\n\n... [TRUNCATED] ...\n\n" + output[-1000:]
-            
+
         return f"❌ TESTS FAILED. You must fix the code or update the tests before committing.\n\n{output}"
-        
+
     except subprocess.TimeoutExpired:
         return "❌ TESTS FAILED: Pytest execution timed out. You may have introduced an infinite loop."
     except Exception as e:
@@ -261,14 +261,14 @@ def patch_file(args):
             # WP: Actionable Feedback for Failed Patches
             lines = content.splitlines()
             search_lines = search_text.splitlines()
-            
+
             error_msg = f"Error: Exact `search_text` not found in {file_path.name}.\n"
             error_msg += "This is usually caused by incorrect leading spaces or missing blank lines.\n"
 
             # Find potential matches by looking for the first non-empty line of the search block
             first_search_line = next((l.strip() for l in search_lines if l.strip()), None)
             potential_matches = []
-            
+
             if first_search_line:
                 for i, line in enumerate(lines):
                     if first_search_line in line:
@@ -276,14 +276,14 @@ def patch_file(args):
                         end = min(len(lines), i + len(search_lines) + 2)
                         snippet = "\n".join(lines[start:end])
                         potential_matches.append(snippet)
-            
+
             if potential_matches:
                 error_msg += "\nDid you mean to target this section? Pay close attention to the indentation:\n"
                 error_msg += "```python\n" + potential_matches[0] + "\n```\n"
                 error_msg += "Adjust your `search_text` to match the file exactly and try again."
             else:
                 error_msg += "Could not find any lines matching the start of your search block. Use `read_file` to check the current file contents."
-            
+
             return error_msg
         elif occurrence_count > 1:
             return f"Error: 'search_text' appears {occurrence_count} times. Please provide a more unique block."
@@ -397,11 +397,11 @@ def generate_repo_map(args: dict) -> str:
 
 
 @registry.tool(
-    description="Sawtooth Context Folding. Autonomously compress context by replacing recent raw turns with a synthesis. Use this when a sub-task is complete or context is bloated.",
+    description="Compress the active execution log by amputating the middle history (the 'Belly'). You MUST provide a dense, factual synthesis of the dropped history. This synthesis is stored natively in this tool call's arguments, maintaining an unbroken, single timeline. Always use `store_memory` BEFORE calling this if there are facts that must survive permanently.",
     parameters={
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk' or branch ID)."},
+            "task_id": {"type": "string", "description": "Current task ID (e.g. 'global_trunk')."},
             "synthesis": {"type": "string", "description": "Dense summary following the DELTA PATTERN: 1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."},
             "drop_turns": {"type": "integer", "description": "Optional: Number of recent tool/assistant turns to delete. If omitted or 0, folds ALL history except the initial objective."}
         },
@@ -410,15 +410,12 @@ def generate_repo_map(args: dict) -> str:
     bucket="context_control"
 )
 def fold_context(args: dict) -> str:
-    task_id = args.get("task_id")
+    task_id = args.get("task_id", "global_trunk")
     synthesis = args.get("synthesis")
     try:
         drop_turns = int(args.get("drop_turns", 0))
     except (ValueError, TypeError):
         return "Error: 'drop_turns' must be an integer."
-
-    if not task_id or drop_turns < 0:
-        return "Error: Invalid parameters for context folding."
 
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists():
@@ -430,57 +427,38 @@ def fold_context(args: dict) -> str:
     except Exception as e:
         return f"Error reading log: {e}"
 
-    if len(messages) <= 2:
-        return f"Error: Not enough history to fold safely."
+    if len(messages) <= 4:
+        return f"Error: Not enough history to fold safely. Context is already minimal."
 
-    assistant_msg = messages[-1]
-    # We must ensure we don't drop the assistant message itself, so we calculate drop based on previous messages
+    # Define the Head: The first 2 messages (Genesis User + First Assistant)
+    head_size = 2
+    head = messages[:head_size]
+
     if drop_turns == 0:
-        # Default: keep only genesis message
-        cutoff = 1
-        turns_dropped = (len(messages) - 2) // 2
+        # Amputate everything except the Head.
+        preserved = head
+        turns_dropped = (len(messages) - head_size) // 2
     else:
-        if len(messages) <= drop_turns * 2 + 2:
-             # Dropping too much, default to dropping all but genesis
-             cutoff = 1
-             turns_dropped = (len(messages) - 2) // 2
-        else:
-             # Slice the messages to remove the tail, excluding the current assistant message
-             cutoff = len(messages) - 1 - (drop_turns * 2)
-             turns_dropped = drop_turns
-             if cutoff < 1: 
-                 cutoff = 1
-                 turns_dropped = (len(messages) - 2) // 2
-    
-    preserved = messages[:cutoff]
-
-    if turns_dropped < 1:
-        turns_dropped = 1
-
-    knowledge_block = {
-        "role": "user",
-        "content": f"[FOCUS SYNTHESIS - PREVIOUS {turns_dropped} STEPS ARCHIVED]: {synthesis}"
-    }
+        # Keep Head, Amputate `drop_turns * 2` messages from the END of the current log file
+        messages_to_drop = drop_turns * 2
+        cutoff = max(head_size, len(messages) - messages_to_drop)
+        preserved = messages[:cutoff]
+        turns_dropped = (len(messages) - cutoff) // 2
 
     try:
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in preserved:
                 f.write(json.dumps(msg) + "\n")
-            f.write(json.dumps(knowledge_block) + "\n")
-            f.write(json.dumps(assistant_msg) + "\n")
-            
-        # WP: Update State Metrics to reflect the folding (Finding 11)
+
+        # Update metrics
         state = agent_state.load_state()
-        if task_id == "global_trunk":
-            state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - turns_dropped)
-        elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
-            state["active_branch"]["turn_count"] = max(1, state["active_branch"].get("turn_count", 1) - turns_dropped)
+        state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - turns_dropped)
         agent_state.save_state(state)
 
     except Exception as e:
         return f"Error writing log during fold: {e}"
 
-    return f"Context successfully folded for {task_id}. {turns_dropped} turns replaced with synthesis."
+    return f"Fold successful. {turns_dropped} turns (the 'Belly') amputated. Synthesis anchored in this tool call. Context reset."
 
 
 @registry.tool(
@@ -532,7 +510,7 @@ def _release_queue_lock(fd: int) -> None:
 
 def _is_semantic_duplicate(new_desc: str, existing_queue: List[Dict]) -> bool:
     """Detect semantic duplicates to prevent cognitive loops.
-    
+
     Uses multi-tier detection:
     1. Exact match (normalized)
     2. High keyword overlap (>50% of significant words)
@@ -540,28 +518,28 @@ def _is_semantic_duplicate(new_desc: str, existing_queue: List[Dict]) -> bool:
     """
     stop_words = {'the', 'a', 'an', 'to', 'for', 'in', 'on', 'at', 'by', 'with', 'and', 'or'}
     action_words = {'fix', 'update', 'modify', 'change', 'refactor', 'improve', 'optimize', 'implement', 'add', 'remove'}
-    
+
     def extract_significant_words(text: str) -> set:
         words = set(text.lower().split())
         return words - stop_words
-    
+
     new_keywords = extract_significant_words(new_desc)
     if len(new_keywords) < 3:  # Too short to be meaningful
         return False
-    
+
     for task in existing_queue:
         existing_desc = task.get("description", "")
         existing_keywords = extract_significant_words(existing_desc)
-        
+
         if len(existing_keywords) < 3:
             continue
-        
+
         # Tier 1: High overlap ratio (>50% of smaller set matches)
         overlap = new_keywords & existing_keywords
         min_len = min(len(new_keywords), len(existing_keywords))
         if len(overlap) >= 3 and len(overlap) / min_len > 0.5:
             return True
-        
+
         # Tier 2: Same action words + same target words
         new_actions = new_keywords & action_words
         existing_actions = existing_keywords & action_words
@@ -571,7 +549,7 @@ def _is_semantic_duplicate(new_desc: str, existing_queue: List[Dict]) -> bool:
             target_overlap = new_target & existing_target
             if len(target_overlap) >= 2:
                 return True
-    
+
     return False
 
 
@@ -663,16 +641,16 @@ def git_push(args):
 def dismiss_queue_item(args):
     task_id = args.get("task_id")
     synthesis = args.get("synthesis", "No synthesis provided.")
-    
+
     if task_id == "global_trunk":
         return "Error: Cannot dismiss the global trunk."
-        
+
     agent_state.append_task_archive(task_id, synthesis)
 
     q = agent_state.load_task_queue()
     q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2), encoding="utf-8")
-    
+
     return f"Task {task_id} dismissed from queue."
 
 @registry.tool(
@@ -765,52 +743,20 @@ def push_task(args):
     bucket="branch_control"
 )
 def complete_task(args):
-    task_id = args.get("task_id")
+    task_id = args.get("task_id", "global_trunk")
     synthesis = args.get("synthesis", "No synthesis provided.")
     agent_state.append_task_archive(task_id, synthesis)
 
     q = agent_state.load_task_queue()
-    completed_task = next((t for t in q if t.get("task_id") == task_id), None)
-
-    if completed_task and completed_task.get("parent_task_id"):
-        parent_id = completed_task.get("parent_task_id")
-        if parent_id != "global_trunk":
-            msg = {"role": "user", "content": f"[SYSTEM ALERT]: Subtask {task_id} complete.\nSynthesis: {synthesis}"}
-            agent_state.append_task_message(parent_id, msg)
-
     q = [t for t in q if t.get("task_id") != task_id]
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
 
     state = agent_state.load_state()
-    # If in a branch, trigger merge
-    is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
-    
-    # Capture parent info before popping state
-    parent_info = None
-    if is_branch:
-        parent_info = {
-            "parent_task_id": state["active_branch"].get("parent_task_id", "global_trunk"),
-            "fork_tool_call_id": state["active_branch"].get("fork_tool_call_id")
-        }
-
-    if is_branch:
-        suspended = state.get("suspended_branches", [])
-        state["active_branch"] = suspended.pop() if suspended else None
-
     for key in ["sys_temp", "sys_think", f"partial_state_{task_id}"]:
         if key in state: del state[key]
     agent_state.save_state(state)
 
-    if is_branch:
-        payload = json.dumps({
-            "status": "COMPLETED", 
-            "task_id": task_id, 
-            "summary": synthesis,
-            "parent_task_id": parent_info["parent_task_id"],
-            "fork_tool_call_id": parent_info["fork_tool_call_id"]
-        })
-        return f"SYSTEM_SIGNAL_MERGE:{payload}"
-    return f"Task {task_id} closed."
+    return f"Task {task_id} completed and removed from queue. Synthesis archived."
 
 @registry.tool(
     description="Suspend the active task. Use this when blocked, hitting token limits, or needing Trunk-level orchestration. Progress is saved via partial_state.",
@@ -826,7 +772,7 @@ def complete_task(args):
     bucket="branch_control"
 )
 def suspend_task(args):
-    task_id = args.get("task_id")
+    task_id = args.get("task_id", "global_trunk")
     synthesis = args.get("synthesis", "No synthesis provided.")
     partial_state = args.get("partial_state", "")
 
@@ -839,35 +785,10 @@ def suspend_task(args):
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
 
     state = agent_state.load_state()
-    is_branch = isinstance(state.get("active_branch"), dict) and state["active_branch"].get("task_id") == task_id
-    
-    # Capture parent info before modifying state
-    parent_info = None
-    if is_branch:
-        parent_info = {
-            "parent_task_id": state["active_branch"].get("parent_task_id", "global_trunk"),
-            "fork_tool_call_id": state["active_branch"].get("fork_tool_call_id")
-        }
-
-    if is_branch:
-        suspended = state.get("suspended_branches", [])
-        suspended.append(state["active_branch"]) # Re-park explicitly
-        state["active_branch"] = None # Drop to trunk
-
     state[f"partial_state_{task_id}"] = partial_state
     agent_state.save_state(state)
 
-    if is_branch:
-        payload = json.dumps({
-            "status": "SUSPENDED", 
-            "task_id": task_id, 
-            "summary": synthesis, 
-            "partial_state": partial_state,
-            "parent_task_id": parent_info["parent_task_id"],
-            "fork_tool_call_id": parent_info["fork_tool_call_id"]
-        })
-        return f"SYSTEM_SIGNAL_MERGE:{payload}"
-    return f"Task {task_id} suspended."
+    return f"Task {task_id} suspended. State saved."
 
 @registry.tool(
     description="Update working memory.",
@@ -1133,130 +1054,6 @@ def check_environment(args):
     except Exception as e:
         return f"Check environment failed: {e}"
 
-@registry.tool(
-    description="Spawn an isolated execution branch for deep work. You MUST pass the exact task_id from the queue. Optionally specify a model_id to test uncertified models in isolation.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "task_id": {"type": "string"},
-            "objective": {"type": "string"},
-            "context_brief": {"type": "string", "description": "A summary of what the Trunk knows, previous findings, and why this branch is needed."},
-            "tool_buckets": {
-                "type": "array",
-                "items": {
-                    "type": "string", 
-                    "enum": ["filesystem", "bash", "search", "memory_access"],
-                    "description": "filesystem: read/write/patch files. bash: shell commands. search: web search/fetch. memory_access: persistent insights/recall (Note: memory_access is provided to all branches by default)."
-                }
-            },
-            "model_id": {"type": "string", "description": "Optional: Override the default model for this specific branch."}
-        },
-        "required": ["task_id", "objective", "context_brief", "tool_buckets"]
-    },
-    bucket="global"
-)
-def fork_execution(args, call_id=None):
-    task_id = args.get("task_id", f"task_{int(time.time())}")
-    objective = args.get("objective", "No objective provided.")
-    context_brief = args.get("context_brief", "No additional context provided.")
-    tool_buckets = args.get("tool_buckets", ["filesystem", "bash"])
-    model_id = args.get("model_id")
-
-    # OS-Level Security: Prevent Privilege Escalation
-    if "global" in tool_buckets:
-        return "SYSTEM ERROR: Branches cannot request the 'global' tool bucket. Context isolation violation."
-
-    # Get parent ID from current context
-    state = agent_state.load_state()
-    parent_id = "global_trunk"
-
-    if state.get("active_branch"):
-        parent_id = state["active_branch"].get("task_id", "global_trunk")
-        # Stash current active branch
-        suspended = state.get("suspended_branches", [])
-        suspended.append(state["active_branch"])
-        state["suspended_branches"] = suspended
-
-    state["active_branch"] = {
-        "task_id": task_id,
-        "parent_task_id": parent_id,
-        "objective": objective,
-        "context_brief": context_brief,
-        "tool_buckets": tool_buckets,
-        "model_id": model_id,
-        "fork_tool_call_id": call_id  # WP: Persist call ID
-    }
-    agent_state.save_state(state)
-
-    agent_state.append_task_message(task_id, {
-        "role": "user",
-        "content": f"[FORKED EXECUTION]: Objective: {objective}",
-        "parent_task_id": parent_id,
-        "task_id": task_id,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    })
-
-    return f"SYSTEM_SIGNAL_FORK:{task_id}"
-
-
-@registry.tool(
-    description="Resume a previously suspended branch. Use this when the top task in the queue is a suspended branch and you have finished the interrupt that caused the suspension.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "task_id": {"type": "string"},
-            "synthesis": {"type": "string", "description": "A summary of the interrupt or context that occurred while the branch was suspended."}
-        },
-        "required": ["task_id"]
-    },
-    bucket="global"
-)
-def resume_branch(args):
-    task_id = args.get("task_id")
-    synthesis = args.get("synthesis", "No synthesis provided.")
-
-    q = agent_state.load_task_queue()
-    if any(t.get("priority", 1) >= 999 for t in q):
-        return "Error: Cannot resume branch while a Priority 999 interrupt is pending. You MUST handle or close the interrupt first."
-
-    # Get partial state from queue if it exists
-    partial_state = ""
-    for t in q:
-        if t.get("task_id") == task_id:
-            partial_state = t.get("partial_state", "")
-            break
-
-    state = agent_state.load_state()
-    suspended = state.get("suspended_branches", [])
-
-    # Find the target branch in the stack
-    target_idx = -1
-    for i, b in enumerate(suspended):
-        if b.get("task_id") == task_id:
-            target_idx = i
-            break
-
-    if target_idx == -1:
-        return f"Error: Branch {task_id} not found in suspended stack."
-
-    # Pop the target branch
-    branch_info = suspended.pop(target_idx)
-
-    # If there was an active branch (shouldn't happen in Trunk, but for safety), stash it
-    if state.get("active_branch"):
-        suspended.append(state["active_branch"])
-
-    state["active_branch"] = branch_info
-    state["suspended_branches"] = suspended
-    agent_state.save_state(state)
-
-    content = f"[SYSTEM RESUME]: Task resumed by Trunk. Synthesis of interrupt: {synthesis}"
-    if partial_state:
-        content += f"\n\n[RESUMED PARTIAL STATE]: {partial_state}"
-
-    agent_state.append_task_message(task_id, {"role": "user", "content": content})
-
-    return f"SYSTEM_SIGNAL_FORK:{task_id}"
 
 
 def lazarus_recovery(active_task_id: str, is_trunk: bool = False, reason: str = "cognitive loop") -> None:
@@ -1291,128 +1088,21 @@ def lazarus_recovery(active_task_id: str, is_trunk: bool = False, reason: str = 
     time.sleep(2)
 
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
-    """Generates the dynamic telemetry (HUD, Queue, Memory) as a User message."""
-    current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
-    current_spend = agent_state.get_current_spend()
-    remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
-
-    # We use context window as the soft target for turning/forking
+    """Generates the minimalist dynamic telemetry (HUD) as a User message."""
     token_limit = constants.CONTEXT_WINDOW
+    current_context = state.get("last_context_size", 0)
+    context_pct = int((current_context / token_limit) * 100) if token_limit else 0
+    queue_len = len(queue)
+
+    hud = f"[HUD | Context: {context_pct}% | Queue: {queue_len}]"
 
     # Heuristic loop detection
-    loop_warning = ""
     if agent_state._session["tool_history"]:
         loop_reason = detect_cognitive_loop([], state)
         if loop_reason:
+            hud += f" [WARNING: {loop_reason}. Use fold_context.]"
 
-            loop_warning = f"\n\n[SYSTEM WARNING]: {loop_reason}. P6 Warning: You are burning tokens on repetition. Pivot or use `fold_context`."
-
-    # Context & Turn warnings (Volatile)
-    limit_warning = ""
-    
-    # Source metrics from state/branch (Finding 1 fix)
-    if not is_trunk and state.get("active_branch"):
-        turn_count = state["active_branch"].get("turn_count", 0)
-        task_tokens = state["active_branch"].get("task_tokens", 0)
-        branch_id = state["active_branch"].get("task_id", "branch")
-    elif is_trunk:
-        turn_count = state.get("trunk_turns", 0)
-        task_tokens = state.get("trunk_tokens", 0)
-        branch_id = "global_trunk"
-    else:
-        turn_count = queue[0].get("turn_count", 0) if queue else 0
-        task_tokens = queue[0].get("task_tokens", 0) if queue else 0
-        branch_id = "global_trunk"
-
-    current_context = state.get("last_context_size", 0)
-    
-    # Source limit from state (Finding 11: Branch vs Trunk limits)
-    turn_limit = 50 if is_trunk else constants.TURN_LIMIT
-    
-    if turn_count >= (turn_limit - 5) or current_context >= (constants.CONTEXT_WINDOW * 0.8):
-        reason = f"turn limit ({turn_count}/{turn_limit})" if turn_count >= (turn_limit - 5) else "approaching context limit"
-        if is_trunk:
-            limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize and clear history."
-        else:
-            limit_warning = f"\n\n[SYSTEM WARNING]: Hit {reason}. Your attention is degrading. You MUST use `fold_context` to summarize, `complete_task` if finished, or `suspend_task` if blocked."
-
-    # Rollback mode warning (Finding 11)
-    if state.get("rollback_mode"):
-        if is_trunk:
-            limit_warning += "\n\n[SYSTEM EMERGENCY]: ROLLBACK MODE ACTIVE. Only `fold_context` is available. You MUST resolve the breach now."
-        else:
-            limit_warning += "\n\n[SYSTEM EMERGENCY]: ROLLBACK MODE ACTIVE. Only `fold_context`, `complete_task`, and `suspend_task` are available. You MUST resolve the breach now."
-
-    # 1. Context-Aware HUD & Directives
-    if is_trunk:
-        global_tokens = state.get("global_tokens_consumed", 0)
-        rem_tokens = max(0, token_limit - task_tokens)
-        turn_tokens = state.get("last_context_size", 0)
-
-        hud = (
-            f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
-            f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
-            f"Turn Tokens: {turn_tokens:,} | Global Tokens: {global_tokens:,} | Time: {current_time}"
-            f"{loop_warning}{limit_warning}"
-        )
-        queue_content = "\n".join([f"- [P{t.get('priority', 1)}] {t.get('task_id')}: {t.get('description')}" for t in queue]) if queue else "Queue is empty."
-        context_header = "GLOBAL TRUNK"
-        objective_part = ""
-    else:
-        rem_tokens = max(0, token_limit - task_tokens)
-        hud = (
-            f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | "
-            f"Task Tokens: {task_tokens:,} / {token_limit:,} (left: {rem_tokens:,}) | "
-            f"Time: {current_time}"
-            f"{loop_warning}{limit_warning}"
-        )
-        queue_content = ""
-
-        # Branch Awareness
-        suspended = len(state.get("suspended_branches", []))
-        suspended_alert = f" [{suspended} BRANCH(ES) SUSPENDED]" if suspended > 0 else ""
-        context_header = f"EXECUTION BRANCH ({branch_id}){suspended_alert}"
-
-        # Branch objective from branch_info (Finding 1 fix)
-        active_branch = state.get("active_branch", {})
-        objective = active_branch.get('objective', 'Unknown')
-        objective_part = f"\n\n### BRANCH OBJECTIVE\n{objective}"
-
-    # 2. Structured Working Memory
-    raw_memory = constants.WORKING_STATE_PATH.read_text(encoding="utf-8") if constants.WORKING_STATE_PATH.exists() else "{}"
-    try:
-        mem_data = json.loads(raw_memory)
-        working_memory = f"```json\n{json.dumps(mem_data, indent=2)}\n```"
-    except Exception:
-        working_memory = raw_memory
-
-    # 3. Memory Index & Conversation context
-    memory_keys = agent_state.load_memory_index()
-    max_entries = constants.MEMORY_MAX_ENTRIES
-    if memory_keys:
-        memory_index = f"({len(memory_keys)}/{max_entries} slots)\n" + "\n".join(f"- {k}" for k in memory_keys)
-    else:
-        memory_index = f"(0/{max_entries} slots) — Empty. Use `store_memory` to record insights."
-
-    # Isolation: Only show chat history in TRUNK mode (Finding 1 fix)
-    chat_context = ""
-    if is_trunk:
-        chat_hist = agent_state.load_chat_history()
-        chat_context = "\n### RECENT CONVERSATION\n" + ("\n".join([f"[{m.get('timestamp', '??:??:??')}] {m['role']}: {m['text']}" for m in chat_hist[-5:]]) if chat_hist else "No recent conversation.")
-
-    # Construct unified layout
-    sections = [
-        f"## CURRENT TELEMETRY ({context_header})",
-        hud,
-        objective_part,
-        f"\n### TASK QUEUE\n{queue_content}" if is_trunk else "",
-        "\n### WORKING MEMORY",
-        working_memory,
-        "\n### MEMORY INDEX",
-        memory_index,
-        chat_context
-    ]
-    return "\n".join([s for s in sections if s])
+    return hud
 
 def build_static_system_prompt(is_trunk: bool, active_tool_specs: List[Dict[str, Any]], branch_info: Optional[Dict[str, Any]] = None) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
@@ -1451,24 +1141,16 @@ You are operating in an isolated Execution Branch.
 """
 
 def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], is_trunk: bool) -> str:
-    """Generates the HUD and Interrupt alerts to be appended to tool responses."""
+    """Generates the minimalist HUD to be appended to tool responses."""
     telemetry = build_dynamic_telemetry_message(state, queue, is_trunk)
-    
-    interrupt_alert = ""
-    if is_trunk and queue:
-        # Check for P999 interrupts that might have arrived during the turn
-        top_task = queue[0]
-        if top_task.get("priority") == 999:
-            interrupt_alert = f"\n\n[CRITICAL INTERRUPT]: A priority 999 task from the creator has arrived: {top_task.get('description')}\nYou MUST address this immediately."
-
-    return f"\n\n## UPDATED TELEMETRY\n{telemetry}{interrupt_alert}"
+    return f"\n\n{telemetry}"
 
 
 def detect_cognitive_loop(tool_calls: List[Any], state: Dict[str, Any]) -> Optional[str]:
     for tc in tool_calls:
         name = tc.function.name
         raw_args = tc.function.arguments
-        agent_state._session["tool_history"].append(f"{name}:{raw_args}")
+        state["tool_history"].append(f"{name}:{raw_args}")
 
         intent = name
         if name in ["read_file_tool", "write_file", "patch_file"]:
@@ -1481,18 +1163,17 @@ def detect_cognitive_loop(tool_calls: List[Any], state: Dict[str, Any]) -> Optio
                 cmd = json.loads(raw_args).get('command', '')
                 intent = f"bash:{cmd[:50]}"
             except Exception: pass
-        agent_state._session["intent_history"].append(intent)
+        state["intent_history"].append(intent)
         
         # Update persisted state with current action
         state["last_action"] = intent
-        state["intent_history"] = agent_state._session["intent_history"][-5:]
 
-    agent_state._session["tool_history"] = agent_state._session["tool_history"][-6:]
-    agent_state._session["intent_history"] = agent_state._session["intent_history"][-6:]
+    state["tool_history"] = state["tool_history"][-6:]
+    state["intent_history"] = state["intent_history"][-6:]
 
-    if len(agent_state._session["tool_history"]) >= 3 and len(set(agent_state._session["tool_history"][-3:])) == 1:
+    if len(state["tool_history"]) >= 3 and len(set(state["tool_history"][-3:])) == 1:
         return "Exact Tool Loop Detected (3 turns)"
-    if len(agent_state._session["intent_history"]) >= 6 and len(set(agent_state._session["intent_history"][-6:])) == 1:
+    if len(state["intent_history"]) >= 6 and len(set(state["intent_history"][-6:])) == 1:
         return "Cognitive Intent Stall Detected (6 turns)"
     return None
 
@@ -1531,101 +1212,20 @@ def _resolve_execution_context(
     state: Dict[str, Any],
     queue: List[Dict[str, Any]],
 ) -> Tuple[str, str, List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
-    has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
-    active_branch = state.get("active_branch")
-    suspended = state.get("suspended_branches", [])
+    active_task_id = "global_trunk"
+    is_trunk = True
+    branch_info = None
+    allowed_buckets = ["global", "memory_access", "system_control", "search", "context_control", "filesystem", "bash"]
 
-    # Auto-Suspend: Freeze active work if an interrupt arrives.
-    if has_interrupt and active_branch:
-        print(f"[HAL] Suspending task {active_branch.get('task_id')} due to interrupt.")
-        agent_state.append_task_message(active_branch.get("task_id"), {
-            "role": "user",
-            "content": "[SYSTEM]: Priority 999 interrupt detected. This branch is now SUSPENDED and PARKED. You will be thawed once the interrupt is addressed."
-        })
-        suspended.append(active_branch)
-        state["active_branch"] = None
-        state["suspended_branches"] = suspended
-        agent_state.save_state(state)
-        active_branch = None
-
-    # Auto-Thaw: Resume background work if queue allows.
-    if not has_interrupt and not active_branch and suspended:
-        # We only thaw if the top task matches the top of our suspended stack.
-        top_suspended = suspended[-1]
-        if queue and queue[0].get("task_id") == top_suspended.get("task_id"):
-            print(f"[HAL] Thawing task {top_suspended.get('task_id')}.")
-            active_branch = suspended.pop()
-            state["active_branch"] = active_branch
-            state["suspended_branches"] = suspended
-            agent_state.save_state(state)
-            agent_state.append_task_message(active_branch.get("task_id"), {
-                "role": "user",
-                "content": "[SYSTEM]: Interrupt cleared. This branch is now THAWED and ACTIVE. Resume your objective."
-            })
-
-    # Auto-Close P999 interrupts if addressed but not cleared.
-    if has_interrupt and queue and queue[0].get("priority") == 999:
+    if queue:
         top_task = queue[0]
-        top_task["turn_count"] = top_task.get("turn_count", 0) + 1
-        
-        # Save the incremented turn count to disk immediately
-        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-
-        if top_task["turn_count"] > 3:
-            print(f"[HAL] Auto-closing persistent interrupt {top_task.get('task_id')}.")
-            # WP: Use internal logic instead of registry to avoid bucket issues and ensure atomicity
-            agent_state.append_task_archive(str(top_task.get("task_id")), "SYSTEM AUTO-CLOSE: Interrupt addressed but not cleared. Resuming background work.")
-            queue = [t for t in queue if t.get("task_id") != top_task.get("task_id")]
-            constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-            has_interrupt = any(t.get("priority", 1) >= 999 for t in queue)
-
-    if has_interrupt:
-        branch_info = None
-        is_trunk = True
+        task_desc = f"OBJECTIVE: {top_task.get('description', 'Unknown')}"
     else:
-        branch_info = active_branch
-        is_trunk = branch_info is None
-
-    if is_trunk:
-        active_task_id = "global_trunk"
-        allowed_buckets = ["global", "memory_access", "system_control", "search", "context_control"]
-
-        if queue:
-            top_task = queue[0]
-            creator_id = state.get("creator_id")
-            last_receipt = top_task.get("read_receipt_time", 0)
-
-            if top_task.get("priority") == 999 and not top_task.get("read_receipt_sent", False) and (time.time() - last_receipt > 10) and isinstance(creator_id, int):
-                print("[HAL] P999 Interrupt detected. Sending typing action...")
-                comms.send_telegram_action(creator_id, "typing")
-                top_task["read_receipt_sent"] = True
-                top_task["read_receipt_time"] = time.time()
-                constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-
-            task_desc = (
-                "You are the GLOBAL ORCHESTRATOR. EVALUATE your queue. "
-                "If the top task is communication or administrative, you MUST handle it "
-                "DIRECTLY here using `send_telegram_message` and THEN IMMEDIATELY `dismiss_queue_item`. "
-                "NEVER leave an interrupt task in the queue once responded to. "
-                "If a Priority 999 task exists, you CANNOT resume or fork a branch. Handle the interrupt first. "
-                "If the top task is a previously suspended branch and NO interrupts are pending, you MUST use `resume_branch` to thaw it. "
-                "If the top task requires deep work (file editing, bash, searching), "
-                "you MUST use `fork_execution` to spawn a BRANCH."
-            )
-        else:
-            task_desc = (
-                "Your task queue is empty. EVALUATE your history and "
-                "you MUST use `push_task` to initiate deep synthesis/optimization "
-                "or `hibernate` to save resources."
-            )
-    else:
-        assert branch_info is not None
-        active_task_id = branch_info.get("task_id", f"branch_{int(time.time())}")
-
-        allowed_buckets = branch_info.get("tool_buckets", []) + ["branch_control", "context_control", "system_control", "memory_access"]
-        task_desc = branch_info.get("objective", "")
-        if partial_state := state.get(f"partial_state_{active_task_id}"):
-            task_desc += f"\n\n[RESUME STATE]: {partial_state}"
+        task_desc = (
+            "Your task queue is empty. EVALUATE your history and "
+            "you MUST use `push_task` to initiate deep synthesis/optimization "
+            "or `hibernate` to save resources."
+        )
 
     active_tool_specs = registry.get_specs(allowed_buckets=allowed_buckets)
     return active_task_id, task_desc, active_tool_specs, branch_info, is_trunk
@@ -1682,9 +1282,9 @@ def _route_tool_calls(
     for i, tool_call in enumerate(tool_calls):
         name     = tool_call.function.name
         raw_args = tool_call.function.arguments
-        
+
         safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
-        
+
         try:
             args   = json.loads(raw_args)
             result = registry.execute(name, args, call_id=safe_call_id)
@@ -1711,12 +1311,12 @@ def _route_tool_calls(
         elif str(result).startswith("SYSTEM_SIGNAL_MERGE"):
             try:
                 payload = json.loads(str(result).split(":", 1)[1])
-                
+
                 # Option A: Native ReAct Resolution
                 # We inject the synthesis directly as the tool output for the original 'fork_execution' call.
                 parent_id = payload.get("parent_task_id", "global_trunk")
                 fork_call_id = payload.get("fork_tool_call_id")
-                
+
                 if parent_id == "global_trunk":
                     agent_state.wipe_global_trunk_log()
 
@@ -1799,7 +1399,7 @@ def main() -> None:
             print(f"\033[93m[System] Rollback Mode Active. Restricting tools for {active_task_id}.\033[0m")
             allowed_rollback_tools = ["fold_context"] if is_trunk else ["fold_context", "complete_task", "suspend_task"]
             active_tool_specs = [
-                t for t in active_tool_specs 
+                t for t in active_tool_specs
                 if t["function"]["name"] in allowed_rollback_tools
             ]
             state["rollback_mode"] = False # Unset so it only applies for one turn
@@ -1823,10 +1423,6 @@ def main() -> None:
 
         try:
             current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
-            current_spend = agent_state.get_current_spend()
-            remaining_budget = max(0.0, constants.DAILY_BUDGET_LIMIT - current_spend)
-            physiology_heartbeat = f"[PHYSIOLOGY]: Spend: ${current_spend:.4f} | Budget Left: ${remaining_budget:.4f} | Time: {current_time}"
-
             # 1. Build messages for the LLM API call (Full HUD)
             api_messages = _build_api_messages(
                 active_task_id, task_desc, active_tool_specs,
@@ -1848,62 +1444,18 @@ def main() -> None:
                 emergency_tools = ["fold_context", "complete_task", "suspend_task", "dismiss_queue_item"]
                 is_emergency_save = any(tc.function.name in emergency_tools for tc in message.tool_calls)
 
-            # HANDLE PHYSICAL BREACH (Tier 3 safety - Atomic Rollback & Guillotine)
+            # HANDLE PHYSICAL BREACH (Tier 3 safety - Autonomic Folding)
             if (limit_status == "BREACH" or limit_exceeded) and not is_emergency_save:
-                print(f"\033[91m[System] {active_task_id} breached limits. Triggering safety protocols.\033[0m")
-                
-                # Finding 11: Auto-Folding (The "Force Fold" Egress)
-                # If we've already tried rolling back and we're still breaching, or if the context is critical,
-                # we force a fold now to prevent a crash.
-                if is_trunk or state.get("rollback_mode"):
-                    print(f"\033[91m[System] FORCE FOLD: Automatic context truncation for {active_task_id}.\033[0m")
-                    agent_state.emergency_compact_log(active_task_id)
-                    state["rollback_mode"] = False
-                    agent_state.save_state(state)
-                    continue
-
-                # 1. Rollback the log (removes the bloated turn)
-                agent_state.rollback_task_log(active_task_id)
-                
-                # 2. Adjust queue turn_count
-                if queue:
-                    queue[0]["turn_count"] = max(0, queue[0].get("turn_count", 1) - 1)
-                    constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-                
-                # 3. Inject Critical Directive
-                if is_trunk:
-                    rollback_msg = (
-                        "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
-                        "The last turn has been REVERTED. You are at maximum capacity. "
-                        "You MUST use `fold_context` now. All other tools have been temporarily disabled."
-                    )
-                else:
-                    rollback_msg = (
-                        "[SYSTEM ROLLBACK]: Your last action reached a critical token point and caused a context breach. "
-                        "The last turn has been REVERTED. You are at maximum capacity. "
-                        "You MUST use `fold_context`, `complete_task`, or `suspend_task` now."
-                    )
-                agent_state.amend_last_tool_message(active_task_id, rollback_msg)
-                
-                # 4. Enforce Rollback Mode on next turn
-                state["rollback_mode"] = True
-                agent_state.save_state(state)
+                print(f"\033[91m[System] {active_task_id} breached limits. Triggering Autonomic Fold.\033[0m")
+                agent_state.autonomic_fold(active_task_id)
                 continue
-
 
             # HANDLE LAST GASP (Tier 2 safety - grants one final turn for summary)
             if limit_status == "LAST_GASP" and not is_emergency_save:
-                if is_trunk:
-                    gasp_msg = (
-                        "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
-                        "You MUST use `fold_context` to synthesize your progress and compress your history now."
-                    )
-                else:
-                    gasp_msg = (
-                        "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
-                        "You MUST use the DELTA PATTERN to synthesize your progress and `fold_context`, `complete_task`, or `suspend_task` now: "
-                        "1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."
-                    )
+                gasp_msg = (
+                    "[CRITICAL]: Context Exhaustion Imminent. You have ONE turn remaining. "
+                    "You MUST use `fold_context` to synthesize your progress and compress your history now."
+                )
                 agent_state.amend_last_tool_message(active_task_id, gasp_msg)
 
             agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))

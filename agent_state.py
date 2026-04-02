@@ -106,7 +106,7 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
     # OOM Protection: If log is > 50MB, force emergency compaction before loading
     if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
         print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Compacting...")
-        emergency_compact_log(task_id)
+        autonomic_fold(task_id)
 
     raw_messages = []
     if log_path.exists():
@@ -290,73 +290,56 @@ def append_task_archive(task_id: str, summary: str) -> None:
     with open(constants.TASK_ARCHIVE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
-def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
+def autonomic_fold(task_id: str) -> None:
     """
-    LAST RESORT safety net. Only triggers if the agent ignores warnings and
-    is about to crash the context window.
+    Autonomic Failsafe (Tier 3 safety). Triggers if the agent hits critical context thresholds.
+    Performs a 'Belly Amputation' automatically to prevent a crash.
     """
     if not task_id: return
     log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
     if not log_path.exists(): return
 
-    with open(log_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    if len(lines) <= max_lines: return
-
     try:
-        messages = [json.loads(line) for line in lines if line.strip()]
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
 
-        # Preserve the task start (usually message 0)
-        first_msg = messages[0]
+        if len(messages) <= 4: return
 
-        # SAFE BOUNDARY FINDING: Look backwards to find the last complete interaction cycle
-        safe_cutoff = len(messages) - 1
-        found_safe_boundary = False
+        # Head: Genesis User + First Assistant
+        head_size = 2
+        head = messages[:head_size]
         
-        # Traverse backwards up to the last 40 messages looking for a clean break
-        search_limit = max(1, len(messages) - 40)
-        for i in range(len(messages) - 1, search_limit - 1, -1):
-            if messages[i].get("role") == "user":
-                safe_cutoff = i
-                found_safe_boundary = True
-                break
-                
-        if not found_safe_boundary:
-            # Absolute fallback: wipe the middle entirely, start from last message
-            # just to escape the loop, assuming the last message isn't a dangling tool
-            safe_cutoff = len(messages) - 2
-            while safe_cutoff > 1 and messages[safe_cutoff].get("role") == "tool":
-                safe_cutoff -= 1
+        # Tail: Last 10 turns (approx 20 messages)
+        tail_size = min(20, len(messages) - head_size)
+        tail = messages[-tail_size:] if tail_size > 0 else []
 
         emergency_notice = {
             "role": "user",
-            "content": "[SYSTEM OVERRIDE]: Emergency compaction triggered. Middle history wiped to prevent cognitive collapse."
+            "content": "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED. The middle of your history (the 'Belly') has been forcefully amputated to prevent a crash. You failed to monitor your HUD and `fold_context` in time. Proceed with remaining context."
         }
 
-        compacted = [first_msg, emergency_notice] + messages[safe_cutoff:]
+        compacted = head + [emergency_notice] + tail
 
-        print(f"[System] Emergency compaction for {task_id} ({len(lines)} lines -> {len(compacted)})")
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
                 
-        # WP: Update State Metrics to reflect truncation (Finding 11)
+        # Update State Metrics to reflect truncation
         state = load_state()
-        if task_id == "global_trunk":
-            state["trunk_turns"] = 2 # Genesis + Synthesis
-        elif state.get("active_branch") and state["active_branch"].get("task_id") == task_id:
-            state["active_branch"]["turn_count"] = 2
+        turns_dropped = (len(messages) - len(compacted)) // 2
+        state["trunk_turns"] = max(1, state.get("trunk_turns", 1) - turns_dropped)
         
-        # Reset last_context_size to force a re-evaluation based on the next turn's reality
+        # Reset last_context_size to force a re-evaluation
         state["last_context_size"] = 0 
         save_state(state)
 
         # SYNC CACHE
         if _session.get("current_task_id") == task_id:
             _session["cached_messages"] = compacted
+            
+        print(f"\033[91m[System] Autonomic Reflex triggered for {task_id}. Amputated {turns_dropped} turns.\033[0m")
     except Exception as e:
-        print(f"[System] Error in emergency compaction {task_id}: {e}")
+        print(f"[System] Error in autonomic reflex {task_id}: {e}")
 
 def wipe_global_trunk_log() -> None:
     """Explicitly clears the global trunk log to maintain 'Trunk Amnesia' during context switches."""
@@ -415,52 +398,19 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
 
 def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], str]:
     """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
-    
-    # Active Tracking Source (Finding 1 fix)
-    current_context_size = state.get("last_context_size", 0)
-    
-    if not is_trunk and state.get("active_branch"):
-        state["active_branch"]["turn_count"] = state["active_branch"].get("turn_count", 0) + 1
-        turn_count = state["active_branch"]["turn_count"]
-        task_tokens = state["active_branch"].get("task_tokens", 0)
-    elif is_trunk:
-        state["trunk_turns"] = state.get("trunk_turns", 0) + 1
-        turn_count = state["trunk_turns"]
-        task_tokens = state.get("trunk_tokens", 0)
-    else:
-        # Fallback for tasks in queue when NOT in a branch (Direct Trunk Tasks)
-        if queue:
-            queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
-            turn_count = queue[0]["turn_count"]
-            task_tokens = queue[0].get("task_tokens", 0)
-        else:
-            turn_count = 0
-            task_tokens = 0
 
-    # Thresholds (Finding 11: More headroom for Agency-First recovery)
+    current_context_size = state.get("last_context_size", 0)
+
+    state["trunk_turns"] = state.get("trunk_turns", 0) + 1
+    turn_count = state["trunk_turns"]
+
+    # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
     last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.85)
     breach_threshold = int(constants.CONTEXT_WINDOW * 0.90)
 
-    # TRUNK SAFETY
-    if is_trunk:
-        if turn_count > 50 or current_context_size >= breach_threshold:
-            return queue, "BREACH"
-        if turn_count >= 45 or current_context_size >= last_gasp_threshold:
-            return queue, "LAST_GASP"
-        return queue, "NORMAL"
-
-    # BRANCH SAFETY (WP6 / Finding 1 fix)
-    hit_turn_breach = turn_count > constants.TURN_LIMIT
-    hit_turn_gasp = turn_count >= (constants.TURN_LIMIT - 5)
-    
-    hit_token_breach = current_context_size >= breach_threshold
-    hit_token_gasp = current_context_size >= last_gasp_threshold
-
-    if hit_token_breach or hit_turn_breach:
+    if turn_count > 50 or current_context_size >= breach_threshold:
         return queue, "BREACH"
-    
-    if hit_token_gasp or hit_turn_gasp:
+    if turn_count >= 45 or current_context_size >= last_gasp_threshold:
         return queue, "LAST_GASP"
-
     return queue, "NORMAL"

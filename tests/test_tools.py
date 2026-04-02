@@ -27,7 +27,7 @@ def test_complete_task(mock_memory):
     
     with patch("agent_state.append_task_archive") as mock_archive:
         result = complete_task({"task_id": task_id, "synthesis": "Done."})
-        assert "closed" in result or "SIGNAL_MERGE" in result
+        assert "completed and removed from queue" in result
         assert mock_archive.called
         assert json.loads(q_path.read_text()) == []
 
@@ -53,38 +53,35 @@ def test_fold_context(mock_memory):
     task_id = "test_fold"
     log_path = mock_memory / f"task_log_{task_id}.jsonl"
     
-    # Setup initial log with 6 messages (adding the assistant invoking fold_context)
+    # Setup initial log with 5 messages
     initial_msgs = [
         {"role": "user", "content": "Start"},
         {"role": "assistant", "content": "Thought 1"},
         {"role": "tool", "content": "Result 1"},
         {"role": "assistant", "content": "Thought 2"},
-        {"role": "tool", "content": "Result 2"},
-        {"role": "assistant", "content": "", "tool_calls": [{"name": "fold_context"}]}
+        {"role": "tool", "content": "Result 2"}
     ]
     with open(log_path, "w") as f:
         for m in initial_msgs:
             f.write(json.dumps(m) + "\n")
             
-    # Fold last 2 steps
     result = fold_context({
         "task_id": task_id,
         "synthesis": "Successfully calculated X.",
-        "steps_to_drop": 2
+        "drop_turns": 1
     })
-    
-    assert "successfully folded" in result
-    
+
+    assert "Fold successful." in result
+
     # Verify log content
     with open(log_path, "r") as f:
         final_msgs = [json.loads(line) for line in f if line.strip()]
-        
-    # Should have 1 preserved (genesis) + 1 synthesis + 1 active assistant message = 3 messages
+
+    # Head = 2 messages. Drop turns = 1 -> Amputate 2 messages. 5 - 2 = 3 messages left.
     assert len(final_msgs) == 3
     assert final_msgs[0]["content"] == "Start"
-    assert "FOCUS SYNTHESIS" in final_msgs[-2]["content"]
-    assert "Successfully calculated X." in final_msgs[-2]["content"]
-    assert final_msgs[-1]["role"] == "assistant"
+    assert final_msgs[1]["content"] == "Thought 1"
+    assert final_msgs[-1]["content"] == "Result 1"
 
 
 def test_patch_file_syntax_error(mock_memory):
