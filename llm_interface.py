@@ -49,20 +49,10 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
     # Agency-First: Thinking/Reasoning shedding for older turns (n-3)
     thinking_cutoff_idx = len(messages) - 3
     
-    # Add Turn Indexing [TURN X] for spatial awareness (Volatile only)
-    turn_idx = 1
-    
     for i, msg in enumerate(messages):
         new_msg = msg.copy()
         role = new_msg.get("role")
         
-        # Turn indexing for volatile messages
-        if role in ["user", "assistant"]:
-            content = new_msg.get("content")
-            if content:
-                new_msg["content"] = f"[TURN {turn_idx}] {content}"
-            turn_idx += 1
-
         # Strip Thinking from older assistant turns (Finding 10)
         if role == "assistant" and i < thinking_cutoff_idx:
             if "thinking" in new_msg:
