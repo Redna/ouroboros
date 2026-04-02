@@ -912,22 +912,6 @@ def reflect(args: dict) -> str:
 def request_restart(args):
     return "SYSTEM_SIGNAL_RESTART"
 
-@registry.tool(
-    description="Query the gateway to discover available local and external cognitive engines and check the financial budget.",
-    parameters={"type": "object", "properties": {}},
-    bucket="system_control"
-)
-def check_environment(args):
-    try:
-        r = requests.get(f"{constants.API_BASE.replace('/v1', '')}/v1/environment", timeout=15)
-        if r.status_code == 200:
-            return json.dumps(r.json(), indent=2)
-        else:
-            return f"Error checking environment: {r.status_code} - {r.text}"
-    except Exception as e:
-        return f"Check environment failed: {e}"
-
-
 
 
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> str:
