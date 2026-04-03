@@ -223,7 +223,7 @@ def test_push_task_minimal_schema():
 # ---------------------------------------------------------------------------
 
 def test_hud_format():
-    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Turns: Y% | Queue: Z] | task_desc'."""
+    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Turns: Y% | Queue: Z] | task_desc' wrapped in XML."""
     from seed_agent import build_dynamic_telemetry_message
     import constants
     # Use an exact multiple of CONTEXT_WINDOW so int() truncation is unambiguous
@@ -234,6 +234,7 @@ def test_hud_format():
     hud = build_dynamic_telemetry_message(state, queue, task_desc)
 
     # Based on TURN_LIMIT = 30, 15 turns should be 50%
-    assert hud == f"[HUD | Context: 50% | Turns: 50% | Queue: 2] | {task_desc}", (
+    expected_content = f"[HUD | Context: 50% | Turns: 50% | Queue: 2] | {task_desc}"
+    assert f"<ouroboros_hud>\n{expected_content}\n</ouroboros_hud>" == hud, (
         f"HUD format mismatch. Got: {hud!r}"
     )

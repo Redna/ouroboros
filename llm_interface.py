@@ -70,19 +70,17 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         content_str = str(new_msg.get("content", ""))
         
         # WP: Telemetry Compression (Context Rot Prevention)
-        # Handle both ## CURRENT TELEMETRY (Genesis) and ## UPDATED TELEMETRY (Piggyback)
-        for marker in ["## UPDATED TELEMETRY", "## CURRENT TELEMETRY"]:
-            if marker in content_str:
-                parts = content_str.split(marker)
-                prefix = parts[0].strip()
-                telemetry_block = parts[1]
-                
-                # Extract Physiology Heartbeat
+        # Robust XML parsing for historical telemetry (Finding 14)
+        if "<ouroboros_hud>" in content_str:
+            def replace_hud(match):
+                telemetry_block = match.group(1)
                 lines = telemetry_block.splitlines()
+                # Extract Physiology Heartbeat
                 heartbeat = next((l for l in lines if "[HUD" in l), "[HEARTBEAT: Metrics Archived]")
+                return f"[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
                 
-                new_msg["content"] = f"{prefix}\n\n[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
-                content_str = new_msg["content"] # Update for subsequent trim checks
+            new_msg["content"] = re.sub(r"<ouroboros_hud>(.*?)</ouroboros_hud>", replace_hud, content_str, flags=re.DOTALL)
+            content_str = new_msg["content"]
 
         if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
             new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."

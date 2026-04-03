@@ -832,7 +832,7 @@ def request_restart(args):
 
 
 def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], task_desc: str) -> str:
-    """Generates the minimalist HUD string per the v5 spec."""
+    """Generates the minimalist HUD string wrapped in robust XML tags."""
     token_limit = constants.CONTEXT_WINDOW
     current_context = state.get("last_context_size", 0)
     context_pct = int((current_context / token_limit) * 100) if token_limit else 0
@@ -841,8 +841,8 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     current_turns = state.get("timeline_turns", 0)
     turns_pct = int((current_turns / turn_limit) * 100) if turn_limit else 0
 
-    return f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}] | {task_desc}"
-
+    hud_content = f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}] | {task_desc}"
+    return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>"
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
@@ -864,6 +864,7 @@ def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]]
     """Generates the minimalist HUD to be appended to tool responses."""
     telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
     return f"\n\n{telemetry}"
+
 
 
 
@@ -938,9 +939,9 @@ def _build_api_messages(
         if is_genesis:
             telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
             if not normalized:
-                normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}\n\nBegin Genesis execution."})
+                normalized.append({"role": "user", "content": f"{telemetry}\n\nBegin Genesis execution."})
             else:
-                normalized[0]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[0]['content']}"
+                normalized[0]["content"] = f"{telemetry}\n\n{normalized[0]['content']}"
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
