@@ -54,11 +54,14 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
         role = new_msg.get("role")
         
         # Strip Thinking from older assistant turns (Finding 10)
-        if role == "assistant" and i < thinking_cutoff_idx:
-            if "thinking" in new_msg:
-                new_msg.pop("thinking")
-            if "reasoning_content" in new_msg:
-                new_msg.pop("reasoning_content")
+        # OR if it's the absolute last message (Assistant Prefill) to avoid 400 errors (Finding: Prefill incompatibility)
+        if role == "assistant":
+            if i < thinking_cutoff_idx or i == len(messages) - 1:
+                if "thinking" in new_msg:
+                    new_msg.pop("thinking")
+                if "reasoning_content" in new_msg:
+                    new_msg.pop("reasoning_content")
+
 
         if i == 0 or i >= cutoff_idx:
             processed.append(new_msg)

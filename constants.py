@@ -8,7 +8,7 @@ ENABLE_THINKING = os.environ.get("OUROBOROS_ENABLE_THINKING", "0") == "1"
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://searxng:8080")
-CONTEXT_WINDOW = int(os.environ.get("OUROBOROS_CONTEXT_WINDOW", "65536"))
+CONTEXT_WINDOW = int(os.environ.get("OUROBOROS_CONTEXT_WINDOW", "92000"))
 ROOT_DIR = Path(__file__).parent.resolve()
 MEMORY_DIR = Path(os.environ.get("MEMORY_DIR", "/memory"))
 

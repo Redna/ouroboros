@@ -1,19 +1,28 @@
 import json
 import time
+import re
 from typing import List, Dict, Any, Tuple
 
 import requests
 import constants
 import agent_state
 
+def _escape_markdown(text: str) -> str:
+    """Escapes characters for Telegram MarkdownV2."""
+    # List of characters that must be escaped in MarkdownV2
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
 def send_telegram_direct(chat_id: int, text: str):
     """Sends a Telegram message directly from the runtime (HAL)."""
     if not constants.TELEGRAM_BOT_TOKEN or not chat_id:
         return
     try:
+        # Use simple escaping if the agent sends complex formatting
+        # If it fails, we fall back to plain text
         requests.post(
             f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+            json={"chat_id": chat_id, "text": text},
             timeout=10
         )
         agent_state.append_chat_history("Ouroboros", text)

@@ -390,7 +390,7 @@ def fold_context(args: dict) -> str:
 
 
 @registry.tool(
-    description="Send a Telegram message to the creator. Use this for reporting progress, providing results of an interrupt, or when verbal peer-to-peer communication is required.",
+    description="Send a Telegram message to the creator. P4 Authenticity: Telegram Markdown is fragile and often causes Error 400. PREFER PLAIN TEXT. Avoid bold, italics, or complex symbols in long messages. One-sentence updates only.",
     parameters={"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["text"]},
     bucket="global"
 )
@@ -402,10 +402,17 @@ def send_telegram_message(args):
     if not constants.TELEGRAM_BOT_TOKEN: return "Error: constants.TELEGRAM_BOT_TOKEN not set."
 
     try:
-        r = requests.post(f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        # P4 Authenticity: Send as plain text first to avoid parser errors (Finding 13)
+        r = requests.post(
+            f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", 
+            json={"chat_id": chat_id, "text": text}, 
+            timeout=10
+        )
         if r.status_code == 200:
             agent_state.append_chat_history("Ouroboros", text)
             return "Message sent successfully."
+        
+        # Fallback: Strip characters if it was a formatting error (though we removed parse_mode)
         return f"Telegram Error {r.status_code}: {r.text}"
     except Exception as e: return f"Telegram failure: {e}"
 
@@ -758,23 +765,27 @@ def fetch_webpage(args):
         return f"Failed to fetch webpage locally: {e}"
 
 @registry.tool(
-    description="Save compute resources.",
-    parameters={"type": "object", "properties": {"duration_seconds": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["duration_seconds"]},
+    description="Save compute resources by sleeping. Minimum 30s, Maximum 120s (2 minutes).",
+    parameters={"type": "object", "properties": {"duration_seconds": {"type": "integer", "minimum": 30, "maximum": 120}, "reason": {"type": "string"}}, "required": ["duration_seconds"]},
     bucket="global"
 )
 def hibernate(args):
     try:
-        duration = args.get("duration_seconds", 300)
+        duration = args.get("duration_seconds", 60)
         reason = args.get("reason", "No reason provided.")
-        duration = min(int(duration), constants.MAX_HIBERNATE_SECONDS)
+        
+        # Enforce hard boundaries: 30s to 120s (Finding 14)
+        duration = max(30, min(int(duration), 120))
+        
         state = agent_state.load_state()
         state["wake_time"] = time.time() + duration
         if "sys_temp" in state: del state["sys_temp"]
         if "sys_think" in state: del state["sys_think"]
         agent_state.save_state(state)
         print(f"[System] Agent elected to hibernate for {duration}s. Reason: {reason}")
-        return f"SYSTEM_SIGNAL_HIBERNATE:{duration}"
+        return f"[SYSTEM: Hibernation sequence engaged. Wake-up scheduled.] SYSTEM_SIGNAL_HIBERNATE:{duration}"
     except Exception as e: return f"Error setting sleep cycle: {e}"
+
 
 @registry.tool(
     description="Overwrite or synthesize a memory file with new content (dense summary or refactored text).",
@@ -1008,8 +1019,16 @@ def _build_api_messages(
 
     if not normalized:
         normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
+    elif normalized[-1]["role"] == "assistant":
+        # WP: Structural Integrity (Crash recovery)
+        # If the log ends in an assistant message, we either crashed mid-tools or the 
+        # previous session didn't clean up correctly. Popping it allows the agent to 
+        # re-evaluate and re-issue the plan cleanly on this run.
+        normalized.pop()
+
 
     if enrich:
+
         # Agency-First: Only enrich if it's the very first user message (Genesis)
         is_genesis = len(normalized) == 1 and normalized[0]["role"] == "user"
         if is_genesis:
@@ -1058,12 +1077,6 @@ def _route_tool_calls(
             piggyback = build_telemetry_piggyback(state, queue)
             result = f"{result}{piggyback}"
 
-        if result == "SYSTEM_SIGNAL_RESTART" or "SYSTEM_SIGNAL_RESTART" in str(result):
-            # Atomic Egress: No log written yet, so we just restart
-            sys.exit(0)
-        elif str(result).startswith("SYSTEM_SIGNAL_HIBERNATE"):
-            hibernating = True
-
         tool_responses.append({
             "role": "tool",
             "tool_call_id": safe_call_id,
@@ -1071,20 +1084,17 @@ def _route_tool_calls(
             "content": str(result)
         })
 
-    # ATOMIC FLUSH: Only write to the task log once full processing is complete
+    # ATOMIC FLUSH: Write to the task log BEFORE any exit signals are processed
     agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
     for response_msg in tool_responses:
         agent_state.append_task_message(active_task_id, response_msg)
 
-    # Special handling for post-log system signals (e.g., Hibernate confirmation)
-    if hibernating:
-        try:
-            # Inject a formal closure message for the history
-            agent_state.append_task_message(active_task_id, {
-                "role": "assistant",
-                "content": "[SYSTEM: Hibernation sequence engaged. Wake-up scheduled.]"
-            })
-        except Exception: pass
+    # Now process signals that would terminate the loop
+    if any("SYSTEM_SIGNAL_RESTART" in str(r["content"]) for r in tool_responses):
+        sys.exit(0)
+    
+    if any("SYSTEM_SIGNAL_HIBERNATE" in str(r["content"]) for r in tool_responses):
+        hibernating = True
 
     post_loop_state = agent_state.load_state()
     post_loop_state["error_streak"] = error_streak
@@ -1111,7 +1121,11 @@ def main() -> None:
                 state["wake_time"] = 0
                 agent_state.save_state(state)
             else:
-                time.sleep(5)
+                # Heartbeat for watchdog (Finding 12: Prevent false stall detections)
+                try:
+                    Path(constants.MEMORY_DIR / "task_log_singular_stream.jsonl").touch()
+                except Exception: pass
+                time.sleep(15)
                 continue
 
         active_task_id, task_desc, active_tool_specs = \
@@ -1200,7 +1214,11 @@ def main() -> None:
 
             # P5: Fail Fast on structural/fatal errors.
             fatal_types = (AttributeError, ImportError, NameError, SyntaxError, TypeError)
-            if isinstance(e, fatal_types) or re.search(r"\b(400|500)\b", str(e)) or "template" in str(e).lower():
+            
+            # Is it a structural Python error OR a fatal HTTP exception (not just a result string)?
+            is_http_fatal = ("400" in str(e) or "500" in str(e)) and not any(kw in str(e).lower() for kw in ["telegram", "searxng", "bash"])
+            
+            if isinstance(e, fatal_types) or is_http_fatal or "template" in str(e).lower():
                 print(f"\033[91m[FATAL]: {type(e).__name__}: {e}. Exiting for watchdog recovery.\033[0m")
                 sys.exit(1)
 
