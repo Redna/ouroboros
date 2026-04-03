@@ -173,6 +173,27 @@ def test_context_thresholds_in_constants():
     assert isinstance(constants.CONTEXT_WARN_THRESHOLD,      float), "CONTEXT_WARN_THRESHOLD missing (WP10)"
 
 
+def test_load_stream_messages_no_args():
+    """load_stream_messages must take zero arguments."""
+    from agent_state import load_stream_messages
+    params = list(inspect.signature(load_stream_messages).parameters.keys())
+    assert params == [], f"load_stream_messages must take zero args, got: {params}"
+
+
+def test_append_stream_message_signature():
+    """append_stream_message must take exactly one argument (message_dict)."""
+    from agent_state import append_stream_message
+    params = list(inspect.signature(append_stream_message).parameters.keys())
+    assert params == ["message_dict"], f"append_stream_message must take ['message_dict'], got: {params}"
+
+
+def test_amend_stream_message_signature():
+    """amend_stream_message must take exactly one argument (suffix)."""
+    from agent_state import amend_stream_message
+    params = list(inspect.signature(amend_stream_message).parameters.keys())
+    assert params == ["suffix"], f"amend_stream_message must take ['suffix'], got: {params}"
+
+
 # ---------------------------------------------------------------------------
 # WP11 Invariants: Purge WORKING_STATE_PATH
 # ---------------------------------------------------------------------------
@@ -186,11 +207,15 @@ def test_no_working_state_path_in_constants():
     )
 
 
-def test_push_task_no_parent_task_id():
-    """push_task schema must not expose parent_task_id — branches are gone."""
+def test_push_task_minimal_schema():
+    """push_task schema must not expose parent_task_id, context_notes, or turn_count."""
     from seed_agent import registry
     props = registry.tools["push_task"]["params"]["properties"]
     assert "parent_task_id" not in props, "push_task must not accept parent_task_id (WP11)"
+    assert "context_notes" not in props, "push_task must not accept context_notes (WP11)"
+    assert "turn_count" not in props, "push_task must not accept turn_count (WP11)"
+    assert "description" in props
+    assert "priority" in props
 
 
 # ---------------------------------------------------------------------------
@@ -198,16 +223,17 @@ def test_push_task_no_parent_task_id():
 # ---------------------------------------------------------------------------
 
 def test_hud_format():
-    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Turns: Y% | Queue: Z]'."""
+    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Turns: Y% | Queue: Z] | task_desc'."""
     from seed_agent import build_dynamic_telemetry_message
     import constants
     # Use an exact multiple of CONTEXT_WINDOW so int() truncation is unambiguous
     context_size = constants.CONTEXT_WINDOW // 2   # exactly 50%
     state = {"last_context_size": context_size, "timeline_turns": 15}
     queue = [{}, {}]
-    hud = build_dynamic_telemetry_message(state, queue)
-    
+    task_desc = "Testing HUD"
+    hud = build_dynamic_telemetry_message(state, queue, task_desc)
+
     # Based on TURN_LIMIT = 30, 15 turns should be 50%
-    assert hud == "[HUD | Context: 50% | Turns: 50% | Queue: 2]", (
+    assert hud == f"[HUD | Context: 50% | Turns: 50% | Queue: 2] | {task_desc}", (
         f"HUD format mismatch. Got: {hud!r}"
     )

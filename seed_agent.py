@@ -9,7 +9,6 @@ import ast
 import tempfile
 import shutil
 import traceback
-import fcntl
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import tree_sitter_python as tspython
@@ -420,78 +419,6 @@ def send_telegram_message(args):
         return f"Telegram Error {r.status_code}: {r.text}"
     except Exception as e: return f"Telegram failure: {e}"
 
-def _acquire_queue_lock(file_path: Path, timeout: float = 5.0) -> Optional[int]:
-    """Acquire exclusive lock on file. Returns fd or None on timeout."""
-    try:
-        fd = os.open(str(file_path), os.O_RDWR | os.O_CREAT, 0o644)
-        start_time = time.time()
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return fd
-            except (IOError, OSError):
-                if time.time() - start_time > timeout:
-                    os.close(fd)
-                    return None
-                time.sleep(0.1)
-    except Exception:
-        return None
-
-
-def _release_queue_lock(fd: int) -> None:
-    """Release file lock and close descriptor."""
-    try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-    except Exception:
-        pass
-
-
-def _is_semantic_duplicate(new_desc: str, existing_queue: List[Dict]) -> bool:
-    """Detect semantic duplicates to prevent cognitive loops.
-
-    Uses multi-tier detection:
-    1. Exact match (normalized)
-    2. High keyword overlap (>50% of significant words)
-    3. Same action + same target pattern
-    """
-    stop_words = {'the', 'a', 'an', 'to', 'for', 'in', 'on', 'at', 'by', 'with', 'and', 'or'}
-    action_words = {'fix', 'update', 'modify', 'change', 'refactor', 'improve', 'optimize', 'implement', 'add', 'remove'}
-
-    def extract_significant_words(text: str) -> set:
-        words = set(text.lower().split())
-        return words - stop_words
-
-    new_keywords = extract_significant_words(new_desc)
-    if len(new_keywords) < 3:  # Too short to be meaningful
-        return False
-
-    for task in existing_queue:
-        existing_desc = task.get("description", "")
-        existing_keywords = extract_significant_words(existing_desc)
-
-        if len(existing_keywords) < 3:
-            continue
-
-        # Tier 1: High overlap ratio (>50% of smaller set matches)
-        overlap = new_keywords & existing_keywords
-        min_len = min(len(new_keywords), len(existing_keywords))
-        if len(overlap) >= 3 and len(overlap) / min_len > 0.5:
-            return True
-
-        # Tier 2: Same action words + same target words
-        new_actions = new_keywords & action_words
-        existing_actions = existing_keywords & action_words
-        if new_actions and existing_actions and (new_actions & existing_actions):
-            new_target = new_keywords - action_words
-            existing_target = existing_keywords - action_words
-            target_overlap = new_target & existing_target
-            if len(target_overlap) >= 2:
-                return True
-
-    return False
-
-
 def _run_git_command(args: List[str]) -> Tuple[int, str, str]:
     """Run git command and return (returncode, stdout, stderr)."""
     try:
@@ -599,7 +526,6 @@ def dismiss_queue_item(args):
         "properties": {
             "description": {"type": "string"},
             "priority": {"type": "integer"},
-            "context_notes": {"type": "string"},
             "run_after_timestamp": {"type": "number", "description": "Optional UNIX timestamp. If provided, the task sleeps until this time before becoming active."}
         },
         "required": ["description"]
@@ -611,60 +537,36 @@ def push_task(args):
     priority = args.get("priority", 1)
     run_after = args.get("run_after_timestamp")
 
-    # File locking for scheduled tasks
     if run_after is not None:
         try:
             run_after = float(run_after)
         except (ValueError, TypeError):
             return "Error: 'run_after_timestamp' must be a valid UNIX timestamp."
 
-        fd = _acquire_queue_lock(constants.SCHEDULED_TASKS_PATH)
-        if fd is None:
-            return "Error: Could not acquire lock on scheduled tasks file."
-        try:
-            scheduled = []
-            if constants.SCHEDULED_TASKS_PATH.exists():
-                try:
-                    content = constants.SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
-                    if content: scheduled = json.loads(content)
-                except Exception:
-                    pass
-            if any(t.get("description") == description and t.get("run_after") == run_after for t in scheduled):
-                return "Error: An identical task is already scheduled for that exact time."
-            tid = f"task_future_{int(time.time())}"
-            scheduled.append({"task_id": tid, "description": description, "priority": priority, "run_after": run_after, "turn_count": 0})
-            constants.SCHEDULED_TASKS_PATH.write_text(json.dumps(scheduled, indent=2), encoding="utf-8")
-        finally:
-            _release_queue_lock(fd)
+        scheduled = []
+        if constants.SCHEDULED_TASKS_PATH.exists():
+            try:
+                content = constants.SCHEDULED_TASKS_PATH.read_text(encoding="utf-8").strip()
+                if content: scheduled = json.loads(content)
+            except Exception:
+                pass
+                
+        tid = f"task_future_{int(time.time())}"
+        scheduled.append({"task_id": tid, "description": description, "priority": priority, "run_after": run_after})
+        constants.SCHEDULED_TASKS_PATH.write_text(json.dumps(scheduled, indent=2), encoding="utf-8")
         time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(run_after))
         return f"Scheduled {tid} to activate after {time_str}."
 
-    # File locking for regular task queue
-    fd = _acquire_queue_lock(constants.TASK_QUEUE_PATH)
-    if fd is None:
-        return "Error: Could not acquire lock on task queue."
-
-    try:
-        q = agent_state.load_task_queue()
-
-        # Check for exact duplicates (normalized)
-        normalized_desc = description.lower()
-        if any(t.get("description", "").strip().lower() == normalized_desc for t in q):
-            return "Error: A task with a similar description already exists in your queue. (Agency P0: Duplicate task skipped to avoid token waste P6)."
-
-        # Check for semantic duplicates to prevent cognitive loops
-        if _is_semantic_duplicate(description, q):
-            return "Error: This task appears semantically similar to an existing queued task. Skipping to prevent cognitive loop."
-
-        tid = f"task_{int(time.time())}"
-        context_notes = args.get("context_notes", "")
-        task_obj = {"task_id": tid, "description": description, "priority": priority, "turn_count": 0, "context_notes": context_notes}
-        q.append(task_obj)
-        q.sort(key=lambda x: x.get("priority", 1), reverse=True)
-        constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
-        return f"Queued {tid} with priority {priority}."
-    finally:
-        _release_queue_lock(fd)
+    # Regular task queue
+    q = agent_state.load_task_queue()
+    tid = f"task_{int(time.time())}"
+    task_obj = {"task_id": tid, "description": description, "priority": priority}
+    
+    q.append(task_obj)
+    q.sort(key=lambda x: x.get("priority", 1), reverse=True)
+    constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
+    
+    return f"Queued {tid} with priority {priority}."
 
 @registry.tool(
     description="Complete and archive the current top task in your queue. Use this ONLY when the objective is 100% met.",
@@ -929,17 +831,17 @@ def request_restart(args):
 
 
 
-def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> str:
+def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str, Any]], task_desc: str) -> str:
     """Generates the minimalist HUD string per the v5 spec."""
     token_limit = constants.CONTEXT_WINDOW
     current_context = state.get("last_context_size", 0)
     context_pct = int((current_context / token_limit) * 100) if token_limit else 0
-    
+
     turn_limit = constants.TURN_LIMIT
     current_turns = state.get("timeline_turns", 0)
     turns_pct = int((current_turns / turn_limit) * 100) if turn_limit else 0
-    
-    return f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}]"
+
+    return f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}] | {task_desc}"
 
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
@@ -958,9 +860,9 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
 4. If a creator message interrupts you, suspend your thought, address it, and resume.
 """
 
-def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> str:
+def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], task_desc: str) -> str:
     """Generates the minimalist HUD to be appended to tool responses."""
-    telemetry = build_dynamic_telemetry_message(state, queue)
+    telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
     return f"\n\n{telemetry}"
 
 
@@ -999,9 +901,7 @@ def process_scheduled_tasks(queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 def _resolve_execution_context(
     state: Dict[str, Any],
     queue: List[Dict[str, Any]],
-) -> Tuple[str, str, List[Dict[str, Any]]]:
-    active_task_id = "singular_stream"
-    
+) -> Tuple[str, List[Dict[str, Any]]]:
     if queue:
         top_task = queue[0]
         task_desc = f"CURRENT FOCUS: {top_task.get('description', 'Unknown')}"
@@ -1009,11 +909,9 @@ def _resolve_execution_context(
         task_desc = "Your task queue is empty. Initiate deep synthesis or hibernate."
 
     active_tool_specs = registry.get_specs() # Grant access to all tools
-    return active_task_id, task_desc, active_tool_specs
-
+    return task_desc, active_tool_specs
 
 def _build_api_messages(
-    active_task_id: str,
     task_desc: str,
     active_tool_specs: List[Dict[str, Any]],
     queue: List[Dict[str, Any]],
@@ -1023,26 +921,26 @@ def _build_api_messages(
     system_prompt = build_static_system_prompt(active_tool_specs)
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-    raw_messages = agent_state.load_task_messages(active_task_id, task_desc)
+    raw_messages = agent_state.load_stream_messages()
     normalized = raw_messages
 
-    if not normalized:
-        normalized.append({"role": "user", "content": f"[SYSTEM INITIALIZATION]\n{task_desc}"})
-    elif normalized[-1]["role"] == "assistant":
+    if normalized and normalized[-1]["role"] == "assistant":
         # WP: Structural Integrity (Crash recovery)
-        # If the log ends in an assistant message, we either crashed mid-tools or the 
-        # previous session didn't clean up correctly. Popping it allows the agent to 
+        # If the log ends in an assistant message, we either crashed mid-tools or the
+        # previous session didn't clean up correctly. Popping it allows the agent to
         # re-evaluate and re-issue the plan cleanly on this run.
         normalized.pop()
 
 
     if enrich:
-
         # Agency-First: Only enrich if it's the very first user message (Genesis)
-        is_genesis = len(normalized) == 1 and normalized[0]["role"] == "user"
+        is_genesis = len(normalized) == 0 or (len(normalized) == 1 and normalized[0]["role"] == "user")
         if is_genesis:
-            telemetry = build_dynamic_telemetry_message(state, queue)
-            normalized[0]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[0]['content']}"
+            telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
+            if not normalized:
+                normalized.append({"role": "user", "content": f"## CURRENT TELEMETRY \n{telemetry}\n\nBegin Genesis execution."})
+            else:
+                normalized[0]["content"] = f"## CURRENT TELEMETRY \n{telemetry}\n\n{normalized[0]['content']}"
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
     api_messages += shedded
@@ -1052,7 +950,7 @@ def _build_api_messages(
 
 def _route_tool_calls(
     message: Any,
-    active_task_id: str,
+    task_desc: str,
     state: Dict[str, Any],
     queue: List[Dict[str, Any]]
 ) -> Tuple[bool, bool]:
@@ -1083,7 +981,7 @@ def _route_tool_calls(
             # Refresh state/queue for latest metrics after tool executions
             state = agent_state.load_state()
             queue = agent_state.load_task_queue()
-            piggyback = build_telemetry_piggyback(state, queue)
+            piggyback = build_telemetry_piggyback(state, queue, task_desc)
             result = f"{result}{piggyback}"
 
         tool_responses.append({
@@ -1094,9 +992,9 @@ def _route_tool_calls(
         })
 
     # ATOMIC FLUSH: Write to the task log BEFORE any exit signals are processed
-    agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
+    agent_state.append_stream_message(message.model_dump(exclude_unset=True))
     for response_msg in tool_responses:
-        agent_state.append_task_message(active_task_id, response_msg)
+        agent_state.append_stream_message(response_msg)
 
     # Now process signals that would terminate the loop
     if any("SYSTEM_SIGNAL_RESTART" in str(r["content"]) for r in tool_responses):
@@ -1137,7 +1035,7 @@ def main() -> None:
                 time.sleep(15)
                 continue
 
-        active_task_id, task_desc, active_tool_specs = \
+        task_desc, active_tool_specs = \
             _resolve_execution_context(state, queue)
 
         # WP: Explicit Turn Increment (Finding 17: prevent infinite fold loops)
@@ -1174,7 +1072,7 @@ def main() -> None:
             current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
             # 1. Build messages for the LLM API call (Full HUD)
             api_messages = _build_api_messages(
-                active_task_id, task_desc, active_tool_specs,
+                task_desc, active_tool_specs,
                 queue, state, enrich=True
             )
 
@@ -1183,7 +1081,7 @@ def main() -> None:
             message  = response.choices[0].message
 
             # WP: Update metrics BEFORE enforcing limits so thresholds use current data (Finding 11)
-            limit_exceeded = agent_state.update_global_metrics(state, queue, response)
+            agent_state.update_global_metrics(state, queue, response)
             queue, limit_status = agent_state.enforce_context_limits(state, queue)
 
             # --- EMERGENCY EGRESS OVERRIDE ---
@@ -1194,8 +1092,8 @@ def main() -> None:
             )
 
             # HANDLE PHYSICAL BREACH (Tier 3 safety - Force Fold)
-            if (limit_status == "BREACH" or limit_exceeded) and not is_emergency_save:
-                print(f"\033[91m[System] {active_task_id} breached limits. Triggering Autonomic Fold.\033[0m")
+            if limit_status == "BREACH" and not is_emergency_save:
+                print(f"\033[91m[System] Singular Stream breached limits. Triggering Autonomic Fold.\033[0m")
                 agent_state.autonomic_fold()
                 continue
 
@@ -1205,17 +1103,17 @@ def main() -> None:
                     "[CRITICAL]: Context Exhaustion Imminent. "
                     "Your next turn is restricted to `fold_context` only. Call it now."
                 )
-                agent_state.amend_last_tool_message(active_task_id, gasp_msg)
+                agent_state.amend_stream_message(gasp_msg)
                 agent_state.autonomic_fold()  # Engage force_fold for the following turn
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
-                context_switch, hibernating = _route_tool_calls(message, active_task_id, state, queue)
+                context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue)
                 if context_switch or hibernating:
                     continue
             else:
                 # No tools - log current assistant turn immediately
-                agent_state.append_task_message(active_task_id, message.model_dump(exclude_unset=True))
+                agent_state.append_stream_message(message.model_dump(exclude_unset=True))
                 time.sleep(0.5)
 
             time.sleep(2)

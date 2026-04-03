@@ -64,7 +64,7 @@ def queue_creator_message(new_message: str, update_id: int):
     """
     Injects a creator Sticky Note directly into the Singular Stream.
     """
-    agent_state.append_task_message("singular_stream", {
+    agent_state.append_stream_message({
         "role": "user",
         "content": (
             "[SYSTEM OVERRIDE: CREATOR MESSAGE RECEIVED]\n"

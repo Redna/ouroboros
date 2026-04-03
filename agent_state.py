@@ -90,19 +90,17 @@ def load_task_queue() -> List[Dict[str, Any]]:
     except Exception:
         return q
 
-def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
+def load_stream_messages() -> List[Dict[str, Any]]:
     """Loads message history, utilizing an in-memory cache for high-frequency turns."""
-    if not task_id: return []
-    
     # Return cache if we are continuing the same task in the same process
-    if _session.get("current_task_id") == task_id and _session.get("cached_messages"):
+    if _session.get("current_task_id") == "singular_stream" and _session.get("cached_messages"):
         return _session["cached_messages"]
-        
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    
+
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+
     # OOM Protection: If log is > 50MB, do a physical emergency truncation before loading
     if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
-        print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Emergency truncating...")
+        print(f"[System] CRITICAL: Log too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Emergency truncating...")
         _emergency_truncate_log()
 
     raw_messages = []
@@ -110,70 +108,66 @@ def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    try: 
+                    try:
                         raw_messages.append(json.loads(line.strip()))
-                    except json.JSONDecodeError: 
+                    except json.JSONDecodeError:
                         continue
 
     if not raw_messages:
-        msg = {"role": "user", "content": f"Begin execution of task: {description}"}
-        append_task_message(task_id, msg) # This will also update the cache
-        return [msg]
-    
+        return []
+
     # Warm up the cache
-    _session["current_task_id"] = task_id
+    _session["current_task_id"] = "singular_stream"
     _session["cached_messages"] = raw_messages
-    
+
     return raw_messages
 
-def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    
+def append_stream_message(message_dict: Dict[str, Any]) -> None:
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+
     # Safety: Refuse to append if file is already dangerously large
     if log_path.exists() and log_path.stat().st_size > 100 * 1024 * 1024:
-        print(f"[System] ERROR: Refusing to append to {task_id}. File size exceeds 100MB limit.")
+        print(f"[System] ERROR: Refusing to append. File size exceeds 100MB limit.")
         return
 
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_dict) + "\n")
-        
+
     # Keep cache synchronized
-    if _session.get("current_task_id") == task_id:
+    if _session.get("current_task_id") == "singular_stream":
         if "cached_messages" not in _session or _session["cached_messages"] is None:
             _session["cached_messages"] = []
         _session["cached_messages"].append(message_dict)
 
-def amend_last_tool_message(task_id: str, suffix: str) -> None:
+def amend_stream_message(suffix: str) -> None:
     """Appends a string to the last tool or user message in the log without creating a new message."""
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
     if not log_path.exists(): return
-    
+
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             messages = [json.loads(line) for line in f if line.strip()]
-            
+
         for msg in reversed(messages):
             if msg.get("role") in ["tool", "user"]:
                 content = str(msg.get("content", ""))
                 # WP: De-duplicate suffix to prevent infinite loops (Finding 11)
                 if suffix in content:
-                    print(f"[System] Warning already present in {task_id}. Skipping amend.")
+                    print(f"[System] Warning already present. Skipping amend.")
                     return
 
                 msg["content"] = content + "\n\n" + suffix
                 break
-                
+
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in messages:
                 f.write(json.dumps(msg) + "\n")
-                
-        if _session.get("current_task_id") == task_id:
+
+        if _session.get("current_task_id") == "singular_stream":
             _session["cached_messages"] = messages
-            
+
     except Exception as e:
-        print(f"[System] Error amending last tool message for {task_id}: {e}")
+        print(f"[System] Error amending last tool message: {e}")
 
 
 
@@ -342,16 +336,6 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     state["stream_tokens"] = state.get("stream_tokens", 0) + t_count
 
     save_state(state)
-
-    # Persistent Queue Tracking
-    if queue:
-        queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + t_count
-        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-
-        # Hard abort threshold (150% of context window)
-        current_tokens = queue[0]["task_tokens"]
-        if current_tokens >= int(constants.CONTEXT_WINDOW * 1.5):
-            return True # Signal main loop to abort
 
     return False
 
