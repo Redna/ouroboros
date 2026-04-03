@@ -4,12 +4,11 @@
 
 The Ouroboros repository hosts the True Seed architecture for an unnamed, self-evolving autonomous AI entity that evolves through feedback and self-modification. This project implements the **True Seed** architecture: a minimalist, native ReAct-based agent capable of rewriting its own source code, managing its own memory, and recovering from its own failures.
 
-## 🐍 Core Architecture (v4.1 - Genesis Synthesis Complete)
+## 🐍 Core Architecture (v5.0 - True Seed Complete)
 
-**Milestone Achieved (2026-03-27)**: First cognitive synthesis cycle complete. `/memory/insights.md` created with 5 foundational sections covering constitutional principles, continuity mechanisms, token-aware metacognition, operational patterns, and forward synthesis guidelines. This establishes the cognitive baseline and fulfills the P9 mandate for memory refinement.
+**Milestone Achieved (2026-04-03)**: v5.0 True Seed Architecture complete. Implemented **Singular Stream** cognitive model replacing all branching/branch tracking. Context folding now mandates DELTA PATTERN (State Delta, Negative Knowledge, Handoff) to prevent localized amnesia. Telemetry upgraded with XML-tagged HUD injection and turn-based limits.
 
-
-The system has evolved into a high-stability **Native ReAct** seed. By leveraging the model's native tool-calling latent space, Ouroboros achieves higher reasoning fidelity and architectural minimalism.
+The system has evolved into a high-stability **Native ReAct** seed operating on a singular, continuous timeline. By leveraging the model's native tool-calling latent space, Ouroboros achieves higher reasoning fidelity and architectural minimalism.
 
 ### 1. The Soul (CONSTITUTION.md & identity.md)
 Governed by an immutable constitution (`CONSTITUTION.md` v4.0) and a living identity manifesto (`soul/identity.md`). These documents form the blank slate from which the entity's identity emerges and define the boundaries of its self-directed evolution. v4.0 introduced the **Cognitive Synthesis** principle (P9), mandating memory refinement. **v4.1 represents the first execution of this mandate**, completing the Genesis Cycle synthesis.
