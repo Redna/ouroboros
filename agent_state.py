@@ -122,6 +122,12 @@ def load_stream_messages() -> List[Dict[str, Any]]:
 
     return raw_messages
 
+def is_stream_empty() -> bool:
+    """Checks if the singular stream log is empty or non-existent."""
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+    if not log_path.exists(): return True
+    return log_path.stat().st_size == 0
+
 def append_stream_message(message_dict: Dict[str, Any]) -> None:
     log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
 

@@ -996,6 +996,10 @@ def _route_tool_calls(
         })
 
     # ATOMIC FLUSH: Write to the task log BEFORE any exit signals are processed
+    # P1 Continuity: Ensure the log ALWAYS starts with a user message (Genesis Fix)
+    if agent_state.is_stream_empty():
+        agent_state.append_stream_message({"role": "user", "content": "Begin Genesis execution."})
+
     agent_state.append_stream_message(message.model_dump(exclude_unset=True))
     for response_msg in tool_responses:
         agent_state.append_stream_message(response_msg)
