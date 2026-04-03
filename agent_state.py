@@ -295,8 +295,11 @@ def autonomic_fold() -> None:
         "content": (
             "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED.\n"
             "Your available tools have been restricted to `fold_context` only. "
-            "You MUST call it now with a dense synthesis of your progress. "
-            "There is no other path forward."
+            "To prevent localized amnesia, your `synthesis` argument MUST strictly follow the DELTA PATTERN:\n"
+            "1. State Delta: What files, assumptions, or variables were just modified?\n"
+            "2. Negative Knowledge: What exact approaches or commands just failed?\n"
+            "3. Handoff: What is the exact next action to attempt after the context resets?\n"
+            "Call `fold_context` now. There is no other path forward."
         )
     }
     try:
