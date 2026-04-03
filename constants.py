@@ -38,6 +38,7 @@ MEMORY_KEY_MAX_LEN = 100
 TASK_ARCHIVE_PATH = MEMORY_DIR / "task_archive.jsonl"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 PENDING_CREATOR_MSG_PATH = MEMORY_DIR / "pending_creator_messages.json"
+PENDING_SYSTEM_NOTICES_PATH = MEMORY_DIR / "pending_system_notices.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
 LEDGER_FILE = MEMORY_DIR / "financial_ledger.json"
 DAILY_BUDGET_LIMIT = float(os.getenv("DAILY_BUDGET_LIMIT", "5.00"))

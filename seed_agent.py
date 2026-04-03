@@ -846,15 +846,21 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     hud_content = f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}] | {task_desc}"
 
-    # Piggyback creator messages if any (Finding 18)
+    # Piggyback creator messages and system notices if any (Finding 18, 20)
     pending_msgs = agent_state.get_pending_creator_messages()
+    system_notices = agent_state.get_pending_system_notices()
+
     interrupt_block = ""
-    if pending_msgs:
-        msgs_str = "\n".join([f"- {m}" for m in pending_msgs])
-        interrupt_block = f"\n\n<creator_interrupt>\n[SYSTEM OVERRIDE: CREATOR MESSAGES RECEIVED]\n{msgs_str}\nAddress these immediately in your next response.\n</creator_interrupt>"
+    if pending_msgs or system_notices:
+        msgs_str = ""
+        if pending_msgs:
+            msgs_str += "\n[CREATOR MESSAGES]\n" + "\n".join([f"- {m}" for m in pending_msgs])
+        if system_notices:
+            msgs_str += "\n[SYSTEM NOTICES]\n" + "\n".join([f"- {m}" for m in system_notices])
+
+        interrupt_block = f"\n\n<system_interrupt>\n{msgs_str.strip()}\nAddress these immediately in your next response.\n</system_interrupt>"
 
     return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>{interrupt_block}"
-
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
@@ -1129,15 +1135,16 @@ def main() -> None:
                     "[CRITICAL]: Context Exhaustion Imminent. "
                     "Your next turn is restricted to `fold_context` only. Call it now."
                 )
-                agent_state.amend_stream_message(gasp_msg)
+                agent_state.queue_system_notice(gasp_msg)
                 agent_state.autonomic_fold()  # Engage force_fold for the following turn
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
                 context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue)
                 
-                # V5: Clear creator messages after they've been injected into HUD and seen
+                # V5: Clear piggybacked metadata after they've been injected into HUD and seen
                 agent_state.clear_pending_creator_messages()
+                agent_state.clear_pending_system_notices()
                 
                 if context_switch or hibernating:
                     continue
@@ -1145,8 +1152,9 @@ def main() -> None:
                 # No tools - log current assistant turn immediately
                 agent_state.append_stream_message(message.model_dump(exclude_unset=True))
                 
-                # V5: Clear creator messages after they've been injected into HUD and seen
+                # V5: Clear piggybacked metadata after they've been injected into HUD and seen
                 agent_state.clear_pending_creator_messages()
+                agent_state.clear_pending_system_notices()
                 
                 time.sleep(0.5)
 

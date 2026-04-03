@@ -97,34 +97,27 @@ def test_autonomic_fold_no_args():
     assert params == [], f"autonomic_fold must take zero args, got: {params} (WP9)"
 
 
-def test_autonomic_fold_sets_flag_not_truncates(tmp_path, monkeypatch):
+def test_autonomic_fold_sets_flag_not_truncates(mock_memory):
     """autonomic_fold must set force_fold=True in state and NOT physically truncate the log."""
     import json as _json
     import agent_state
     import constants
 
-    # Point memory dir at tmp_path
-    monkeypatch.setattr(constants, "MEMORY_DIR", tmp_path)
-    monkeypatch.setattr(constants, "STATE_PATH", tmp_path / ".agent_state.json")
-
     # Write a fake singular_stream log with 10 messages
-    log = tmp_path / "task_log_singular_stream.jsonl"
+    log = mock_memory / "task_log_singular_stream.jsonl"
     messages = [{"role": ("user" if i % 2 == 0 else "assistant"), "content": f"msg{i}"} for i in range(10)]
     log.write_text("\n".join(_json.dumps(m) for m in messages) + "\n", encoding="utf-8")
-
-    # Write minimal state file
-    (tmp_path / ".agent_state.json").write_text(_json.dumps({}), encoding="utf-8")
 
     agent_state.autonomic_fold()
 
     # Flag must be set
-    state = _json.loads((tmp_path / ".agent_state.json").read_text())
+    state = _json.loads((mock_memory / ".agent_state.json").read_text())
     assert state.get("force_fold") is True, "autonomic_fold must set force_fold=True"
 
     # Log must NOT have been truncated
     lines_after = [l for l in log.read_text().splitlines() if l.strip()]
-    assert len(lines_after) == 11, (  # 10 original + 1 emergency notice appended
-        f"autonomic_fold must not truncate the log; expected 11 lines, got {len(lines_after)}"
+    assert len(lines_after) == 10, (
+        f"autonomic_fold must NOT physically truncate or append to log. Got {len(lines_after)} lines."
     )
 
 

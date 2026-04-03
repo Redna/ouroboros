@@ -49,7 +49,8 @@ def initialize_memory() -> None:
         constants.CHAT_HISTORY_PATH: [],
         constants.TASK_QUEUE_PATH: [],
         constants.SCHEDULED_TASKS_PATH: [],
-        constants.PENDING_CREATOR_MSG_PATH: []
+        constants.PENDING_CREATOR_MSG_PATH: [],
+        constants.PENDING_SYSTEM_NOTICES_PATH: []
     }
     
     for path, default_val in defaults.items():
@@ -136,6 +137,20 @@ def get_pending_creator_messages() -> List[str]:
 def clear_pending_creator_messages() -> None:
     """Clears the pending creator messages file."""
     constants.PENDING_CREATOR_MSG_PATH.write_text(json.dumps([], indent=2), encoding="utf-8")
+
+def get_pending_system_notices() -> List[str]:
+    """Retrieves list of system notices (like Autonomic Reflex) that haven't been shown yet."""
+    return safe_load_json(constants.PENDING_SYSTEM_NOTICES_PATH, [])
+
+def clear_pending_system_notices() -> None:
+    """Clears the pending system notices file."""
+    constants.PENDING_SYSTEM_NOTICES_PATH.write_text(json.dumps([], indent=2), encoding="utf-8")
+
+def queue_system_notice(notice: str) -> None:
+    """Queues a system notice for piggybacking into the HUD."""
+    notices = get_pending_system_notices()
+    notices.append(notice)
+    constants.PENDING_SYSTEM_NOTICES_PATH.write_text(json.dumps(notices, indent=2), encoding="utf-8")
 
 def append_stream_message(message_dict: Dict[str, Any]) -> None:
     log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
@@ -296,36 +311,21 @@ def autonomic_fold() -> None:
     Autonomic Failsafe (Tier 3 safety). Called when the context limit is breached.
 
     Instead of physically amputating the log, this injects an unmissable directive
-    into the Singular Stream and sets the 'force_fold' flag in state.
+    as a system notice and sets the 'force_fold' flag in state.
     On the very next turn, the runtime will restrict the LLM to exactly one tool:
-    `fold_context`. Because tool_choice is 'required', it MUST call it — there is
-    no other path forward. The LLM performs the fold voluntarily, which means the
-    synthesis is agent-authored, not system-amputated.
+    `fold_context`.
     """
-    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
-
-    # Inject the emergency directive into the live stream
-    emergency_notice = {
-        "role": "user",
-        "content": (
-            "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED.\n"
-            "Your available tools have been restricted to `fold_context` only. "
-            "To prevent localized amnesia, your `synthesis` argument MUST strictly follow the DELTA PATTERN:\n"
-            "1. State Delta: What files, assumptions, or variables were just modified?\n"
-            "2. Negative Knowledge: What exact approaches or commands just failed?\n"
-            "3. Handoff: What is the exact next action to attempt after the context resets?\n"
-            "Call `fold_context` now. There is no other path forward."
-        )
-    }
-    try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(emergency_notice) + "\n")
-        # Keep cache synchronized
-        if _session.get("current_task_id") == "singular_stream":
-            if _session.get("cached_messages") is not None:
-                _session["cached_messages"].append(emergency_notice)
-    except Exception as e:
-        print(f"[System] Error injecting autonomic notice: {e}")
+    # Inject the emergency directive as a pending notice (Finding 20)
+    emergency_notice = (
+        "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED.\n"
+        "Your available tools have been restricted to `fold_context` only. "
+        "To prevent localized amnesia, your `synthesis` argument MUST strictly follow the DELTA PATTERN:\n"
+        "1. State Delta: What files, assumptions, or variables were just modified?\n"
+        "2. Negative Knowledge: What exact approaches or commands just failed?\n"
+        "3. Handoff: What is the exact next action to attempt after the context resets?\n"
+        "Call `fold_context` now. There is no other path forward."
+    )
+    queue_system_notice(emergency_notice)
 
     # Set the force_fold flag — the runtime will restrict tools on the next turn
     state = load_state()
