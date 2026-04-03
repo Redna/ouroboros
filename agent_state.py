@@ -368,8 +368,8 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]]) -
     last_gasp_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_LAST_GASP_THRESHOLD)
     breach_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_BREACH_THRESHOLD)
 
-    if turn_count > 50 or current_context_size >= breach_threshold:
+    if turn_count > constants.TURN_LIMIT or current_context_size >= breach_threshold:
         return queue, "BREACH"
-    if turn_count >= 45 or current_context_size >= last_gasp_threshold:
+    if turn_count >= (constants.TURN_LIMIT - 5) or current_context_size >= last_gasp_threshold:
         return queue, "LAST_GASP"
     return queue, "NORMAL"

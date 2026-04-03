@@ -367,10 +367,12 @@ def fold_context(args: dict) -> str:
 
     # Head: Genesis User message + first Assistant response (immutable anchor)
     head = messages[:2]
-    # Tail: The assistant message that triggered this very tool call
-    tail = [messages[-1]]
-
-    preserved = head + tail
+    
+    # We don't need a Tail here because the 'Atomic Flush' in _route_tool_calls
+    # will append the current Assistant message (the one that called fold_context)
+    # and the Tool response itself immediately after this function returns.
+    # This ensures the 'SYSTEM AUTONOMIC REFLEX' user message is never preserved.
+    preserved = head
     turns_dropped = (len(messages) - len(preserved)) // 2
 
     try:
@@ -378,9 +380,10 @@ def fold_context(args: dict) -> str:
             for msg in preserved:
                 f.write(json.dumps(msg) + "\n")
 
-        # Reset turn counter
+        # Reset turn counter and clear the force_fold flag (Finding 15)
         state = agent_state.load_state()
         state["timeline_turns"] = 1
+        state["force_fold"] = False
         agent_state.save_state(state)
 
     except Exception as e:
@@ -930,7 +933,12 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     token_limit = constants.CONTEXT_WINDOW
     current_context = state.get("last_context_size", 0)
     context_pct = int((current_context / token_limit) * 100) if token_limit else 0
-    return f"[HUD | Context: {context_pct}% | Queue: {len(queue)}]"
+    
+    turn_limit = constants.TURN_LIMIT
+    current_turns = state.get("timeline_turns", 0)
+    turns_pct = int((current_turns / turn_limit) * 100) if turn_limit else 0
+    
+    return f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}]"
 
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""

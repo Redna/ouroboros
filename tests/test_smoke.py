@@ -198,14 +198,16 @@ def test_push_task_no_parent_task_id():
 # ---------------------------------------------------------------------------
 
 def test_hud_format():
-    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Queue: Y]'."""
+    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Turns: Y% | Queue: Z]'."""
     from seed_agent import build_dynamic_telemetry_message
     import constants
     # Use an exact multiple of CONTEXT_WINDOW so int() truncation is unambiguous
     context_size = constants.CONTEXT_WINDOW // 2   # exactly 50%
-    state = {"last_context_size": context_size}
+    state = {"last_context_size": context_size, "timeline_turns": 15}
     queue = [{}, {}]
     hud = build_dynamic_telemetry_message(state, queue)
-    assert hud == "[HUD | Context: 50% | Queue: 2]", (
+    
+    # Based on TURN_LIMIT = 30, 15 turns should be 50%
+    assert hud == "[HUD | Context: 50% | Turns: 50% | Queue: 2]", (
         f"HUD format mismatch. Got: {hud!r}"
     )
