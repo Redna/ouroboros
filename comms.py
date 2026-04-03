@@ -62,15 +62,11 @@ def send_telegram_action(chat_id: int, action: str = "typing"):
 
 def queue_creator_message(new_message: str, update_id: int):
     """
-    Injects a creator Sticky Note directly into the Singular Stream.
+    Stores a creator message in the pending queue for piggybacking.
     """
-    agent_state.append_stream_message({
-        "role": "user",
-        "content": (
-            "[SYSTEM OVERRIDE: CREATOR MESSAGE RECEIVED]\n"
-            f"{new_message}"
-        )
-    })
+    pending = agent_state.get_pending_creator_messages()
+    pending.append(new_message)
+    constants.PENDING_CREATOR_MSG_PATH.write_text(json.dumps(pending, indent=2), encoding="utf-8")
 
 def poll_telegram(s: Dict[str, Any], q: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     if not constants.TELEGRAM_BOT_TOKEN:
@@ -95,6 +91,8 @@ def poll_telegram(s: Dict[str, Any], q: List[Dict[str, Any]]) -> Tuple[Dict[str,
                         agent_state.save_state(s)
                     agent_state.append_chat_history("User", text)
                     update_id = u.get('update_id', int(time.time()))
+                    
+                    # V5: Creator messages are now piggybacked like HUD telemetry
                     queue_creator_message(text, update_id)
                     
                     if msg_id:
@@ -103,6 +101,7 @@ def poll_telegram(s: Dict[str, Any], q: List[Dict[str, Any]]) -> Tuple[Dict[str,
                     interrupt_triggered = True
                     
             if interrupt_triggered:
+                # Still reload queue in case the message was a priority shift or task
                 q = agent_state.load_task_queue()
     except Exception:
         pass

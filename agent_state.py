@@ -48,7 +48,8 @@ def initialize_memory() -> None:
         constants.STATE_PATH: {"offset": 0, "creator_id": None, "cognitive_load": 0},
         constants.CHAT_HISTORY_PATH: [],
         constants.TASK_QUEUE_PATH: [],
-        constants.SCHEDULED_TASKS_PATH: []
+        constants.SCHEDULED_TASKS_PATH: [],
+        constants.PENDING_CREATOR_MSG_PATH: []
     }
     
     for path, default_val in defaults.items():
@@ -127,6 +128,14 @@ def is_stream_empty() -> bool:
     log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
     if not log_path.exists(): return True
     return log_path.stat().st_size == 0
+
+def get_pending_creator_messages() -> List[str]:
+    """Retrieves list of messages received from creator that haven't been processed yet."""
+    return safe_load_json(constants.PENDING_CREATOR_MSG_PATH, [])
+
+def clear_pending_creator_messages() -> None:
+    """Clears the pending creator messages file."""
+    constants.PENDING_CREATOR_MSG_PATH.write_text(json.dumps([], indent=2), encoding="utf-8")
 
 def append_stream_message(message_dict: Dict[str, Any]) -> None:
     log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"

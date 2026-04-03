@@ -845,10 +845,24 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     turns_pct = int((current_turns / turn_limit) * 100) if turn_limit else 0
 
     hud_content = f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}] | {task_desc}"
-    return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>"
+
+    # Piggyback creator messages if any (Finding 18)
+    pending_msgs = agent_state.get_pending_creator_messages()
+    interrupt_block = ""
+    if pending_msgs:
+        msgs_str = "\n".join([f"- {m}" for m in pending_msgs])
+        interrupt_block = f"\n\n<creator_interrupt>\n[SYSTEM OVERRIDE: CREATOR MESSAGES RECEIVED]\n{msgs_str}\nAddress these immediately in your next response.\n</creator_interrupt>"
+
+    return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>{interrupt_block}"
+
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
+
+    # Inject Memory Index (Finding 19)
+    memory_data = agent_state.safe_load_json(constants.MEMORY_STORE_PATH, {})
+    keys = list(memory_data.get("entries", {}).keys())
+    memory_index = "\n".join([f"- {k}" for k in keys]) if keys else "No memories stored."
 
     return f"""# SYSTEM CONTEXT
 {identity}
@@ -856,12 +870,16 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
 ## CONSTITUTION
 {constitution}
 
+## MEMORY INDEX (Available for recall_memory)
+{memory_index}
+
 ## STREAM OF CONSCIOUSNESS DIRECTIVES
 1. You operate in a singular, continuous timeline. There are no branches. 
 2. Act on initiative (P0). Address the top item in your Queue.
 3. Your HUD tells you your physical context limit. Use `fold_context` when it gets high.
-4. If a creator message interrupts you, suspend your thought, address it, and resume.
+4. If a creator message interrupts you via `<creator_interrupt>`, suspend your current thought, address it, and resume.
 """
+
 
 def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], task_desc: str) -> str:
     """Generates the minimalist HUD to be appended to tool responses."""
@@ -1117,11 +1135,19 @@ def main() -> None:
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
                 context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue)
+                
+                # V5: Clear creator messages after they've been injected into HUD and seen
+                agent_state.clear_pending_creator_messages()
+                
                 if context_switch or hibernating:
                     continue
             else:
                 # No tools - log current assistant turn immediately
                 agent_state.append_stream_message(message.model_dump(exclude_unset=True))
+                
+                # V5: Clear creator messages after they've been injected into HUD and seen
+                agent_state.clear_pending_creator_messages()
+                
                 time.sleep(0.5)
 
             time.sleep(2)
