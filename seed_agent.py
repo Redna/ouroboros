@@ -384,6 +384,7 @@ def fold_context(args: dict) -> str:
         state = agent_state.load_state()
         state["timeline_turns"] = 1
         state["force_fold"] = False
+        state["last_context_size"] = 1000 # Reset estimate (Finding 17)
         agent_state.save_state(state)
 
     except Exception as e:
@@ -1138,6 +1139,10 @@ def main() -> None:
 
         active_task_id, task_desc, active_tool_specs = \
             _resolve_execution_context(state, queue)
+
+        # WP: Explicit Turn Increment (Finding 17: prevent infinite fold loops)
+        state["timeline_turns"] = state.get("timeline_turns", 0) + 1
+        agent_state.save_state(state)
 
         # FORCE FOLD MODE: Restrict LLM to fold_context only.
         # Set by autonomic_fold() when context is critically full.

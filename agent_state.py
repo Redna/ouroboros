@@ -359,9 +359,7 @@ def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]]) -
     """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
 
     current_context_size = state.get("last_context_size", 0)
-
-    state["timeline_turns"] = state.get("timeline_turns", 0) + 1
-    turn_count = state["timeline_turns"]
+    turn_count = state.get("timeline_turns", 0)
 
     # Thresholds
     warning_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_WARN_THRESHOLD)
