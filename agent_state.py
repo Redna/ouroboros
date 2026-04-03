@@ -332,9 +332,6 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
     state["last_input_tokens"] = i_count
     state["last_output_tokens"] = o_count
 
-    # Unified Stream token tracking
-    state["stream_tokens"] = state.get("stream_tokens", 0) + t_count
-
     save_state(state)
 
     return False
