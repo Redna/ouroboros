@@ -338,11 +338,14 @@ def generate_repo_map(args: dict) -> str:
 
 
 @registry.tool(
-    description="Compress the active execution log by amputating the middle history (the 'Belly'). You MUST provide a dense, factual synthesis of the dropped history. This synthesis is stored natively in this tool call's arguments, maintaining an unbroken timeline. Always use `store_memory` BEFORE calling this if there are facts that must survive permanently.",
+    description="Compress the active execution log by amputating the middle history (the 'Belly'). You MUST provide a dense, factual synthesis of the dropped history. To prevent localized amnesia, your synthesis MUST strictly follow the DELTA PATTERN:\n1. State Delta: What files, assumptions, or variables were just modified?\n2. Negative Knowledge: What exact approaches or commands just failed?\n3. Handoff: What is the exact next action to attempt after the context resets?\nAlways use `store_memory` BEFORE calling this if there are facts that must survive permanently.",
     parameters={
         "type": "object",
         "properties": {
-            "synthesis": {"type": "string", "description": "Dense summary following the DELTA PATTERN: 1. State Delta (what changed), 2. Negative Knowledge (what failed), 3. Handoff (exact next step)."}
+            "synthesis": {
+                "type": "string",
+                "description": "The highly detailed DELTA PATTERN summary (State Delta, Negative Knowledge, Handoff)."
+            }
         },
         "required": ["synthesis"]
     },
