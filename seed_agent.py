@@ -840,11 +840,9 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     current_context = state.get("last_context_size", 0)
     context_pct = int((current_context / token_limit) * 100) if token_limit else 0
 
-    turn_limit = constants.TURN_LIMIT
     current_turns = state.get("timeline_turns", 0)
-    turns_pct = int((current_turns / turn_limit) * 100) if turn_limit else 0
 
-    hud_content = f"[HUD | Context: {context_pct}% | Turns: {turns_pct}% | Queue: {len(queue)}] | {task_desc}"
+    hud_content = f"[HUD | Context: {context_pct}% | Turns: {current_turns} | Queue: {len(queue)}] | {task_desc}"
 
     # Piggyback creator messages and system notices if any (Finding 18, 20)
     pending_msgs = agent_state.get_pending_creator_messages()
@@ -891,7 +889,6 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: L
 ## PENDING QUEUE (Upcoming tasks)
 {queue_str}
 """
-
 def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], task_desc: str) -> str:
     """Generates the minimalist HUD to be appended to tool responses."""
     telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
@@ -939,7 +936,7 @@ def _resolve_execution_context(
         top_task = queue[0]
         task_desc = f"CURRENT FOCUS: {top_task.get('description', 'Unknown')}"
     else:
-        task_desc = "Your task queue is empty. Initiate deep synthesis or hibernate."
+        task_desc = "AUTONOMY MODE: Queue is empty. Use the `reflect` tool to review your memory index and synthesize a new objective, or `hibernate` if memory is perfectly refined."
 
     active_tool_specs = registry.get_specs() # Grant access to all tools
     return task_desc, active_tool_specs
@@ -1119,29 +1116,22 @@ def main() -> None:
 
             # WP: Update metrics BEFORE enforcing limits so thresholds use current data (Finding 11)
             agent_state.update_global_metrics(state, queue, response)
-            queue, limit_status = agent_state.enforce_context_limits(state, queue)
 
-            # --- EMERGENCY EGRESS OVERRIDE ---
             # Let fold_context execute even when at BREACH threshold.
             is_emergency_save = bool(
                 message.tool_calls and
                 any(tc.function.name == "fold_context" for tc in message.tool_calls)
             )
 
-            # HANDLE PHYSICAL BREACH (Tier 3 safety - Force Fold)
-            if limit_status == "BREACH" and not is_emergency_save:
-                print(f"\033[91m[System] Singular Stream breached limits. Triggering Autonomic Fold.\033[0m")
-                agent_state.autonomic_fold()
-                continue
+            # Let the state module enforce limits internally
+            if not is_emergency_save:
+                agent_state.enforce_context_limits(state)
+                # Reload state to catch any force_fold flags just set by enforce_context_limits
+                state = agent_state.load_state()
 
-            # HANDLE LAST GASP (Tier 2 safety - engage force_fold for next turn)
-            if limit_status == "LAST_GASP" and not is_emergency_save:
-                gasp_msg = (
-                    "[CRITICAL]: Context Exhaustion Imminent. "
-                    "Your next turn is restricted to `fold_context` only. Call it now."
-                )
-                agent_state.queue_system_notice(gasp_msg)
-                agent_state.autonomic_fold()  # Engage force_fold for the following turn
+                if state.get("force_fold"):
+                    # The system just triggered a reflex. Skip executing the LLM's current tools.
+                    continue
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses

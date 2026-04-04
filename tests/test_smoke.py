@@ -148,7 +148,7 @@ def test_enforce_context_limits_no_task_id():
     params = list(inspect.signature(enforce_context_limits).parameters.keys())
     assert "task_id" not in params, f"enforce_context_limits must not accept task_id (WP10)"
     assert "state" in params
-    assert "queue" in params
+    assert "queue" not in params
 
 
 def test_update_global_metrics_no_task_id():
@@ -226,8 +226,8 @@ def test_hud_format():
     task_desc = "Testing HUD"
     hud = build_dynamic_telemetry_message(state, queue, task_desc)
 
-    # Based on TURN_LIMIT = 30, 15 turns should be 50%
-    expected_content = f"[HUD | Context: 50% | Turns: 50% | Queue: 2] | {task_desc}"
+    # Expecting raw turns instead of percentage
+    expected_content = f"[HUD | Context: 50% | Turns: 15 | Queue: 2] | {task_desc}"
     assert f"<ouroboros_hud>\n{expected_content}\n</ouroboros_hud>" == hud, (
         f"HUD format mismatch. Got: {hud!r}"
     )

@@ -354,19 +354,22 @@ def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], re
 
     return False
 
-def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], str]:
-    """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
+def enforce_context_limits(state: Dict[str, Any]) -> None:
+    """State-driven context safety net."""
 
     current_context_size = state.get("last_context_size", 0)
-    turn_count = state.get("timeline_turns", 0)
 
     # Thresholds
-    warning_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_WARN_THRESHOLD)
     last_gasp_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_LAST_GASP_THRESHOLD)
     breach_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_BREACH_THRESHOLD)
 
-    if turn_count > constants.TURN_LIMIT or current_context_size >= breach_threshold:
-        return queue, "BREACH"
-    if turn_count >= (constants.TURN_LIMIT - 5) or current_context_size >= last_gasp_threshold:
-        return queue, "LAST_GASP"
-    return queue, "NORMAL"
+    if current_context_size >= breach_threshold:
+        print("\033[91m[System] Singular Stream breached limits. Triggering Autonomic Fold.\033[0m")
+        autonomic_fold()
+    elif current_context_size >= last_gasp_threshold and not state.get("force_fold"):
+        gasp_msg = (
+            "[CRITICAL]: Context Exhaustion Imminent. "
+            "Your next turn is restricted to `fold_context` only. Call it now."
+        )
+        queue_system_notice(gasp_msg)
+        autonomic_fold()
