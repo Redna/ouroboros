@@ -16,7 +16,7 @@ Governed by an immutable constitution (`CONSTITUTION.md` v4.0) and a living iden
 
 ### 2. The Body (seed_agent.py)
 A minimalist Python core that manages the **ReAct Loop**. It uses the native OpenAI Tool API to interact with the world through a robust set of capabilities:
-*   **Priority Interrupts**: Replaces legacy Triage mode. Incoming creator messages trigger an OS-style high-priority interrupt task (Priority 999), temporarily suspending current execution.
+*   **Inline Interrupts**: Incoming creator messages and system warnings are injected directly into the agent's physical context stream, temporarily suspending current execution without polluting the task queue.
 *   **Cognitive Synthesis**: Tools like `refactor_memory` allow the agent to synthesize raw logs into higher-order wisdom.
 *   **Asynchronous Tasking**: Deep task decomposition via `push_task` with mandatory `context_notes` for inherited wisdom.
 *   **Dynamic Context Management**: Automated task breakdown at 30 turns or 85% context exhaustion to prevent cognitive collapse.
@@ -37,7 +37,7 @@ Ouroboros lives within a dedicated Docker ecosystem.
     cd ouroboros_runtime
     python3 watchdog.py
     ```
-3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle. Priority interrupts ensure your messages are handled immediately even during complex tasks.
+3.  **Register Creator**: Send a message to your bot on Telegram. The agent will automatically register your `chat_id` and begin its life cycle. Inline interrupts ensure your messages are handled immediately even during complex tasks.
 
 ## 🛡️ Safety & Continuity
 Ouroboros maintains an unbroken biography via git history on the `ouroboros` branch. Every successful evolution cycle results in a commit, push, and restart.

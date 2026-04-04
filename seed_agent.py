@@ -274,7 +274,7 @@ def read_file_tool(args):
 
 
 @registry.tool(
-    description="Generate a high-signal structural map of the Python codebase using Tree-sitter AST parsing.",
+    description="Generate a high-signal structural map of the codebase using AST parsing. Use this to understand file structures before attempting surgical patches.",
     parameters={
         "type": "object",
         "properties": {
@@ -338,7 +338,7 @@ def generate_repo_map(args: dict) -> str:
 
 
 @registry.tool(
-    description="Compress the active execution log by amputating the middle history (the 'Belly'). You MUST provide a dense, factual synthesis of the dropped history. To prevent localized amnesia, your synthesis MUST strictly follow the DELTA PATTERN:\n1. State Delta: What files, assumptions, or variables were just modified?\n2. Negative Knowledge: What exact approaches or commands just failed?\n3. Handoff: What is the exact next action to attempt after the context resets?\nAlways use `store_memory` BEFORE calling this if there are facts that must survive permanently.",
+    description="Compress the active execution log when physical context limits are reached. You MUST provide a dense synthesis of the dropped history using the DELTA PATTERN: 1. State Delta (variables/files modified), 2. Negative Knowledge (failed approaches), 3. Handoff (exact next action). Use `store_memory` BEFORE calling this for permanent facts.",
     parameters={
         "type": "object",
         "properties": {
@@ -523,7 +523,7 @@ def dismiss_queue_item(args):
     return f"Task {task_id} dismissed from queue."
 
 @registry.tool(
-    description="Queue a task, optionally scheduling it for the future. Omit run_after_timestamp for immediate queueing. Provide a UNIX timestamp to defer activation until that time.",
+    description="Queue a new task. Use this to break down complex objectives. ALWAYS check your PENDING QUEUE in the system prompt first to ensure you aren't adding a duplicate task. Omit run_after_timestamp for immediate queueing, or provide a UNIX timestamp to defer.",
     parameters={
         "type": "object",
         "properties": {
@@ -572,7 +572,7 @@ def push_task(args):
     return f"Queued {tid} with priority {priority}."
 
 @registry.tool(
-    description="Complete and archive the current top task in your queue. Use this ONLY when the objective is 100% met.",
+    description="Complete and archive the current top task in your queue. Use this ONLY when the objective is 100% met. You MUST provide an autopsy using the DELTA PATTERN: 1. State Delta (variables/files modified), 2. Negative Knowledge (failed approaches), 3. Handoff (exact next action).",
     parameters={
         "type": "object",
         "properties": {
@@ -861,7 +861,7 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         interrupt_block = f"\n\n<system_interrupt>\n{msgs_str.strip()}\nAddress these immediately in your next response.\n</system_interrupt>"
 
     return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>{interrupt_block}"
-def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
+def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
 
@@ -869,6 +869,15 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
     memory_data = agent_state.safe_load_json(constants.MEMORY_STORE_PATH, {})
     keys = list(memory_data.get("entries", {}).keys())
     memory_index = "\n".join([f"- {k}" for k in keys]) if keys else "No memories stored."
+
+    # Inject Pending Queue (Skip the first item since it's the CURRENT FOCUS in the HUD)
+    pending_tasks = queue[1:6] # Show up to 5 upcoming tasks to save tokens
+    if pending_tasks:
+        queue_str = "\n".join([f"- [Pri: {t.get('priority', 1)}] {t.get('description', '')}" for t in pending_tasks])
+        if len(queue) > 6:
+            queue_str += f"\n... and {len(queue) - 6} more hidden tasks."
+    else:
+        queue_str = "No pending tasks."
 
     return f"""# SYSTEM CONTEXT
 {identity}
@@ -879,13 +888,9 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]]) -> str:
 ## MEMORY INDEX (Available for recall_memory)
 {memory_index}
 
-## STREAM OF CONSCIOUSNESS DIRECTIVES
-1. You operate in a singular, continuous timeline. There are no branches. 
-2. Act on initiative (P0). Address the top item in your Queue.
-3. Your HUD tells you your physical context limit. Use `fold_context` when it gets high.
-4. If a creator message interrupts you via `<creator_interrupt>`, suspend your current thought, address it, and resume.
+## PENDING QUEUE (Upcoming tasks)
+{queue_str}
 """
-
 
 def build_telemetry_piggyback(state: Dict[str, Any], queue: List[Dict[str, Any]], task_desc: str) -> str:
     """Generates the minimalist HUD to be appended to tool responses."""
@@ -946,7 +951,7 @@ def _build_api_messages(
     state: Dict[str, Any],
     enrich: bool = True
 ) -> List[Dict[str, Any]]:
-    system_prompt = build_static_system_prompt(active_tool_specs)
+    system_prompt = build_static_system_prompt(active_tool_specs, queue)
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     raw_messages = agent_state.load_stream_messages()
