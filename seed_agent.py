@@ -968,7 +968,7 @@ def _resolve_execution_context(
         top_task = queue[0]
         task_desc = f"CURRENT FOCUS: {top_task.get('description', 'Unknown')}"
     else:
-        task_desc = "AUTONOMY MODE: Queue is empty. Use the `reflect` tool to review your memory index and synthesize a new objective, or `hibernate` if memory is perfectly refined."
+        task_desc = "Your task queue is empty. Initiate deep synthesis or hibernate."
 
     active_tool_specs = registry.get_specs() # Grant access to all tools
     return task_desc, active_tool_specs
