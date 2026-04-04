@@ -968,7 +968,9 @@ def _resolve_execution_context(
         top_task = queue[0]
         task_desc = f"CURRENT FOCUS: {top_task.get('description', 'Unknown')}"
     else:
-        task_desc = "Queue is empty. Use the `reflect` tool to review your memory index and synthesize a new objective (P9), or `hibernate` if memory is perfectly refined."
+        # P5 Minimalism & P0 Agency: Purely factual telemetry.
+        # The agent must rely on its Constitution to decide what to do next.
+        task_desc = "Queue is empty."
 
     active_tool_specs = registry.get_specs() # Grant access to all tools
     return task_desc, active_tool_specs
