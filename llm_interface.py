@@ -13,13 +13,21 @@ client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=
 def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
     active_model = requested_model if requested_model else constants.DEFAULT_MODEL
     
+    # WP: Message Normalization (Finding: llamacpp 400s on consecutive system messages)
+    normalized_messages = []
+    for msg in messages:
+        if normalized_messages and normalized_messages[-1]["role"] == "system" and msg["role"] == "system":
+            normalized_messages[-1]["content"] += f"\n\n{msg['content']}"
+        else:
+            normalized_messages.append(msg)
+    
     # Force the agent to use its agency if tools are available
     tool_choice = "required" if tools else None
     
     try:
         response = client.chat.completions.create(
             model=active_model,
-            messages=messages,
+            messages=normalized_messages,
             tools=tools,
             tool_choice=tool_choice,
             temperature=temperature,
