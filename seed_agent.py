@@ -1182,6 +1182,12 @@ def main() -> None:
         task_desc, active_tool_specs = \
             _resolve_execution_context(state, queue)
 
+        # Tier 1 Context Safety (Pre-emptive)
+        # If we already know the context is full from the last turn (or window was reduced),
+        # trigger the reflex BEFORE calling the LLM to avoid 400 errors.
+        agent_state.enforce_context_limits(state)
+        state = agent_state.load_state() # Reload to catch force_fold
+
         # WP: Explicit Turn Increment (Finding 17: prevent infinite fold loops)
         state["timeline_turns"] = state.get("timeline_turns", 0) + 1
         agent_state.save_state(state)
