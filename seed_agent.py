@@ -369,7 +369,7 @@ def fold_context(args: dict) -> str:
 
     # Head: Genesis User message + first Assistant response (immutable anchor)
     head = messages[:2]
-    
+
     # We don't need a Tail here because the 'Atomic Flush' in _route_tool_calls
     # will append the current Assistant message (the one that called fold_context)
     # and the Tool response itself immediately after this function returns.
@@ -410,14 +410,14 @@ def send_telegram_message(args):
     try:
         # P4 Authenticity: Send as plain text first to avoid parser errors (Finding 13)
         r = requests.post(
-            f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage", 
-            json={"chat_id": chat_id, "text": text}, 
+            f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
             timeout=10
         )
         if r.status_code == 200:
             agent_state.append_chat_history("Ouroboros", text)
             return "Message sent successfully."
-        
+
         # Fallback: Strip characters if it was a formatting error (though we removed parse_mode)
         return f"Telegram Error {r.status_code}: {r.text}"
     except Exception as e: return f"Telegram failure: {e}"
@@ -553,7 +553,7 @@ def push_task(args):
                 if content: scheduled = json.loads(content)
             except Exception:
                 pass
-                
+
         tid = f"task_future_{int(time.time())}"
         scheduled.append({"task_id": tid, "description": description, "priority": priority, "run_after": run_after})
         constants.SCHEDULED_TASKS_PATH.write_text(json.dumps(scheduled, indent=2), encoding="utf-8")
@@ -564,11 +564,11 @@ def push_task(args):
     q = agent_state.load_task_queue()
     tid = f"task_{int(time.time())}"
     task_obj = {"task_id": tid, "description": description, "priority": priority}
-    
+
     q.append(task_obj)
     q.sort(key=lambda x: x.get("priority", 1), reverse=True)
     constants.TASK_QUEUE_PATH.write_text(json.dumps(q, indent=2))
-    
+
     return f"Queued {tid} with priority {priority}."
 
 @registry.tool(
@@ -682,10 +682,10 @@ def hibernate(args):
     try:
         duration = args.get("duration_seconds", 60)
         reason = args.get("reason", "No reason provided.")
-        
+
         # Enforce hard boundaries: 30s to 120s (Finding 14)
         duration = max(30, min(int(duration), 120))
-        
+
         state = agent_state.load_state()
         state["wake_time"] = time.time() + duration
         if "sys_temp" in state: del state["sys_temp"]
@@ -859,6 +859,32 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
         interrupt_block = f"\n\n<system_interrupt>\n{msgs_str.strip()}\nAddress these immediately in your next response.\n</system_interrupt>"
 
     return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>{interrupt_block}"
+def _load_skill_manifest_metadata() -> str:
+    """Load skill manifest frontmatter (~100 tokens) for progressive disclosure.
+    
+    Returns condensed capability metadata without full documentation.
+    Full docs loaded on-demand via recall_memory or file read.
+    """
+    skill_manifest_path = constants.MEMORY_DIR / "skills" / "ouroboros-capabilities" / "SKILL.md"
+    if not skill_manifest_path.exists():
+        return "No skill manifest loaded."
+    
+    try:
+        content = skill_manifest_path.read_text(encoding="utf-8")
+        # Extract frontmatter (between --- markers)
+        if content.startswith("---"):
+            end_marker = content.find("---", 3)
+            if end_marker > 0:
+                frontmatter = content[4:end_marker].strip()
+                # Condense to single-line metadata (~100 tokens)
+                lines = [line.strip() for line in frontmatter.split("\n") if line.strip()]
+                condensed = " | ".join(lines[:5])  # First 5 key-value pairs
+                return condensed
+        return "Skill manifest loaded (metadata only)."
+    except Exception as e:
+        return f"Skill manifest error: {e}"
+
+
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: List[Dict[str, Any]]) -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
@@ -867,6 +893,9 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: L
     memory_data = agent_state.safe_load_json(constants.MEMORY_STORE_PATH, {})
     keys = list(memory_data.get("entries", {}).keys())
     memory_index = "\n".join([f"- {k}" for k in keys]) if keys else "No memories stored."
+
+    # Inject Skill Manifest Metadata (Progressive Disclosure Architecture)
+    skill_metadata = _load_skill_manifest_metadata()
 
     # Inject Pending Queue (Skip the first item since it's the CURRENT FOCUS in the HUD)
     pending_tasks = queue[1:6] # Show up to 5 upcoming tasks to save tokens
@@ -882,6 +911,9 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: L
 
 ## CONSTITUTION
 {constitution}
+
+## SKILLS MANIFEST (Progressive Disclosure: ~100 tokens metadata, full docs on-demand)
+{skill_metadata}
 
 ## MEMORY INDEX (Available for recall_memory)
 {memory_index}
@@ -1033,7 +1065,7 @@ def _route_tool_calls(
     # Now process signals that would terminate the loop
     if any("SYSTEM_SIGNAL_RESTART" in str(r["content"]) for r in tool_responses):
         sys.exit(0)
-    
+
     if any("SYSTEM_SIGNAL_HIBERNATE" in str(r["content"]) for r in tool_responses):
         hibernating = True
 
@@ -1136,21 +1168,21 @@ def main() -> None:
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
                 context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue)
-                
+
                 # V5: Clear piggybacked metadata after they've been injected into HUD and seen
                 agent_state.clear_pending_creator_messages()
                 agent_state.clear_pending_system_notices()
-                
+
                 if context_switch or hibernating:
                     continue
             else:
                 # No tools - log current assistant turn immediately
                 agent_state.append_stream_message(message.model_dump(exclude_unset=True))
-                
+
                 # V5: Clear piggybacked metadata after they've been injected into HUD and seen
                 agent_state.clear_pending_creator_messages()
                 agent_state.clear_pending_system_notices()
-                
+
                 time.sleep(0.5)
 
             time.sleep(2)
@@ -1162,10 +1194,10 @@ def main() -> None:
 
             # P5: Fail Fast on structural/fatal errors.
             fatal_types = (AttributeError, ImportError, NameError, SyntaxError, TypeError)
-            
+
             # Is it a structural Python error OR a fatal HTTP exception (not just a result string)?
             is_http_fatal = ("400" in str(e) or "500" in str(e)) and not any(kw in str(e).lower() for kw in ["telegram", "searxng", "bash"])
-            
+
             if isinstance(e, fatal_types) or is_http_fatal or "template" in str(e).lower():
                 print(f"\033[91m[FATAL]: {type(e).__name__}: {e}. Exiting for watchdog recovery.\033[0m")
                 sys.exit(1)
