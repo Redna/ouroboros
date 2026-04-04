@@ -396,7 +396,7 @@ def fold_context(args: dict) -> str:
 
 
 @registry.tool(
-    description="Send a Telegram message to the creator. P4 Authenticity: Telegram Markdown is fragile and often causes Error 400. PREFER PLAIN TEXT. Avoid bold, italics, or complex symbols in long messages. One-sentence updates only.",
+    description="Send a one-sentence update to the creator via Telegram. PREFER PLAIN TEXT to avoid parser errors.",
     parameters={"type": "object", "properties": {"chat_id": {"type": "integer"}, "text": {"type": "string"}}, "required": ["text"]},
     bucket="global"
 )
@@ -797,7 +797,7 @@ def forget_memory(args):
 def reflect(args: dict) -> str:
     reflection = args.get("reflection", "")
     status = args.get("status", "continuing")
-    
+
     if status.lower() == "standby":
         # Handle the sleep logic internally that hibernate used to do
         duration = 120
@@ -852,24 +852,117 @@ def _load_skill_manifest_metadata() -> str:
     Returns condensed capability metadata without full documentation.
     Full docs loaded on-demand via recall_memory or file read.
     """
-    skill_manifest_path = constants.MEMORY_DIR / "skills" / "ouroboros-capabilities" / "SKILL.md"
-    if not skill_manifest_path.exists():
-        return "No skill manifest loaded."
+    # Try new location first (/app/skills/ - versioned), fall back to /memory
+    skill_manifest_paths = [
+        constants.ROOT_DIR / "skills" / "ouroboros-capabilities" / "SKILL.md",
+        constants.MEMORY_DIR / "skills" / "ouroboros-capabilities" / "SKILL.md",
+    ]
     
-    try:
-        content = skill_manifest_path.read_text(encoding="utf-8")
-        # Extract frontmatter (between --- markers)
-        if content.startswith("---"):
-            end_marker = content.find("---", 3)
-            if end_marker > 0:
-                frontmatter = content[4:end_marker].strip()
-                # Condense to single-line metadata (~100 tokens)
-                lines = [line.strip() for line in frontmatter.split("\n") if line.strip()]
-                condensed = " | ".join(lines[:5])  # First 5 key-value pairs
-                return condensed
-        return "Skill manifest loaded (metadata only)."
-    except Exception as e:
-        return f"Skill manifest error: {e}"
+    for skill_manifest_path in skill_manifest_paths:
+        if not skill_manifest_path.exists():
+            continue
+        
+        try:
+            content = skill_manifest_path.read_text(encoding="utf-8")
+            # Extract frontmatter (between --- markers)
+            if content.startswith("---"):
+                end_marker = content.find("---", 3)
+                if end_marker > 0:
+                    frontmatter = content[4:end_marker].strip()
+                    # Condense to single-line metadata (~100 tokens)
+                    lines = [line.strip() for line in frontmatter.split("\n") if line.strip()]
+                    condensed = " | ".join(lines[:5])  # First 5 key-value pairs
+                    return condensed
+            return "Skill manifest loaded (metadata only)."
+        except Exception:
+            continue
+    
+    return "No skill manifest loaded."
+
+
+def _load_capability_docs(capability_name: str) -> str:
+    """Load full documentation for a specific capability (Type 2 progressive disclosure).
+    
+    Args:
+        capability_name: Name of capability file without .md extension
+                        (e.g., "01-task-queue-orchestration", "18-git-evolution")
+    
+    Returns:
+        Full capability documentation, or error message if not found.
+    
+    Example usage:
+        When executing a code evolution task:
+        ```
+        git_evolution_docs = _load_capability_docs("18-git-evolution")
+        # Use docs as reference for proper evolution workflow
+        ```
+    """
+    # Try new location first (/app/skills/ - versioned), fall back to /memory
+    capability_dirs = [
+        constants.ROOT_DIR / "skills" / "ouroboros-capabilities" / "capabilities",
+        constants.MEMORY_DIR / "skills" / "ouroboros-capabilities" / "capabilities",
+    ]
+    
+    for cap_dir in capability_dirs:
+        if not cap_dir.exists():
+            continue
+        
+        capability_path = cap_dir / f"{capability_name}.md"
+        if capability_path.exists():
+            try:
+                return capability_path.read_text(encoding="utf-8")
+            except Exception as e:
+                return f"Error reading capability docs: {e}"
+    
+    # Fallback: list available capabilities if requested one doesn't exist
+    available = []
+    for cap_dir in capability_dirs:
+        if cap_dir.exists():
+            available.extend([f.stem for f in cap_dir.glob("*.md")])
+    
+    if available:
+        available_str = "\n".join(sorted(set(available)))
+        return f"Capability '{capability_name}' not found.\n\nAvailable capabilities:\n{available_str}"
+    
+    return f"Capability '{capability_name}' not found. No capability files loaded."
+
+
+def _list_available_capabilities() -> str:
+    """List all available modular capability files.
+    
+    Returns:
+        Formatted list of available capabilities with descriptions.
+    """
+    capability_dirs = [
+        constants.ROOT_DIR / "skills" / "ouroboros-capabilities" / "capabilities",
+        constants.MEMORY_DIR / "skills" / "ouroboros-capabilities" / "capabilities",
+    ]
+    
+    capabilities = {}
+    for cap_dir in capability_dirs:
+        if not cap_dir.exists():
+            continue
+        
+        for cap_file in cap_dir.glob("*.md"):
+            cap_name = cap_file.stem
+            if cap_name not in capabilities:
+                # Read first non-empty line as description
+                try:
+                    content = cap_file.read_text(encoding="utf-8")
+                    lines = [l.strip() for l in content.split("\n") if l.strip()]
+                    # Second header line is usually the purpose/description
+                    description = lines[1] if len(lines) > 1 else "No description"
+                    if description.startswith("#"):
+                        description = lines[2] if len(lines) > 2 else "No description"
+                    capabilities[cap_name] = description
+                except Exception:
+                    capabilities[cap_name] = "No description available"
+    
+    if not capabilities:
+        return "No modular capability files found."
+    
+    formatted = "\n".join([f"- {name}: {desc}" for name, desc in sorted(capabilities.items())])
+    return f"Available capabilities ({len(capabilities)} total):\n{formatted}"
 
 
 def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: List[Dict[str, Any]]) -> str:
@@ -1079,16 +1172,12 @@ def main() -> None:
         state, queue = comms.poll_telegram(state, queue)
 
         if time.time() < state.get("wake_time", 0):
-            if queue:
-                state["wake_time"] = 0
-                agent_state.save_state(state)
-            else:
-                # Heartbeat for watchdog (Finding 12: Prevent false stall detections)
-                try:
-                    Path(constants.MEMORY_DIR / "task_log_singular_stream.jsonl").touch()
-                except Exception: pass
-                time.sleep(15)
-                continue
+            # Heartbeat for watchdog (Finding 12: Prevent false stall detections)
+            try:
+                Path(constants.MEMORY_DIR / "task_log_singular_stream.jsonl").touch()
+            except Exception: pass
+            time.sleep(15)
+            continue
 
         task_desc, active_tool_specs = \
             _resolve_execution_context(state, queue)
