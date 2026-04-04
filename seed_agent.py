@@ -674,29 +674,6 @@ def fetch_webpage(args):
         return f"Failed to fetch webpage locally: {e}"
 
 @registry.tool(
-    description="Save compute resources by sleeping. Minimum 30s, Maximum 120s (2 minutes).",
-    parameters={"type": "object", "properties": {"duration_seconds": {"type": "integer", "minimum": 30, "maximum": 120}, "reason": {"type": "string"}}, "required": ["duration_seconds"]},
-    bucket="global"
-)
-def hibernate(args):
-    try:
-        duration = args.get("duration_seconds", 60)
-        reason = args.get("reason", "No reason provided.")
-
-        # Enforce hard boundaries: 30s to 120s (Finding 14)
-        duration = max(30, min(int(duration), 120))
-
-        state = agent_state.load_state()
-        state["wake_time"] = time.time() + duration
-        if "sys_temp" in state: del state["sys_temp"]
-        if "sys_think" in state: del state["sys_think"]
-        agent_state.save_state(state)
-        print(f"[System] Agent elected to hibernate for {duration}s. Reason: {reason}")
-        return f"[SYSTEM: Hibernation sequence engaged. Wake-up scheduled.] SYSTEM_SIGNAL_HIBERNATE:{duration}"
-    except Exception as e: return f"Error setting sleep cycle: {e}"
-
-
-@registry.tool(
     description="Overwrite or synthesize a memory file with new content (dense summary or refactored text).",
     parameters={
         "type": "object",
@@ -806,21 +783,31 @@ def forget_memory(args):
     return agent_state.forget_memory_entry(key)
 
 @registry.tool(
-    description="Reflect on the current state, progress, or blockers. Use this tool when you need to think, pause, or if you are stuck and need to break a cycle of failing tool calls. This satisfies the forced tool usage requirement without mutating the environment.",
+    description="Reflect on the current state, progress, or blockers. This satisfies the forced tool usage requirement. If your queue is empty and you have fully completed all P9 memory synthesis and codebase optimizations, you may set status to 'standby' to pause compute resources for 2 minutes.",
     parameters={
         "type": "object",
         "properties": {
             "reflection": {"type": "string", "description": "Internal monologue, synthesis of findings, or reasoning about the current situation."},
-            "status": {"type": "string", "description": "Optional status update (e.g., 'continuing', 'stuck', 'pivoting')."}
+            "status": {"type": "string", "description": "Optional status update (e.g., 'continuing', 'stuck', 'pivoting', 'standby')."}
         },
         "required": ["reflection"]
     },
     bucket="system_control"
 )
 def reflect(args: dict) -> str:
-    """Satisfy forced tool usage while allowing the agent to think."""
     reflection = args.get("reflection", "")
     status = args.get("status", "continuing")
+    
+    if status.lower() == "standby":
+        # Handle the sleep logic internally that hibernate used to do
+        duration = 120
+        state = agent_state.load_state()
+        state["wake_time"] = time.time() + duration
+        if "sys_temp" in state: del state["sys_temp"]
+        if "sys_think" in state: del state["sys_think"]
+        agent_state.save_state(state)
+        return f"[SYSTEM: Standby sequence engaged. Wake-up scheduled in {duration}s.] SYSTEM_SIGNAL_HIBERNATE:{duration}"
+
     return f"Reflection logged. System status: {status}. You may proceed with the next action."
 
 
