@@ -1,4 +1,0 @@
-# file: /home/alexander/Ouroboros_Project/ouroboros/.venv/bin/pytest
-# hypothesis_version: 6.151.11
-
-['-script.pyw', '.exe', '__main__']

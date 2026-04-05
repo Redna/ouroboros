@@ -1,4 +1,0 @@
-# file: /home/alexander/Ouroboros_Project/ouroboros/constants.py
-# hypothesis_version: 6.151.11
-
-[100, 1000, 2000, 20000, 40000, 86400, '.agent_state.json', '/memory', '0', '0.80', '0.85', '0.90', '1', '5.00', '50', '92000', 'DAILY_BUDGET_LIMIT', 'DEFAULT_MODEL', 'GITHUB_TOKEN', 'MEMORY_DIR', 'OUROBOROS_BREACH_PCT', 'OUROBOROS_MODEL', 'OUROBOROS_WARN_PCT', 'SEARXNG_URL', 'TELEGRAM_BOT_TOKEN', 'agent_memory.json', 'chat_history.json', 'http://gate:4000/v1', 'http://searxng:8080', 'last_crash.log', 'scheduled_tasks.json', 'task_archive.jsonl', 'task_queue.json']
