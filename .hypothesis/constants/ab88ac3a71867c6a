@@ -1,0 +1,4 @@
+# file: /home/alexander/Ouroboros_Project/ouroboros/agent_state.py
+# hypothesis_version: 6.151.11
+
+[0.0, 100, 1024, '%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%SZ', '.bak', 'Stored', 'Updated', 'a', 'cached_messages', 'cognitive_load', 'content', 'creator_id', 'current_task_id', 'entries', 'force_fold', 'global_input_tokens', 'global_output_tokens', 'is_first_call', 'last_context_size', 'last_input_tokens', 'last_output_tokens', 'last_synthesis', 'max_entries', 'offset', 'priority', 'r', 'role', 'singular_stream', 'summary', 'task_id', 'text', 'timestamp', 'tool', 'usage', 'user', 'utf-8', 'w', 'web_cache']

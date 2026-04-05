@@ -16,6 +16,10 @@ uv run mypy seed_agent.py || { echo "Type check failed! Commit aborted."; exit 1
 echo "Executing pytest..."
 uv run pytest tests/ || { echo "Tests failed! Commit aborted."; exit 1; }
 
+# 3. Constitutional Audit (The Semantic Firewall)
+echo "Executing Constitutional Auditor..."
+uv run python scripts/constitutional_auditor.py || { echo "Constitution violation detected! Commit aborted."; exit 1; }
+
 echo "All checks passed. Memory committed."
 EOF
 
