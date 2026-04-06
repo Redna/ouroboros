@@ -1,13 +1,9 @@
 import pytest
 from hypothesis import given, strategies as st
 from pathlib import Path
+import tempfile
 import constants
-import agent_state
-from capabilities.base_tools import _resolve_safe_path, patch_file
-
-# Mocking constants for testing
-# Note: In a real scenario, we would use unittest.mock to prevent actual filesystem side effects
-# if they are not controlled. For this evolution, we will assume the environment is stable.
+from capabilities.base_tools import _resolve_safe_path, patch_file, _normalize_text
 
 def test_resolve_safe_path_within_bounds():
     # Test a path that is clearly within ROOT_DIR
@@ -16,29 +12,47 @@ def test_resolve_safe_path_within_bounds():
     assert resolved == constants.ROOT_DIR / relative_path
     assert str(resolved).startswith(str(constants.ROOT_DIR))
 
-@given(st.text(max_size=50).filter(lambda s: '\x00' not in s))
+@given(st.text(alphabet="abcdefghijklmnopqrstuvwxyz", max_size=50))
 def test_resolve_safe_path_permission_error(random_string):
-    from capabilities.base_tools import _resolve_safe_path
     # Test that paths outside the allowed directories raise PermissionError
-    # We use an absolute path that is definitely outside
-    outside_path = Path(f"/tmp/{random_string}")
+    outside_path = Path(f"/tmp/{random_string}_safe_suffix")
     with pytest.raises((PermissionError, FileNotFoundError)):
         _resolve_safe_path(outside_path)
 
-def test_patch_file_success(tmp_path):
-    # Create a dummy file
-    test_file = tmp_path / "test_patch.py"
-    test_file.write_text("def hello():\n    print('world')\n")
-
-    # We need to mock _resolve_safe_path to point to our tmp_path
-    # This is tricky because it's an internal function.
-    # For the sake of this task, we will focus on testing the logic via public interfaces if possible,
-    # or by overriding the behavior in a test-specific way.
-
-    # Since we cannot easily override the internal import of constants.ROOT_DIR without monkeypatching,
-    # we will create a test that uses a valid file within the actual project structure
-    # but is safe to revert.
-    pass
+@given(
+    prefix=st.text(alphabet="abcdefghijklmnopqrstuvwxyz\n ", min_size=10, max_size=100),
+    suffix=st.text(alphabet="abcdefghijklmnopqrstuvwxyz\n ", min_size=10, max_size=100),
+    original_target=st.text(alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ", min_size=5, max_size=20),
+    replacement=st.text(alphabet="1234567890", min_size=5, max_size=20)
+)
+def test_patch_file_invariants(prefix, suffix, original_target, replacement):
+    """
+    Property: patching a file must ONLY alter the targeted block.
+    The prefix and suffix must remain mathematically identical (after normalization).
+    """
+    with tempfile.TemporaryDirectory(dir=constants.ROOT_DIR) as tmp_dir:
+        test_file = Path(tmp_dir) / "target_file.txt"
+        
+        # Construct the file state
+        original_content = f"{prefix}\n{original_target}\n{suffix}"
+        test_file.write_text(original_content, encoding="utf-8")
+        
+        # Execute the tool
+        args = {
+            "path": str(test_file),
+            "search_text": original_target,
+            "replace_text": replacement
+        }
+        result = patch_file(args)
+        
+        assert "Success" in result
+        
+        # Verify the invariant
+        new_content = test_file.read_text(encoding="utf-8")
+        expected_content = _normalize_text(f"{prefix}\n{replacement}\n{suffix}")
+        
+        # Invariant: the final file must match the normalized expected content
+        assert new_content == expected_content
 
 if __name__ == "__main__":
     pytest.main([__file__])
