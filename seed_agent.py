@@ -29,18 +29,12 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     hud_content = f"[HUD | Context: {context_pct}% | Turns: {current_turns} | Queue: {len(queue)}] | {task_desc}"
 
-    # Piggyback creator messages and system notices if any (Finding 18, 20)
-    pending_msgs = agent_state.get_pending_creator_messages()
+    # Piggyback system notices if any (Finding 18, 20)
     system_notices = agent_state.get_pending_system_notices()
 
     interrupt_block = ""
-    if pending_msgs or system_notices:
-        msgs_str = ""
-        if pending_msgs:
-            msgs_str += "\n[CREATOR MESSAGES]\n" + "\n".join([f"- {m}" for m in pending_msgs])
-        if system_notices:
-            msgs_str += "\n[SYSTEM NOTICES]\n" + "\n".join([f"- {m}" for m in system_notices])
-
+    if system_notices:
+        msgs_str = "\n[SYSTEM NOTICES]\n" + "\n".join([f"- {m}" for m in system_notices])
         interrupt_block = f"\n\n<system_interrupt>\n{msgs_str.strip()}\nAddress these immediately in your next response.\n</system_interrupt>"
 
     return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>{interrupt_block}"
@@ -162,12 +156,8 @@ def _build_api_messages(
         telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
         if shedded:
             last_msg = shedded[-1]
-            if last_msg.get("role") in ["user", "tool"]:
-                # Normal case: Append to the last user/tool response
-                last_msg["content"] = str(last_msg.get("content", "")) + f"\n\n{telemetry}"
-            else:
-                # Fallback: If last msg is assistant, we must append a new user msg for the HUD
-                shedded.append({"role": "user", "content": telemetry})
+            # Normal case: Append to the last user/tool response (or assistant if it didn't get popped)
+            last_msg["content"] = str(last_msg.get("content", "")) + f"\n\n{telemetry}"
         else:
             # Genesis Case: No history yet
             shedded.append({"role": "user", "content": telemetry})
@@ -345,7 +335,6 @@ def main() -> None:
                 context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue)
 
                 # V5: Clear piggybacked metadata after they've been injected into HUD and seen
-                agent_state.clear_pending_creator_messages()
                 agent_state.clear_pending_system_notices()
 
                 if context_switch or hibernating:
@@ -355,7 +344,6 @@ def main() -> None:
                 agent_state.append_stream_message(message.model_dump(exclude_unset=True))
 
                 # V5: Clear piggybacked metadata after they've been injected into HUD and seen
-                agent_state.clear_pending_creator_messages()
                 agent_state.clear_pending_system_notices()
 
                 time.sleep(0.5)

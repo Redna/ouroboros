@@ -18,15 +18,12 @@ def mock_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("constants.MEMORY_MAX_ENTRIES", 50)
     monkeypatch.setattr("constants.SCHEDULED_TASKS_PATH", memory_dir / "scheduled_tasks.json")
     monkeypatch.setattr("constants.LEDGER_FILE", memory_dir / "financial_ledger.json")
-    monkeypatch.setattr("constants.PENDING_CREATOR_MSG_PATH", memory_dir / "pending_creator_messages.json")
     monkeypatch.setattr("constants.PENDING_SYSTEM_NOTICES_PATH", memory_dir / "pending_system_notices.json")
-    
+
     # Initialize some required files
     (memory_dir / ".agent_state.json").write_text(json.dumps({"offset": 0, "cognitive_load": 0}))
     (memory_dir / "task_queue.json").write_text("[]")
     (memory_dir / "agent_memory.json").write_text(json.dumps({"max_entries": 50, "last_synthesis": "", "entries": {}}))
-    (memory_dir / "pending_creator_messages.json").write_text("[]")
-    (memory_dir / "pending_system_notices.json").write_text("[]")
-    
+    (memory_dir / "pending_system_notices.json").write_text("[]")    
     return memory_dir
 

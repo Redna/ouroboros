@@ -64,9 +64,7 @@ def queue_creator_message(new_message: str, update_id: int):
     """
     Stores a creator message in the pending queue for piggybacking.
     """
-    pending = agent_state.get_pending_creator_messages()
-    pending.append(new_message)
-    constants.PENDING_CREATOR_MSG_PATH.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+    agent_state.queue_system_notice(f"[CREATOR MESSAGE]\n- {new_message}")
 
 def poll_telegram(s: Dict[str, Any], q: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     if not constants.TELEGRAM_BOT_TOKEN:
