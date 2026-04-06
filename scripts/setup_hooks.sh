@@ -1,4 +1,11 @@
 #!/bin/bash
+
+# Prevent accidental installation on the host machine
+if [ ! -f /.dockerenv ]; then
+    echo "Warning: Not running in Docker. Skipping hook installation to protect host environment."
+    exit 0
+fi
+
 HOOK_FILE=".git/hooks/pre-commit"
 
 cat > "$HOOK_FILE" << 'EOF'

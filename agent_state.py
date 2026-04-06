@@ -10,18 +10,18 @@ def safe_load_json(file_path: Path, default_structure: Any) -> Any:
     """Defensively loads JSON, falling back to defaults if corrupted or structurally incompatible."""
     if not file_path.exists():
         return default_structure
-        
+
     try:
         data = json.loads(file_path.read_text(encoding="utf-8"))
-        
+
         # Type enforcement: If we expect a dict but got a list (schema change), reject it
         if isinstance(default_structure, dict) and not isinstance(data, dict):
             raise ValueError("Incompatible schema: Expected dict")
         if isinstance(default_structure, list) and not isinstance(data, list):
             raise ValueError("Incompatible schema: Expected list")
-            
+
         return data
-        
+
     except (json.JSONDecodeError, ValueError) as e:
         print(f"[System] Warning: Memory structure incompatible or corrupted ({e}). Reinitializing {file_path.name}.")
         # Backup the future/corrupted memory before overwriting
@@ -30,7 +30,7 @@ def safe_load_json(file_path: Path, default_structure: Any) -> Any:
             shutil.copy(file_path, backup_path)
         except Exception:
             pass # Failsafe if disk is full
-        
+
         return default_structure
 
 _session: Dict[str, Any] = {
@@ -43,7 +43,7 @@ def initialize_memory() -> None:
     """Ensure essential memory directory and base files exist."""
     constants.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     (constants.MEMORY_DIR / "web_cache").mkdir(parents=True, exist_ok=True)
-    
+
     defaults = {
         constants.STATE_PATH: {"offset": 0, "creator_id": None, "cognitive_load": 0},
         constants.CHAT_HISTORY_PATH: [],
@@ -51,12 +51,12 @@ def initialize_memory() -> None:
         constants.SCHEDULED_TASKS_PATH: [],
         constants.PENDING_SYSTEM_NOTICES_PATH: []
     }
-    
+
     for path, default_val in defaults.items():
         # Defensive initialization: load and re-save to ensure schema/integrity
         data = safe_load_json(path, default_val)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            
+
     # Initialize structured memory store
     default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
     memory_store_data = safe_load_json(constants.MEMORY_STORE_PATH, default_memory)
@@ -65,7 +65,7 @@ def initialize_memory() -> None:
 def load_state() -> Dict[str, Any]:
     default_state = {"offset": 0, "creator_id": None, "cognitive_load": 0}
     state = safe_load_json(constants.STATE_PATH, default_state)
-    
+
     # Ensure critical keys exist (Schema Normalization)
     for key, value in default_state.items():
         if key not in state:
