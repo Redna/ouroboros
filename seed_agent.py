@@ -157,14 +157,21 @@ def _build_api_messages(
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
 
-    # Volatile HUD Injection: Append telemetry dynamically to the LAST available message
-    if enrich and shedded:
+    # Volatile HUD Injection: Ensure telemetry is ALWAYS present in the payload
+    if enrich:
         telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
-        last_msg = shedded[-1]
+        if shedded:
+            last_msg = shedded[-1]
+            if last_msg.get("role") in ["user", "tool"]:
+                # Normal case: Append to the last user/tool response
+                last_msg["content"] = str(last_msg.get("content", "")) + f"\n\n{telemetry}"
+            else:
+                # Fallback: If last msg is assistant, we must append a new user msg for the HUD
+                shedded.append({"role": "user", "content": telemetry})
+        else:
+            # Genesis Case: No history yet
+            shedded.append({"role": "user", "content": telemetry})
 
-        # Ensure we don't break JSON parsing if the last message is a tool call
-        if last_msg.get("role") in ["user", "tool"]:
-            last_msg["content"] = str(last_msg.get("content", "")) + f"\n\n{telemetry}"
 
     api_messages += shedded
 
@@ -209,7 +216,7 @@ def _route_tool_calls(
     # ATOMIC FLUSH: Write to the task log BEFORE any exit signals are processed
     # P1 Continuity: Ensure the log ALWAYS starts with a user message (Genesis Fix)
     if agent_state.is_stream_empty():
-        agent_state.append_stream_message({"role": "user", "content": "Begin Genesis execution."})
+        agent_state.append_stream_message({"role": "user", "content": "."})
 
     agent_state.append_stream_message(message.model_dump(exclude_unset=True))
     for response_msg in tool_responses:
