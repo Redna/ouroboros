@@ -2,7 +2,7 @@ import os
 import json
 import re
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from openai import OpenAI
 import constants

@@ -7,28 +7,6 @@ import requests
 import constants
 import agent_state
 
-def _escape_markdown(text: str) -> str:
-    """Escapes characters for Telegram MarkdownV2."""
-    # List of characters that must be escaped in MarkdownV2
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-
-def send_telegram_direct(chat_id: int, text: str):
-    """Sends a Telegram message directly from the runtime (HAL)."""
-    if not constants.TELEGRAM_BOT_TOKEN or not chat_id:
-        return
-    try:
-        # Use simple escaping if the agent sends complex formatting
-        # If it fails, we fall back to plain text
-        requests.post(
-            f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=10
-        )
-        agent_state.append_chat_history("Ouroboros", text)
-    except Exception as e:
-        print(f"[HAL Error] Failed to send read receipt: {e}")
-
 def send_telegram_reaction(chat_id: int, message_id: int, emoji: str):
     """Sends a reaction to a specific message."""
     if not constants.TELEGRAM_BOT_TOKEN or not chat_id or not message_id:
@@ -46,19 +24,6 @@ def send_telegram_reaction(chat_id: int, message_id: int, emoji: str):
         )
     except Exception as e:
         print(f"[HAL Error] Failed to send reaction: {e}")
-
-def send_telegram_action(chat_id: int, action: str = "typing"):
-    """Sends a chat action (e.g. typing)."""
-    if not constants.TELEGRAM_BOT_TOKEN or not chat_id:
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{constants.TELEGRAM_BOT_TOKEN}/sendChatAction",
-            json={"chat_id": chat_id, "action": action},
-            timeout=10
-        )
-    except Exception as e:
-        print(f"[HAL Error] Failed to send chat action: {e}")
 
 def queue_creator_message(new_message: str, update_id: int):
     """

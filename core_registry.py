@@ -17,9 +17,6 @@ class ToolRegistry:
             return func
         return decorator
 
-    def get_names(self, allowed_buckets=None):
-        return [n for n, t in self.tools.items() if allowed_buckets is None or t["bucket"] in allowed_buckets]
-
     def get_specs(self, allowed_buckets=None):
         return [
             {"type": "function", "function": {"name": n, "description": t["desc"], "parameters": t["params"]}}
@@ -27,7 +24,7 @@ class ToolRegistry:
             if allowed_buckets is None or t["bucket"] in allowed_buckets
         ]
 
-    def execute(self, name, args, call_id=None):
+    def execute(self, name, args):
         if name not in self.tools:
             return f"Error: Tool '{name}' not found."
         try:

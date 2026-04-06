@@ -14,17 +14,13 @@ MEMORY_DIR = Path(os.environ.get("MEMORY_DIR", "/memory"))
 
 # --- Named Constants (P5: No magic numbers) ---
 TOOL_OUTPUT_TRIM_CHARS = 2000
-SYSTEM_METRICS_TRIM_CHARS = 1000
 TOOL_ARG_TRIM_CHARS = 1000
 READ_FILE_MAX_CHARS = 40000
 BASH_OUTPUT_MAX_CHARS = 20000
-TASK_LOG_WINDOW_SIZE = 40
 RETAIN_FULL_LAST_N = 3
-MAX_HIBERNATE_SECONDS = 86400
 MIN_REWRITE_CONTENT_LEN = 50
 
 # --- Context Safety Thresholds (env-tunable, P5) ---
-CONTEXT_WARN_THRESHOLD      = float(os.environ.get("OUROBOROS_WARN_PCT",      "0.80"))
 CONTEXT_LAST_GASP_THRESHOLD = float(os.environ.get("OUROBOROS_LAST_GASP_PCT", "0.85"))
 CONTEXT_BREACH_THRESHOLD    = float(os.environ.get("OUROBOROS_BREACH_PCT",    "0.90"))
 
@@ -38,5 +34,3 @@ TASK_ARCHIVE_PATH = MEMORY_DIR / "task_archive.jsonl"
 CHAT_HISTORY_PATH = MEMORY_DIR / "chat_history.json"
 PENDING_SYSTEM_NOTICES_PATH = MEMORY_DIR / "pending_system_notices.json"
 CRASH_LOG_PATH = MEMORY_DIR / "last_crash.log"
-LEDGER_FILE = MEMORY_DIR / "financial_ledger.json"
-DAILY_BUDGET_LIMIT = float(os.getenv("DAILY_BUDGET_LIMIT", "5.00"))

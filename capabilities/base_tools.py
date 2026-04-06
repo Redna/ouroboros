@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import traceback
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Query, QueryCursor
 from openai import OpenAI
@@ -758,7 +758,6 @@ def forget_memory(args):
     bucket="system_control"
 )
 def reflect(args: dict) -> str:
-    reflection = args.get("reflection", "")
     status = args.get("status", "continuing")
     
     if status.lower() == "standby":

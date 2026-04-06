@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import traceback
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 import constants
 import agent_state
@@ -189,7 +189,7 @@ def _route_tool_calls(
 
         try:
             args   = json.loads(raw_args)
-            result = registry.execute(name, args, call_id=safe_call_id)
+            result = registry.execute(name, args)
         except json.JSONDecodeError:
             result = "SYSTEM ERROR: Invalid JSON arguments."
 
@@ -300,7 +300,6 @@ def main() -> None:
             sys_temp = float(sys_temp_override)
 
         try:
-            current_time = time.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
             # 1. Build messages for the LLM API call (Full HUD)
             api_messages = _build_api_messages(
                 task_desc, active_tool_specs,

@@ -2,7 +2,7 @@ import json
 import time
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 import constants
 
@@ -61,14 +61,6 @@ def initialize_memory() -> None:
     default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
     memory_store_data = safe_load_json(constants.MEMORY_STORE_PATH, default_memory)
     constants.MEMORY_STORE_PATH.write_text(json.dumps(memory_store_data, indent=2), encoding="utf-8")
-
-def get_current_spend() -> float:
-    data = safe_load_json(constants.LEDGER_FILE, {})
-    try:
-        today = time.strftime("%Y-%m-%d")
-        return float(data.get(today, 0.0))
-    except Exception:
-        return 0.0
 
 def load_state() -> Dict[str, Any]:
     default_state = {"offset": 0, "creator_id": None, "cognitive_load": 0}
@@ -160,38 +152,6 @@ def append_stream_message(message_dict: Dict[str, Any]) -> None:
             _session["cached_messages"] = []
         _session["cached_messages"].append(message_dict)
 
-def amend_stream_message(suffix: str) -> None:
-    """Appends a string to the last tool or user message in the log without creating a new message."""
-    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
-    if not log_path.exists(): return
-
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            messages = [json.loads(line) for line in f if line.strip()]
-
-        for msg in reversed(messages):
-            if msg.get("role") in ["tool", "user"]:
-                content = str(msg.get("content", ""))
-                # WP: De-duplicate suffix to prevent infinite loops (Finding 11)
-                if suffix in content:
-                    print(f"[System] Warning already present. Skipping amend.")
-                    return
-
-                msg["content"] = content + "\n\n" + suffix
-                break
-
-        with open(log_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg) + "\n")
-
-        if _session.get("current_task_id") == "singular_stream":
-            _session["cached_messages"] = messages
-
-    except Exception as e:
-        print(f"[System] Error amending last tool message: {e}")
-
-
-
 def load_chat_history() -> List[Dict[str, Any]]:
     return safe_load_json(constants.CHAT_HISTORY_PATH, [])
 
@@ -211,11 +171,6 @@ def _load_memory_store() -> Dict[str, Any]:
 def _save_memory_store(store: Dict[str, Any]) -> None:
     """Writes the full memory store to disk."""
     constants.MEMORY_STORE_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
-
-def load_memory_index() -> List[str]:
-    """Returns the list of memory keys for context injection."""
-    store = _load_memory_store()
-    return list(store.get("entries", {}).keys())
 
 def load_memory_entry(key: str) -> str:
     """Returns the value for a memory key. Tries exact match, then substring."""

@@ -26,3 +26,8 @@ cache_dir = "/tmp/.pytest_cache"
 
 [tool.mypy]
 cache_dir = "/tmp/.mypy_cache"
+
+[dependency-groups]
+dev = [
+    "vulture>=2.16",
+]

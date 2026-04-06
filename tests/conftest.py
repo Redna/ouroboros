@@ -17,7 +17,6 @@ def mock_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("constants.TASK_ARCHIVE_PATH", memory_dir / "task_archive.jsonl")
     monkeypatch.setattr("constants.MEMORY_MAX_ENTRIES", 50)
     monkeypatch.setattr("constants.SCHEDULED_TASKS_PATH", memory_dir / "scheduled_tasks.json")
-    monkeypatch.setattr("constants.LEDGER_FILE", memory_dir / "financial_ledger.json")
     monkeypatch.setattr("constants.PENDING_SYSTEM_NOTICES_PATH", memory_dir / "pending_system_notices.json")
 
     # Initialize some required files

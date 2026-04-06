@@ -163,7 +163,6 @@ def test_context_thresholds_in_constants():
     import constants
     assert isinstance(constants.CONTEXT_BREACH_THRESHOLD,    float), "CONTEXT_BREACH_THRESHOLD missing (WP10)"
     assert isinstance(constants.CONTEXT_LAST_GASP_THRESHOLD, float), "CONTEXT_LAST_GASP_THRESHOLD missing (WP10)"
-    assert isinstance(constants.CONTEXT_WARN_THRESHOLD,      float), "CONTEXT_WARN_THRESHOLD missing (WP10)"
 
 
 def test_load_stream_messages_no_args():
@@ -179,12 +178,6 @@ def test_append_stream_message_signature():
     params = list(inspect.signature(append_stream_message).parameters.keys())
     assert params == ["message_dict"], f"append_stream_message must take ['message_dict'], got: {params}"
 
-
-def test_amend_stream_message_signature():
-    """amend_stream_message must take exactly one argument (suffix)."""
-    from agent_state import amend_stream_message
-    params = list(inspect.signature(amend_stream_message).parameters.keys())
-    assert params == ["suffix"], f"amend_stream_message must take ['suffix'], got: {params}"
 
 
 # ---------------------------------------------------------------------------
