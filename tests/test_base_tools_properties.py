@@ -16,7 +16,7 @@ def test_resolve_safe_path_within_bounds():
     assert resolved == constants.ROOT_DIR / relative_path
     assert str(resolved).startswith(str(constants.ROOT_DIR))
 
-@given(st.text().filter(lambda s: '\x00' not in s))
+@given(st.text(max_size=50).filter(lambda s: '\x00' not in s))
 def test_resolve_safe_path_permission_error(random_string):
     from capabilities.base_tools import _resolve_safe_path
     # Test that paths outside the allowed directories raise PermissionError

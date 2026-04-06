@@ -1,6 +1,6 @@
 [project]
 name = "ouroboros"
-version = "4.1.0"
+version = "5.1.0"
 description = "Ouroboros (Self-Evolving AI)"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -26,4 +26,3 @@ cache_dir = "/tmp/.pytest_cache"
 
 [tool.mypy]
 cache_dir = "/tmp/.mypy_cache"
-
