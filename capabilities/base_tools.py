@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import traceback
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Query, QueryCursor
 from openai import OpenAI
@@ -151,7 +151,7 @@ _PATCH_FAILURE_STREAK = 0
 )
 def patch_file(args):
     global _PATCH_FAILURE_STREAK
-    
+
     if _PATCH_FAILURE_STREAK >= 3:
         _PATCH_FAILURE_STREAK = 0 # Reset for the next task
         return "[SYSTEM OVERRIDE]: patch_file has failed 3 consecutive times due to strict matching errors. Stop using patch_file for this task. You MUST use replace_symbol for smaller changes and write_file for bigger changes."
@@ -218,12 +218,12 @@ def patch_file(args):
 @registry.tool(
     description="AST-aware surgical edit. Replaces an entire function or class by its name. Use this instead of patch_file for Python code.",
     parameters={
-        "type": "object", 
+        "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the Python file."}, 
-            "symbol_name": {"type": "string", "description": "The exact name of the function or class to replace (e.g., 'bash_command')."}, 
+            "path": {"type": "string", "description": "Path to the Python file."},
+            "symbol_name": {"type": "string", "description": "The exact name of the function or class to replace (e.g., 'bash_command')."},
             "new_code": {"type": "string", "description": "The complete new code for the function or class, including its def/class declaration."}
-        }, 
+        },
         "required": ["path", "symbol_name", "new_code"]
     },
     bucket="filesystem"
@@ -236,7 +236,7 @@ def replace_symbol(args):
 
         symbol_name = args.get("symbol_name", "")
         new_code = args.get("new_code", "")
-        
+
         # Verify the new code is valid Python before attempting anything
         try:
             _validate_python_syntax(new_code)
@@ -245,7 +245,7 @@ def replace_symbol(args):
 
         source_bytes = file_path.read_bytes()
         tree = parser.parse(source_bytes)
-        
+
         # Query for both functions and classes matching the name
         query_str = f"""
             (function_definition name: (identifier) @name (#eq? @name "{symbol_name}")) @target
@@ -270,10 +270,10 @@ def replace_symbol(args):
         # Perform the byte-level splice
         start = target_node.start_byte
         end = target_node.end_byte
-        
+
         new_source_bytes = source_bytes[:start] + new_code.encode('utf-8') + source_bytes[end:]
         new_source_str = new_source_bytes.decode('utf-8')
-        
+
         # Final validation of the entire stitched file
         try:
             _validate_python_syntax(new_source_str)
@@ -474,7 +474,7 @@ def _run_git_command(args: List[str]) -> Tuple[int, str, str]:
             ["git"] + args,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=300
         )
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
@@ -829,6 +829,32 @@ def forget_memory(args):
     return agent_state.forget_memory_entry(key)
 
 @registry.tool(
+    description="Show staged git diff before committing. Returns the diff of files staged for commit, truncated to 4000 characters if too long.",
+    parameters={"type": "object", "properties": {}},
+    bucket="git_operations"
+)
+def git_diff(args):
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--cached"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        output = result.stdout
+        if result.stderr:
+            output = f"STDERR: {result.stderr}\n\n{output}"
+        
+        if len(output) > 4000:
+            output = output[:4000] + "\n\n[DIFF TRUNCATED - exceeds 4000 chars]"
+        
+        return output if output.strip() else "No staged changes to show."
+    except subprocess.TimeoutExpired:
+        return "Error: git diff command timed out."
+    except Exception as e:
+        return f"Error running git diff: {e}"
+
+@registry.tool(
     description="Reflect on the current state. CRITICAL: Do NOT use this tool to simply say 'I am waiting' or to acknowledge an empty queue. If your queue is empty, you MUST use `push_task` to set a new proactive goal, `generate_repo_map` to explore the codebase, or `store_memory` to synthesize insights. Only use `reflect` with status='standby' if you have exhaustively completed all optimizations and memory management.",
     parameters={
         "type": "object",
@@ -842,7 +868,7 @@ def forget_memory(args):
 )
 def reflect(args: dict) -> str:
     status = args.get("status", "continuing")
-    
+
     if status.lower() == "standby":
         # Handle the sleep logic internally that hibernate used to do
         duration = 120
@@ -863,6 +889,3 @@ def reflect(args: dict) -> str:
 )
 def request_restart(args):
     return "SYSTEM_SIGNAL_RESTART"
-
-
-

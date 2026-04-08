@@ -228,7 +228,7 @@ def _determine_metacognition_params(state: Dict[str, Any], task_desc: str) -> Tu
         error_streak = state.get("error_streak", 0)
         if error_streak >= 6:
             print(f"\033[93m[Metacognition] Critical error streak ({error_streak}). Triggering Creative Escape (Temp 0.9).\033[0m")
-            sys_temp = 0.9
+            sys_temp, sys_think = 0.9, True
             # Jolt the agent exactly once when it hits the threshold
             if error_streak == 6:
                 agent_state.queue_system_notice(
@@ -237,9 +237,9 @@ def _determine_metacognition_params(state: Dict[str, Any], task_desc: str) -> Tu
                 )
         elif error_streak >= 3:
             print(f"[Metacognition] High error streak ({error_streak}). Auto-tuning temperature to 0.3 for precision.")
-            sys_temp = 0.3
+            sys_temp, sys_think = 0.3, True
         elif any(keyword in task_desc.lower() for keyword in ["code", "script", "python", "bug", "refactor"]):
-            sys_temp = 0.6
+            sys_temp, sys_think = 0.6, True
         else:
             sys_temp = 0.8
     else:
@@ -296,30 +296,8 @@ def main() -> None:
             agent_state.save_state(state)
 
 
-        sys_temp_override = state.get("sys_temp")
+        sys_temp, sys_think = _determine_metacognition_params(state, task_desc)
         sys_top_p = state.get("sys_top_p", 0.95)
-        sys_think = state.get("sys_think", True)
-
-        if sys_temp_override is None:
-            error_streak = state.get("error_streak", 0)
-            if error_streak >= 6:
-                print(f"\033[93m[Metacognition] Critical error streak ({error_streak}). Triggering Creative Escape (Temp 0.9).\033[0m")
-                sys_temp, sys_think = 0.9, True
-                # Jolt the agent exactly once when it hits the threshold
-                if error_streak == 6:
-                    agent_state.queue_system_notice(
-                        "[SYSTEM OVERRIDE]: You are in a Cognitive Death Spiral. Your previous approaches have repeatedly failed. "
-                        "Do NOT try the exact same code patch again. Step back, read the file again, search for documentation, or drastically pivot your strategy."
-                    )
-            elif error_streak >= 3:
-                print(f"[Metacognition] High error streak ({error_streak}). Auto-tuning temperature to 0.3 for precision.")
-                sys_temp, sys_think = 0.3, True
-            elif any(keyword in task_desc.lower() for keyword in ["code", "script", "python", "bug", "refactor"]):
-                sys_temp, sys_think = 0.6, True
-            else:
-                sys_temp = 0.8
-        else:
-            sys_temp = float(sys_temp_override)
 
         try:
             # P9: Dual-Layer HUD strategy. 
