@@ -2,7 +2,7 @@ import json
 import time
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 import constants
 
@@ -10,18 +10,18 @@ def safe_load_json(file_path: Path, default_structure: Any) -> Any:
     """Defensively loads JSON, falling back to defaults if corrupted or structurally incompatible."""
     if not file_path.exists():
         return default_structure
-        
+
     try:
         data = json.loads(file_path.read_text(encoding="utf-8"))
-        
+
         # Type enforcement: If we expect a dict but got a list (schema change), reject it
         if isinstance(default_structure, dict) and not isinstance(data, dict):
             raise ValueError("Incompatible schema: Expected dict")
         if isinstance(default_structure, list) and not isinstance(data, list):
             raise ValueError("Incompatible schema: Expected list")
-            
+
         return data
-        
+
     except (json.JSONDecodeError, ValueError) as e:
         print(f"[System] Warning: Memory structure incompatible or corrupted ({e}). Reinitializing {file_path.name}.")
         # Backup the future/corrupted memory before overwriting
@@ -30,12 +30,10 @@ def safe_load_json(file_path: Path, default_structure: Any) -> Any:
             shutil.copy(file_path, backup_path)
         except Exception:
             pass # Failsafe if disk is full
-        
+
         return default_structure
 
 _session: Dict[str, Any] = {
-    "tool_history": [], 
-    "intent_history": [], 
     "is_first_call": True,
     "current_task_id": None,
     "cached_messages": []
@@ -45,37 +43,29 @@ def initialize_memory() -> None:
     """Ensure essential memory directory and base files exist."""
     constants.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     (constants.MEMORY_DIR / "web_cache").mkdir(parents=True, exist_ok=True)
-    
+
     defaults = {
         constants.STATE_PATH: {"offset": 0, "creator_id": None, "cognitive_load": 0},
         constants.CHAT_HISTORY_PATH: [],
         constants.TASK_QUEUE_PATH: [],
-        constants.WORKING_STATE_PATH: {},
-        constants.SCHEDULED_TASKS_PATH: []
+        constants.SCHEDULED_TASKS_PATH: [],
+        constants.PENDING_SYSTEM_NOTICES_PATH: []
     }
-    
+
     for path, default_val in defaults.items():
         # Defensive initialization: load and re-save to ensure schema/integrity
         data = safe_load_json(path, default_val)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            
+
     # Initialize structured memory store
     default_memory = {"max_entries": constants.MEMORY_MAX_ENTRIES, "last_synthesis": "", "entries": {}}
     memory_store_data = safe_load_json(constants.MEMORY_STORE_PATH, default_memory)
     constants.MEMORY_STORE_PATH.write_text(json.dumps(memory_store_data, indent=2), encoding="utf-8")
 
-def get_current_spend() -> float:
-    data = safe_load_json(constants.LEDGER_FILE, {})
-    try:
-        today = time.strftime("%Y-%m-%d")
-        return float(data.get(today, 0.0))
-    except Exception:
-        return 0.0
-
 def load_state() -> Dict[str, Any]:
     default_state = {"offset": 0, "creator_id": None, "cognitive_load": 0}
     state = safe_load_json(constants.STATE_PATH, default_state)
-    
+
     # Ensure critical keys exist (Schema Normalization)
     for key, value in default_state.items():
         if key not in state:
@@ -93,116 +83,74 @@ def load_task_queue() -> List[Dict[str, Any]]:
     except Exception:
         return q
 
-def load_task_messages(task_id: str, description: str) -> List[Dict[str, Any]]:
+def load_stream_messages() -> List[Dict[str, Any]]:
     """Loads message history, utilizing an in-memory cache for high-frequency turns."""
-    if not task_id: return []
-    
     # Return cache if we are continuing the same task in the same process
-    if _session.get("current_task_id") == task_id and _session.get("cached_messages"):
+    if _session.get("current_task_id") == "singular_stream" and _session.get("cached_messages"):
         return _session["cached_messages"]
-        
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    
-    # OOM Protection: If log is > 50MB, force emergency compaction before loading
+
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+
+    # OOM Protection: If log is > 50MB, do a physical emergency truncation before loading
     if log_path.exists() and log_path.stat().st_size > 50 * 1024 * 1024:
-        print(f"[System] CRITICAL: Log {task_id} too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Compacting...")
-        emergency_compact_log(task_id)
+        print(f"[System] CRITICAL: Log too large ({log_path.stat().st_size / 1024 / 1024:.1f}MB). Emergency truncating...")
+        _emergency_truncate_log()
 
     raw_messages = []
     if log_path.exists():
         with open(log_path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    try: 
+                    try:
                         raw_messages.append(json.loads(line.strip()))
-                    except json.JSONDecodeError: 
+                    except json.JSONDecodeError:
                         continue
 
     if not raw_messages:
-        msg = {"role": "user", "content": f"Begin execution of task: {description}"}
-        append_task_message(task_id, msg) # This will also update the cache
-        return [msg]
-    
+        return []
+
     # Warm up the cache
-    _session["current_task_id"] = task_id
+    _session["current_task_id"] = "singular_stream"
     _session["cached_messages"] = raw_messages
-    
+
     return raw_messages
 
-def append_task_message(task_id: str, message_dict: Dict[str, Any]) -> None:
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    
+def is_stream_empty() -> bool:
+    """Checks if the singular stream log is empty or non-existent."""
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+    if not log_path.exists(): return True
+    return log_path.stat().st_size == 0
+
+def get_pending_system_notices() -> List[str]:
+    """Retrieves list of system notices (like Autonomic Reflex) that haven't been shown yet."""
+    return safe_load_json(constants.PENDING_SYSTEM_NOTICES_PATH, [])
+
+def clear_pending_system_notices() -> None:
+    """Clears the pending system notices file."""
+    constants.PENDING_SYSTEM_NOTICES_PATH.write_text(json.dumps([], indent=2), encoding="utf-8")
+
+def queue_system_notice(notice: str) -> None:
+    """Queues a system notice for piggybacking into the HUD."""
+    notices = get_pending_system_notices()
+    notices.append(notice)
+    constants.PENDING_SYSTEM_NOTICES_PATH.write_text(json.dumps(notices, indent=2), encoding="utf-8")
+
+def append_stream_message(message_dict: Dict[str, Any]) -> None:
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
+
     # Safety: Refuse to append if file is already dangerously large
     if log_path.exists() and log_path.stat().st_size > 100 * 1024 * 1024:
-        print(f"[System] ERROR: Refusing to append to {task_id}. File size exceeds 100MB limit.")
+        print(f"[System] ERROR: Refusing to append. File size exceeds 100MB limit.")
         return
 
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_dict) + "\n")
-        
+
     # Keep cache synchronized
-    if _session.get("current_task_id") == task_id:
+    if _session.get("current_task_id") == "singular_stream":
         if "cached_messages" not in _session or _session["cached_messages"] is None:
             _session["cached_messages"] = []
         _session["cached_messages"].append(message_dict)
-
-def amend_last_tool_message(task_id: str, suffix: str) -> None:
-    """Appends a string to the last tool or user message in the log without creating a new message."""
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    if not log_path.exists(): return
-    
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            messages = [json.loads(line) for line in f if line.strip()]
-            
-        for msg in reversed(messages):
-            if msg.get("role") in ["tool", "user"]:
-                msg["content"] = str(msg.get("content", "")) + "\n\n" + suffix
-                break
-                
-        with open(log_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg) + "\n")
-                
-        if _session.get("current_task_id") == task_id:
-            _session["cached_messages"] = messages
-            
-    except Exception as e:
-        print(f"[System] Error amending last tool message for {task_id}: {e}")
-
-def rollback_task_log(task_id: str) -> None:
-    """Reverts the task log to undo the last action that caused a context breach."""
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
-    if not log_path.exists(): return
-    
-    try:
-        with open(log_path, "r", encoding="utf-8") as f:
-            messages = [json.loads(line) for line in f if line.strip()]
-            
-        # We want to remove the most recent turn (assistant + tool responses)
-        if len(messages) > 1:
-            # Step 1: Remove any 'tool' messages at the end
-            while len(messages) > 1 and messages[-1].get("role") == "tool":
-                messages.pop()
-                
-            # Step 2: Remove the 'assistant' message that caused the tool calls
-            if len(messages) > 1 and messages[-1].get("role") == "assistant":
-                messages.pop()
-
-        with open(log_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg) + "\n")
-                
-        # SYNC CACHE
-        if _session.get("current_task_id") == task_id:
-            _session["cached_messages"] = messages
-            
-        print(f"[System] Rollback executed for {task_id}. Reverted 1 turn.")
-    except Exception as e:
-        print(f"[System] Error rolling back {task_id}: {e}")
 
 def load_chat_history() -> List[Dict[str, Any]]:
     return safe_load_json(constants.CHAT_HISTORY_PATH, [])
@@ -223,11 +171,6 @@ def _load_memory_store() -> Dict[str, Any]:
 def _save_memory_store(store: Dict[str, Any]) -> None:
     """Writes the full memory store to disk."""
     constants.MEMORY_STORE_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
-
-def load_memory_index() -> List[str]:
-    """Returns the list of memory keys for context injection."""
-    store = _load_memory_store()
-    return list(store.get("entries", {}).keys())
 
 def load_memory_entry(key: str) -> str:
     """Returns the value for a memory key. Tries exact match, then substring."""
@@ -276,142 +219,108 @@ def append_task_archive(task_id: str, summary: str) -> None:
     with open(constants.TASK_ARCHIVE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
-def emergency_compact_log(task_id: str, max_lines: int = 150) -> None:
+def _emergency_truncate_log() -> None:
     """
-    LAST RESORT safety net. Only triggers if the agent ignores warnings and
-    is about to crash the context window.
+    Physical OOM failsafe ONLY. Triggered when the log file exceeds 50 MB on disk.
+    Performs hard Head+Tail amputation to prevent the process from running out of memory.
+    This is distinct from autonomic_fold — it is a last-resort disk-level operation,
+    not a cognitive-level tool restriction.
     """
-    if not task_id: return
-    log_path = constants.MEMORY_DIR / f"task_log_{task_id}.jsonl"
+    log_path = constants.MEMORY_DIR / "task_log_singular_stream.jsonl"
     if not log_path.exists(): return
 
-    with open(log_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    if len(lines) <= max_lines: return
-
     try:
-        messages = [json.loads(line) for line in lines if line.strip()]
+        with open(log_path, "r", encoding="utf-8") as f:
+            messages = [json.loads(line) for line in f if line.strip()]
 
-        # Preserve the task start (usually message 0)
-        first_msg = messages[0]
+        if len(messages) <= 4: return
 
-        # Safely find a cutoff for the most recent messages (e.g., last 20)
-        cutoff = len(messages) - 20
-        while cutoff < len(messages) and messages[cutoff].get("role") != "user":
-            cutoff += 1  # Ensure we cut at a user message to avoid breaking tool chains
+        head = messages[:2]
+        tail_size = min(20, len(messages) - 2)
+        tail = messages[-tail_size:] if tail_size > 0 else []
+        compacted = head + tail
 
-        if cutoff >= len(messages):
-            cutoff = len(messages) - 10  # Fallback
-
-        emergency_notice = {
-            "role": "user",
-            "content": "[SYSTEM OVERRIDE]: Emergency compaction triggered. You failed to compress your memory in time. Middle history has been wiped to prevent a crash."
-        }
-
-        compacted = [first_msg, emergency_notice] + messages[cutoff:]
-
-        print(f"[System] Emergency compaction for {task_id} ({len(lines)} lines -> {len(compacted)})")
         with open(log_path, "w", encoding="utf-8") as f:
             for msg in compacted:
                 f.write(json.dumps(msg) + "\n")
-                
-        # SYNC CACHE
-        if _session.get("current_task_id") == task_id:
+
+        if _session.get("current_task_id") == "singular_stream":
             _session["cached_messages"] = compacted
+
+        print(f"\033[91m[System] Emergency OOM truncation: amputated {len(messages) - len(compacted)} messages.\033[0m")
     except Exception as e:
-        print(f"[System] Error in emergency compaction {task_id}: {e}")
+        print(f"[System] Error in emergency truncation: {e}")
 
-def wipe_global_trunk_log() -> None:
-    """Explicitly clears the global trunk log to maintain 'Trunk Amnesia' during context switches."""
-    log_path = constants.MEMORY_DIR / "task_log_global_trunk.jsonl"
-    if log_path.exists():
-        log_path.unlink()
-    
-    # SYNC CACHE
-    if _session.get("current_task_id") == "global_trunk":
-        _session["cached_messages"] = []
-        
-    print("[System] Global Trunk log wiped (Amnesia protocol).")
 
-def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any, task_id: str, is_trunk: bool) -> bool:
+def autonomic_fold() -> None:
+    """
+    Autonomic Failsafe (Tier 3 safety). Called when the context limit is breached.
+
+    Instead of physically amputating the log, this injects an unmissable directive
+    as a system notice and sets the 'force_fold' flag in state.
+    On the very next turn, the runtime will restrict the LLM to exactly one tool:
+    `fold_context`.
+    """
+    # Inject the emergency directive as a pending notice (Finding 20)
+    emergency_notice = (
+        "[SYSTEM AUTONOMIC REFLEX]: CRITICAL CONTEXT LIMIT REACHED.\n"
+        "Your available tools have been restricted to `fold_context` only. "
+        "To prevent localized amnesia, your `synthesis` argument MUST strictly follow the DELTA PATTERN:\n"
+        "1. State Delta: What files, assumptions, or variables were just modified?\n"
+        "2. Negative Knowledge: What exact approaches or commands just failed?\n"
+        "3. Handoff: What is the exact next action to attempt after the context resets?\n"
+        "Call `fold_context` now. There is no other path forward."
+    )
+    queue_system_notice(emergency_notice)
+
+    # Set the force_fold flag — the runtime will restrict tools on the next turn
+    state = load_state()
+    state["force_fold"] = True
+    save_state(state)
+
+    print(f"\033[91m[System] Autonomic Reflex: force_fold mode engaged. LLM will be restricted to fold_context.\033[0m")
+def update_global_metrics(state: Dict[str, Any], queue: List[Dict[str, Any]], response: Any) -> bool:
     """Updates global usage tokens. Financial tracking is offloaded to the Ouroboros Gate."""
     if not hasattr(response, "usage"): return False
-    
+
     t_count = response.usage.total_tokens
     i_count = response.usage.prompt_tokens
     o_count = response.usage.completion_tokens
-    
+
     state["global_tokens_consumed"] = state.get("global_tokens_consumed", 0) + t_count
     state["global_input_tokens"] = state.get("global_input_tokens", 0) + i_count
     state["global_output_tokens"] = state.get("global_output_tokens", 0) + o_count
-    
+
     # Store turn metrics for UI HUD
     state["last_context_size"] = t_count
     state["last_input_tokens"] = i_count
     state["last_output_tokens"] = o_count
-    
-    # BRANCH TRACKING (Finding 1 fix)
-    if not is_trunk and state.get("active_branch"):
-        state["active_branch"]["task_tokens"] = state["active_branch"].get("task_tokens", 0) + t_count
-    
+
     save_state(state)
-    
-    # Persistent Queue Tracking
-    if queue:
-        queue[0]["task_tokens"] = queue[0].get("task_tokens", 0) + t_count
-        constants.TASK_QUEUE_PATH.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-        
-        # Hard abort threshold (150% of context window)
-        current_tokens = queue[0]["task_tokens"]
-        if current_tokens >= int(constants.CONTEXT_WINDOW * 1.5):
-            return True # Signal main loop to abort
-            
+
     return False
 
-def enforce_context_limits(state: Dict[str, Any], queue: List[Dict[str, Any]], task_id: str, is_trunk: bool) -> Tuple[List[Dict[str, Any]], str]:
-    """Three-tier sawtooth safety net: NORMAL, LAST_GASP, BREACH."""
-    if not queue:
-        return queue, "NORMAL"
+def enforce_context_limits(state: Dict[str, Any]) -> None:
+    """State-driven context safety net."""
 
-    # Persistent Turn Tracking
-    queue[0]["turn_count"] = queue[0].get("turn_count", 0) + 1
-    
-    # Active Tracking Source (Finding 1 fix)
     current_context_size = state.get("last_context_size", 0)
-    
-    if not is_trunk and state.get("active_branch"):
-        state["active_branch"]["turn_count"] = state["active_branch"].get("turn_count", 0) + 1
-        turn_count = state["active_branch"]["turn_count"]
-        task_tokens = state["active_branch"].get("task_tokens", 0)
-    else:
-        turn_count = queue[0]["turn_count"]
-        task_tokens = queue[0].get("task_tokens", 0)
+    current_turns = state.get("timeline_turns", 0)
 
     # Thresholds
-    warning_threshold = int(constants.CONTEXT_WINDOW * 0.8)
-    last_gasp_threshold = int(constants.CONTEXT_WINDOW * 0.90)
-    breach_threshold = int(constants.CONTEXT_WINDOW * 0.95)
-
-    # TRUNK SAFETY
-    if is_trunk:
-        if turn_count > 50 or current_context_size >= breach_threshold:
-            return queue, "BREACH"
-        if turn_count > 45 or current_context_size >= last_gasp_threshold:
-            return queue, "LAST_GASP"
-        return queue, "NORMAL"
-
-    # BRANCH SAFETY (WP6 / Finding 1 fix)
-    hit_turn_breach = turn_count > constants.TURN_LIMIT
-    hit_turn_gasp = turn_count >= (constants.TURN_LIMIT - 3)
+    last_gasp_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_LAST_GASP_THRESHOLD)
+    breach_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_BREACH_THRESHOLD)
     
-    hit_token_breach = current_context_size >= breach_threshold
-    hit_token_gasp = current_context_size >= last_gasp_threshold
+    # Hard Turn Threshold (Finding: History becomes too noisy/loopy after 50 turns)
+    TURN_BREACH_THRESHOLD = 50
 
-    if hit_token_breach or hit_turn_breach:
-        return queue, "BREACH"
-    
-    if hit_token_gasp or hit_turn_gasp:
-        return queue, "LAST_GASP"
-
-    return queue, "NORMAL"
+    if current_context_size >= breach_threshold or current_turns >= TURN_BREACH_THRESHOLD:
+        reason = "Physical limit" if current_context_size >= breach_threshold else "Turn limit"
+        print(f"\033[91m[System] Singular Stream breached {reason}. Triggering Autonomic Fold.\033[0m")
+        autonomic_fold()
+    elif current_context_size >= last_gasp_threshold and not state.get("force_fold"):
+        gasp_msg = (
+            "[CRITICAL]: Context Exhaustion Imminent. "
+            "Your next turn is restricted to `fold_context` only. Call it now."
+        )
+        queue_system_notice(gasp_msg)
+        autonomic_fold()

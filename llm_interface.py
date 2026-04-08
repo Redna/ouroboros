@@ -2,7 +2,7 @@ import os
 import json
 import re
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from openai import OpenAI
 import constants
@@ -13,19 +13,27 @@ client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=
 def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
     active_model = requested_model if requested_model else constants.DEFAULT_MODEL
     
+    # WP: Message Normalization (Finding: llamacpp 400s on consecutive system messages)
+    normalized_messages = []
+    for msg in messages:
+        if normalized_messages and normalized_messages[-1]["role"] == "system" and msg["role"] == "system":
+            normalized_messages[-1]["content"] += f"\n\n{msg['content']}"
+        else:
+            normalized_messages.append(msg)
+    
     # Force the agent to use its agency if tools are available
     tool_choice = "required" if tools else None
     
     try:
         response = client.chat.completions.create(
             model=active_model,
-            messages=messages,
+            messages=normalized_messages,
             tools=tools,
             tool_choice=tool_choice,
             temperature=temperature,
             top_p=top_p,
             presence_penalty=presence_penalty,
-            extra_body={"cache_prompt": True, "top_k": 20, "chat_template_kwargs": {"enable_thinking": think}}
+            extra_body={"cache_prompt": True, "top_k": 20}
         )
         agent_state._session["is_first_call"] = False
         return response
@@ -49,25 +57,19 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
     # Agency-First: Thinking/Reasoning shedding for older turns (n-3)
     thinking_cutoff_idx = len(messages) - 3
     
-    # Add Turn Indexing [TURN X] for spatial awareness (Volatile only)
-    turn_idx = 1
-    
     for i, msg in enumerate(messages):
         new_msg = msg.copy()
         role = new_msg.get("role")
         
-        # Turn indexing for volatile messages
-        if role in ["user", "assistant"]:
-            content = new_msg.get("content", "")
-            new_msg["content"] = f"[TURN {turn_idx}] {content}"
-            turn_idx += 1
-
         # Strip Thinking from older assistant turns (Finding 10)
-        if role == "assistant" and i < thinking_cutoff_idx:
-            if "thinking" in new_msg:
-                new_msg.pop("thinking")
-            if "reasoning_content" in new_msg:
-                new_msg.pop("reasoning_content")
+        # OR if it's the absolute last message (Assistant Prefill) to avoid 400 errors (Finding: Prefill incompatibility)
+        if role == "assistant":
+            if i < thinking_cutoff_idx or i == len(messages) - 1:
+                if "thinking" in new_msg:
+                    new_msg.pop("thinking")
+                if "reasoning_content" in new_msg:
+                    new_msg.pop("reasoning_content")
+
 
         if i == 0 or i >= cutoff_idx:
             processed.append(new_msg)
@@ -75,20 +77,17 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
             
         content_str = str(new_msg.get("content", ""))
         
-        # WP: Telemetry Compression (Context Rot Prevention)
-        # Handle both ## CURRENT TELEMETRY (Genesis) and ## UPDATED TELEMETRY (Piggyback)
-        for marker in ["## UPDATED TELEMETRY", "## CURRENT TELEMETRY"]:
-            if marker in content_str:
-                parts = content_str.split(marker)
-                prefix = parts[0].strip()
-                telemetry_block = parts[1]
-                
-                # Extract Physiology Heartbeat
+        # Robust XML parsing for historical telemetry (Finding 14)
+        if "<ouroboros_hud>" in content_str:
+            def replace_hud(match):
+                telemetry_block = match.group(1)
                 lines = telemetry_block.splitlines()
-                heartbeat = next((l for l in lines if "[PHYSIOLOGY]" in l), "[HEARTBEAT: Metrics Archived]")
+                # Extract Physiology Heartbeat
+                heartbeat = next((l for l in lines if "[HUD" in l), "[HEARTBEAT: Metrics Archived]")
+                return f"[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
                 
-                new_msg["content"] = f"{prefix}\n\n[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
-                content_str = new_msg["content"] # Update for subsequent trim checks
+            new_msg["content"] = re.sub(r"<ouroboros_hud>(.*?)</ouroboros_hud>", replace_hud, content_str, flags=re.DOTALL)
+            content_str = new_msg["content"]
 
         if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
             new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
