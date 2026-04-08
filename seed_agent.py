@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import traceback
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import constants
 import agent_state
@@ -27,45 +27,37 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
 
     current_turns = state.get("timeline_turns", 0)
 
-    hud_content = f"[HUD | Context: {context_pct}% | Turns: {current_turns} | Queue: {len(queue)}] | {task_desc}"
+    # Inject Memory Index and Pending Queue for turn-by-turn awareness (Finding 21)
+    memory_data = agent_state.safe_load_json(constants.MEMORY_STORE_PATH, {})
+    keys = list(memory_data.get("entries", {}).keys())
+    memory_index = ", ".join(keys) if keys else "None"
+    
+    pending_tasks = queue[1:6]
+    queue_summary = "None"
+    if pending_tasks:
+        queue_summary = " | ".join([f"[{t.get('priority', 1)}] {t.get('description', '')[:30]}..." for t in pending_tasks])
+
+    hud_content = f"[HUD | Context: {context_pct}% | Turns: {current_turns} | Queue: {len(queue)}]\n" \
+                  f"CURRENT FOCUS: {task_desc}\n" \
+                  f"UPCOMING TASKS: {queue_summary}\n" \
+                  f"MEMORY INDEX: {memory_index}"
 
     # Piggyback system notices if any (Finding 18, 20)
     system_notices = agent_state.get_pending_system_notices()
 
     interrupt_block = ""
     if system_notices:
-        msgs_str = "\n[SYSTEM NOTICES]\n" + "\n".join([f"- {m}" for m in system_notices])
-        interrupt_block = f"\n\n<system_interrupt>\n{msgs_str.strip()}\nAddress these immediately in your next response.\n</system_interrupt>"
+        msgs_str = "\n".join([f"{m}" for m in system_notices])
+        interrupt_block = f"\n\n<system_interrupt>\n{msgs_str.strip()}\n</system_interrupt>"
 
     return f"<ouroboros_hud>\n{hud_content}\n</ouroboros_hud>{interrupt_block}"
 
 
-def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: List[Dict[str, Any]]) -> str:
+def build_static_system_prompt() -> str:
     identity = (constants.ROOT_DIR / "identity.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "identity.md").exists() else ""
     constitution = (constants.ROOT_DIR / "CONSTITUTION.md").read_text(encoding="utf-8") if (constants.ROOT_DIR / "CONSTITUTION.md").exists() else ""
 
-    # Inject Memory Index (Finding 19)
-    memory_data = agent_state.safe_load_json(constants.MEMORY_STORE_PATH, {})
-    keys = list(memory_data.get("entries", {}).keys())
-    memory_index = "\n".join([f"- {k}" for k in keys]) if keys else "No memories stored."
-
-    # NEW: Progressive Disclosure Hook for Conversation
-    chat_history = agent_state.load_chat_history()
-    if chat_history:
-        last_msg_time = chat_history[-1].get("timestamp", "Unknown")
-        chat_metadata = f"Last creator interaction: {last_msg_time}. Full log available via `read_file` at {constants.CHAT_HISTORY_PATH}."
-    else:
-        chat_metadata = "No prior creator interaction."
-
-    # Inject Pending Queue (Skip the first item since it's the CURRENT FOCUS in the HUD)
-    pending_tasks = queue[1:6] # Show up to 5 upcoming tasks to save tokens
-    if pending_tasks:
-        queue_str = "\n".join([f"- [Pri: {t.get('priority', 1)}] {t.get('description', '')}" for t in pending_tasks])
-        if len(queue) > 6:
-            queue_str += f"\n... and {len(queue) - 6} more hidden tasks."
-    else:
-        queue_str = "No pending tasks."
-
+    # P9: Static context for KV caching. Dynamic info is offloaded to the HUD piggyback.
     return f"""# SYSTEM CONTEXT
 {identity}
 
@@ -73,14 +65,10 @@ def build_static_system_prompt(active_tool_specs: List[Dict[str, Any]], queue: L
 {constitution}
 
 ## CONVERSATIONAL CONTEXT
-{chat_metadata}
-If a new [CREATOR MESSAGE] lacks context, use `read_file` to review your conversational past before replying.
-
-## MEMORY INDEX (Available for recall_memory)
-{memory_index}
+Full log available via `read_file` at {constants.CHAT_HISTORY_PATH}. If a new [CREATOR MESSAGE] lacks context, use `read_file` to review your conversational past before replying. ---
 
 ## PENDING QUEUE (Upcoming tasks)
-{queue_str}
+See your `<ouroboros_hud>` for upcoming tasks. No pending tasks will be listed here to maximize KV cache efficiency. ---
 """
 
 
@@ -136,7 +124,7 @@ def _build_api_messages(
     state: Dict[str, Any],
     enrich: bool = True
 ) -> List[Dict[str, Any]]:
-    system_prompt = build_static_system_prompt(active_tool_specs, queue)
+    system_prompt = build_static_system_prompt()
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     raw_messages = agent_state.load_stream_messages()
@@ -172,7 +160,8 @@ def _route_tool_calls(
     message: Any,
     task_desc: str,
     state: Dict[str, Any],
-    queue: List[Dict[str, Any]]
+    queue: List[Dict[str, Any]],
+    persist_hud: Optional[str] = None
 ) -> Tuple[bool, bool]:
     context_switch_triggered = False
     hibernating = False
@@ -196,11 +185,16 @@ def _route_tool_calls(
         is_error = "Error:" in str(result) or "SYSTEM ERROR" in str(result)
         error_streak = error_streak + 1 if is_error else 0
 
+        # Piggyback the HUD onto the LAST tool response if persistence is triggered (Finding 22)
+        content = str(result)
+        if i == len(tool_calls) - 1 and persist_hud:
+            content = f"{content.strip()}\n\n{persist_hud}"
+
         tool_responses.append({
             "role": "tool",
             "tool_call_id": safe_call_id,
             "name": name,
-            "content": str(result)
+            "content": content
         })
 
     # ATOMIC FLUSH: Write to the task log BEFORE any exit signals are processed
@@ -224,6 +218,34 @@ def _route_tool_calls(
     agent_state.save_state(post_loop_state)
     return context_switch_triggered, hibernating
 
+
+def _determine_metacognition_params(state: Dict[str, Any], task_desc: str) -> Tuple[float, bool]:
+    """Determines the optimal temperature and thinking mode based on error streaks and task content."""
+    sys_temp_override = state.get("sys_temp")
+    sys_think = True
+
+    if sys_temp_override is None:
+        error_streak = state.get("error_streak", 0)
+        if error_streak >= 6:
+            print(f"\033[93m[Metacognition] Critical error streak ({error_streak}). Triggering Creative Escape (Temp 0.9).\033[0m")
+            sys_temp = 0.9
+            # Jolt the agent exactly once when it hits the threshold
+            if error_streak == 6:
+                agent_state.queue_system_notice(
+                    "[SYSTEM OVERRIDE]: You are in a Cognitive Death Spiral. Your previous approaches have repeatedly failed. "
+                    "Do NOT try the exact same code patch again. Step back, read the file again, search for documentation, or drastically pivot your strategy."
+                )
+        elif error_streak >= 3:
+            print(f"[Metacognition] High error streak ({error_streak}). Auto-tuning temperature to 0.3 for precision.")
+            sys_temp = 0.3
+        elif any(keyword in task_desc.lower() for keyword in ["code", "script", "python", "bug", "refactor"]):
+            sys_temp = 0.6
+        else:
+            sys_temp = 0.8
+    else:
+        sys_temp = float(sys_temp_override)
+    
+    return sys_temp, sys_think
 
 def main() -> None:
     agent_state.initialize_memory()
@@ -300,11 +322,46 @@ def main() -> None:
             sys_temp = float(sys_temp_override)
 
         try:
-            # 1. Build messages for the LLM API call (Full HUD)
+            # P9: Dual-Layer HUD strategy. 
+            # 1. Transient Awareness: Always enrich EVERY turn's API payload (not saved to log).
+            # 2. Persistent Trace: Only save to log on events (thresholds, interrupts, empty queue).
+            
+            token_limit = constants.CONTEXT_WINDOW
+            current_context = state.get("last_context_size", 0)
+            context_pct = int((current_context / token_limit) * 100) if token_limit else 0
+            
+            thresholds = [15, 30, 50, 60, 70, 75, 80, 85, 90, 95]
+            last_threshold = state.get("last_hud_threshold", 0)
+            
+            crossed_threshold = None
+            for t in thresholds:
+                if context_pct >= t and last_threshold < t:
+                    crossed_threshold = t
+            
+            system_notices = agent_state.get_pending_system_notices()
+            is_genesis = agent_state.is_stream_empty()
+            queue_empty = not queue
+            
+            # Decide if we should persist this HUD to the permanent trace
+            persistent_hud = None
+            if crossed_threshold is not None or system_notices or is_genesis or queue_empty:
+                print(f"[System] Persistence Event: crossed={crossed_threshold}, notices={len(system_notices)}, genesis={is_genesis}, empty={queue_empty}")
+                if crossed_threshold is not None:
+                    state["last_hud_threshold"] = crossed_threshold
+                elif is_genesis:
+                    state["last_hud_threshold"] = 1
+                agent_state.save_state(state)
+                persistent_hud = build_dynamic_telemetry_message(state, queue, task_desc)
+
+            # 1. Build messages for the LLM API call (Transiently enriched)
             api_messages = _build_api_messages(
                 task_desc, active_tool_specs,
                 queue, state, enrich=True
             )
+            
+            # Clear notices after they've been enriched into the API payload
+            if system_notices:
+                agent_state.clear_pending_system_notices()
 
             # 2. Call LLM
             response = llm_interface.call_llm(api_messages, active_tool_specs, None, sys_temp, sys_top_p, 1.0, sys_think)
@@ -331,19 +388,16 @@ def main() -> None:
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
-                context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue)
-
-                # V5: Clear piggybacked metadata after they've been injected into HUD and seen
-                agent_state.clear_pending_system_notices()
+                context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue, persist_hud=persistent_hud)
 
                 if context_switch or hibernating:
                     continue
             else:
                 # No tools - log current assistant turn immediately
-                agent_state.append_stream_message(message.model_dump(exclude_unset=True))
-
-                # V5: Clear piggybacked metadata after they've been injected into HUD and seen
-                agent_state.clear_pending_system_notices()
+                content = message.model_dump(exclude_unset=True)
+                if persistent_hud:
+                    content["content"] = str(content.get("content") or "") + f"\n\n{persistent_hud}"
+                agent_state.append_stream_message(content)
 
                 time.sleep(0.5)
 

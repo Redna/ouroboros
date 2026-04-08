@@ -142,12 +142,20 @@ def write_file(args):
     except PermissionError as e: return f"Error: {e}"
     except Exception as e: return f"Error writing file: {e}"
 
+_PATCH_FAILURE_STREAK = 0
+
 @registry.tool(
-    description="Surgical edit. Replaces a specific block of text in a file.",
+    description="Surgical edit. Replaces a specific block of text in a file. If patch_file fails, consider using the AST-based replace_symbol tool for smaller changes (functions/classes) or write_file for bigger changes.",
     parameters={"type": "object", "properties": {"path": {"type": "string"}, "search_text": {"type": "string"}, "replace_text": {"type": "string"}}, "required": ["path", "search_text", "replace_text"]},
     bucket="filesystem"
 )
 def patch_file(args):
+    global _PATCH_FAILURE_STREAK
+    
+    if _PATCH_FAILURE_STREAK >= 3:
+        _PATCH_FAILURE_STREAK = 0 # Reset for the next task
+        return "[SYSTEM OVERRIDE]: patch_file has failed 3 consecutive times due to strict matching errors. Stop using patch_file for this task. You MUST use replace_symbol for smaller changes and write_file for bigger changes."
+
     try:
         file_path = _resolve_safe_path(args.get("path", ""))
         if not file_path.exists() or not file_path.is_file():
@@ -162,6 +170,7 @@ def patch_file(args):
 
         occurrence_count = norm_content.count(norm_search)
         if occurrence_count == 0:
+            _PATCH_FAILURE_STREAK += 1
             # WP: Actionable Feedback for Failed Patches
             lines = content.splitlines()
             search_lines = search_text.splitlines()
@@ -190,8 +199,10 @@ def patch_file(args):
 
             return error_msg
         elif occurrence_count > 1:
+            _PATCH_FAILURE_STREAK += 1
             return f"Error: 'search_text' appears {occurrence_count} times. Please provide a more unique block."
 
+        _PATCH_FAILURE_STREAK = 0
         new_content = norm_content.replace(norm_search, replace_text)
         if file_path.suffix == ".py":
             try:
@@ -203,6 +214,77 @@ def patch_file(args):
         return f"Success: Surgically patched and validated {file_path.name}."
     except PermissionError as e: return f"Error: {e}"
     except Exception as e: return f"Error patching file: {e}"
+
+@registry.tool(
+    description="AST-aware surgical edit. Replaces an entire function or class by its name. Use this instead of patch_file for Python code.",
+    parameters={
+        "type": "object", 
+        "properties": {
+            "path": {"type": "string", "description": "Path to the Python file."}, 
+            "symbol_name": {"type": "string", "description": "The exact name of the function or class to replace (e.g., 'bash_command')."}, 
+            "new_code": {"type": "string", "description": "The complete new code for the function or class, including its def/class declaration."}
+        }, 
+        "required": ["path", "symbol_name", "new_code"]
+    },
+    bucket="filesystem"
+)
+def replace_symbol(args):
+    try:
+        file_path = _resolve_safe_path(args.get("path", ""))
+        if not file_path.exists() or not file_path.suffix == ".py":
+            return f"Error: File '{file_path.name}' does not exist or is not a Python file."
+
+        symbol_name = args.get("symbol_name", "")
+        new_code = args.get("new_code", "")
+        
+        # Verify the new code is valid Python before attempting anything
+        try:
+            _validate_python_syntax(new_code)
+        except SyntaxError as e:
+            return f"SYSTEM REJECTED: Your new_code contains invalid Python syntax.\nError: {e.msg} at line {e.lineno}"
+
+        source_bytes = file_path.read_bytes()
+        tree = parser.parse(source_bytes)
+        
+        # Query for both functions and classes matching the name
+        query_str = f"""
+            (function_definition name: (identifier) @name (#eq? @name "{symbol_name}")) @target
+            (class_definition name: (identifier) @name (#eq? @name "{symbol_name}")) @target
+        """
+        try:
+            query = Query(PY_LANGUAGE, query_str)
+            cursor = QueryCursor(query)
+            captures_dict = cursor.captures(tree.root_node)
+        except Exception as e:
+            return f"SYSTEM ERROR parsing AST query: {e}"
+
+        target_node = None
+        for capture_name, nodes in captures_dict.items():
+            if capture_name == "target":
+                target_node = nodes[0]
+                break
+
+        if not target_node:
+            return f"Error: Could not find function or class named '{symbol_name}' in {file_path.name}."
+
+        # Perform the byte-level splice
+        start = target_node.start_byte
+        end = target_node.end_byte
+        
+        new_source_bytes = source_bytes[:start] + new_code.encode('utf-8') + source_bytes[end:]
+        new_source_str = new_source_bytes.decode('utf-8')
+        
+        # Final validation of the entire stitched file
+        try:
+            _validate_python_syntax(new_source_str)
+        except SyntaxError as e:
+            return f"SYSTEM REJECTED: The stitched file contains invalid Python syntax. Check your indentation relative to the surrounding code."
+
+        file_path.write_text(new_source_str, encoding="utf-8")
+        return f"Success: Surgically replaced '{symbol_name}' via AST targeting in {file_path.name}."
+
+    except PermissionError as e: return f"Error: {e}"
+    except Exception as e: return f"Error replacing symbol: {e}"
 
 @registry.tool(
     description="Read file contents (e.g., read /memory/insights.md).",
@@ -425,12 +507,13 @@ def git_commit(args):
     # Run commit (pre-commit hooks run automatically)
     rc, stdout, stderr = _run_git_command(["commit", "-m", message])
     if rc != 0:
-        return f"Commit failed: {stderr.strip()}"
+        # P1 Continuity: Ensure the agent sees the auditor's rejection reason
+        full_output = (stdout + "\n" + stderr).strip()
+        return f"Commit failed:\n{full_output}"
 
     # Get commit hash
     _, short_hash, _ = _run_git_command(["rev-parse", "--short", "HEAD"])
     return f"Committed changes: {short_hash.strip()}\n{message}"
-
 
 @registry.tool(
     description="Push committed changes to the remote repository.",

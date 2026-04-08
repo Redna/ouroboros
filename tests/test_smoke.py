@@ -21,13 +21,13 @@ def test_seed_agent_imports():
 
 
 def test_singular_timeline_signature():
-    """build_static_system_prompt no longer accepts is_trunk or branch_info."""
+    """build_static_system_prompt no longer accepts tools or queue for KV caching."""
     from seed_agent import build_static_system_prompt
     sig = inspect.signature(build_static_system_prompt)
     params = list(sig.parameters.keys())
-    assert "is_trunk" not in params, "is_trunk must be removed (WP5)"
-    assert "branch_info" not in params, "branch_info must be removed (WP5)"
-    assert "active_tool_specs" in params
+    assert "is_trunk" not in params
+    assert "branch_info" not in params
+    assert params == [], f"System prompt must be zero-arg static, got {params}"
 
 
 def test_resolve_execution_context_returns_singular_stream():
@@ -209,18 +209,18 @@ def test_push_task_minimal_schema():
 # ---------------------------------------------------------------------------
 
 def test_hud_format():
-    """build_dynamic_telemetry_message must output exactly '[HUD | Context: X% | Turns: Y% | Queue: Z] | task_desc' wrapped in XML."""
+    """build_dynamic_telemetry_message must output rich multi-line telemetry wrapped in XML."""
     from seed_agent import build_dynamic_telemetry_message
     import constants
-    # Use an exact multiple of CONTEXT_WINDOW so int() truncation is unambiguous
-    context_size = constants.CONTEXT_WINDOW // 2   # exactly 50%
+    context_size = constants.CONTEXT_WINDOW // 2
     state = {"last_context_size": context_size, "timeline_turns": 15}
-    queue = [{}, {}]
+    queue = [{}, {"description": "Task 1", "priority": 1}]
     task_desc = "Testing HUD"
     hud = build_dynamic_telemetry_message(state, queue, task_desc)
 
-    # Expecting raw turns instead of percentage
-    expected_content = f"[HUD | Context: 50% | Turns: 15 | Queue: 2] | {task_desc}"
-    assert f"<ouroboros_hud>\n{expected_content}\n</ouroboros_hud>" == hud, (
-        f"HUD format mismatch. Got: {hud!r}"
-    )
+    assert "<ouroboros_hud>" in hud
+    assert "[HUD | Context: 50% | Turns: 15 | Queue: 2]" in hud
+    assert "CURRENT FOCUS: Testing HUD" in hud
+    assert "UPCOMING TASKS: [1] Task 1..." in hud
+    assert "MEMORY INDEX: None" in hud
+    assert "</ouroboros_hud>" in hud

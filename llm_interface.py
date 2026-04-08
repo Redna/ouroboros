@@ -89,19 +89,6 @@ def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int 
             new_msg["content"] = re.sub(r"<ouroboros_hud>(.*?)</ouroboros_hud>", replace_hud, content_str, flags=re.DOTALL)
             content_str = new_msg["content"]
 
-        # WP: Interrupt Pruning (Finding 21)
-        if "<system_interrupt>" in content_str:
-            def replace_interrupt(match):
-                interrupt_block = match.group(1)
-                # Just keep a minimal indicator that a system/creator event was handled
-                has_creator = "[CREATOR MESSAGES]" in interrupt_block
-                has_system  = "[SYSTEM NOTICES]" in interrupt_block
-                label = "CREATOR/SYSTEM" if (has_creator and has_system) else ("CREATOR" if has_creator else "SYSTEM")
-                return f"[SYSTEM LOG: Historical {label} Interrupt Handled]"
-                
-            new_msg["content"] = re.sub(r"<system_interrupt>(.*?)</system_interrupt>", replace_interrupt, content_str, flags=re.DOTALL)
-            content_str = new_msg["content"]
-
         if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
             new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
             

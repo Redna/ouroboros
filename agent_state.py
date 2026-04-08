@@ -304,13 +304,18 @@ def enforce_context_limits(state: Dict[str, Any]) -> None:
     """State-driven context safety net."""
 
     current_context_size = state.get("last_context_size", 0)
+    current_turns = state.get("timeline_turns", 0)
 
     # Thresholds
     last_gasp_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_LAST_GASP_THRESHOLD)
     breach_threshold = int(constants.CONTEXT_WINDOW * constants.CONTEXT_BREACH_THRESHOLD)
+    
+    # Hard Turn Threshold (Finding: History becomes too noisy/loopy after 50 turns)
+    TURN_BREACH_THRESHOLD = 50
 
-    if current_context_size >= breach_threshold:
-        print("\033[91m[System] Singular Stream breached limits. Triggering Autonomic Fold.\033[0m")
+    if current_context_size >= breach_threshold or current_turns >= TURN_BREACH_THRESHOLD:
+        reason = "Physical limit" if current_context_size >= breach_threshold else "Turn limit"
+        print(f"\033[91m[System] Singular Stream breached {reason}. Triggering Autonomic Fold.\033[0m")
         autonomic_fold()
     elif current_context_size >= last_gasp_threshold and not state.get("force_fold"):
         gasp_msg = (

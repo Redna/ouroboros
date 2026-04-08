@@ -29,7 +29,8 @@ def queue_creator_message(new_message: str, update_id: int):
     """
     Stores a creator message in the pending queue for piggybacking.
     """
-    agent_state.queue_system_notice(f"[CREATOR MESSAGE]\n- {new_message}")
+    timestamp = time.strftime("%H:%M:%S")
+    agent_state.queue_system_notice(f"[SOURCE: Telegram | TIME: {timestamp}]\n- {new_message}")
 
 def poll_telegram(s: Dict[str, Any], q: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     if not constants.TELEGRAM_BOT_TOKEN:
