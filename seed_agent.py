@@ -139,20 +139,16 @@ def _build_api_messages(
 
     shedded = llm_interface.shed_heavy_payloads(normalized)
 
-    # Volatile HUD Injection: Ensure telemetry is ALWAYS present in the payload
+    # Volatile HUD Injection: Ensure telemetry is ALWAYS present in the payload.
+    # P9 Optimization: We append this as a SEPARATE trailing user message.
+    # This keeps the historical prefix [System...Shedded] 100% static,
+    # ensuring that only the new assistant response needs to be prefilled next turn.
     if enrich:
         telemetry = build_dynamic_telemetry_message(state, queue, task_desc)
-        if shedded:
-            last_msg = shedded[-1]
-            # Normal case: Append to the last user/tool response (or assistant if it didn't get popped)
-            last_msg["content"] = str(last_msg.get("content", "")) + f"\n\n{telemetry}"
-        else:
-            # Genesis Case: No history yet
-            shedded.append({"role": "user", "content": telemetry})
-
+        # Always append as a new turn at the very end
+        shedded.append({"role": "user", "content": telemetry})
 
     api_messages += shedded
-
     return api_messages
 
 
@@ -161,19 +157,18 @@ def _route_tool_calls(
     task_desc: str,
     state: Dict[str, Any],
     queue: List[Dict[str, Any]],
-    persist_hud: Optional[str] = None
+    persistent_hud: Optional[str] = None
 ) -> Tuple[bool, bool]:
     context_switch_triggered = False
     hibernating = False
     error_streak = state.get("error_streak", 0)
     tool_responses = []
 
-    # Collect results to find the last one for telemetry piggybacking
+    # Collect results
     tool_calls = message.tool_calls
     for i, tool_call in enumerate(tool_calls):
         name     = tool_call.function.name
         raw_args = tool_call.function.arguments
-
         safe_call_id = tool_call.id if (tool_call.id and len(tool_call.id) >= 9) else f"call_{int(time.time())}"
 
         try:
@@ -185,10 +180,10 @@ def _route_tool_calls(
         is_error = "Error:" in str(result) or "SYSTEM ERROR" in str(result)
         error_streak = error_streak + 1 if is_error else 0
 
-        # Piggyback the HUD onto the LAST tool response if persistence is triggered (Finding 22)
+        # Proactive Output Truncation: Never log massive raw outputs (Finding 14)
         content = str(result)
-        if i == len(tool_calls) - 1 and persist_hud:
-            content = f"{content.strip()}\n\n{persist_hud}"
+        if len(content) > constants.TOOL_OUTPUT_TRIM_CHARS:
+            content = f"[SYSTEM LOG: Output truncated ({len(content)} chars).]\nPreview: {content[:500]}..."
 
         tool_responses.append({
             "role": "tool",
@@ -197,14 +192,32 @@ def _route_tool_calls(
             "content": content
         })
 
-    # ATOMIC FLUSH: Write to the task log BEFORE any exit signals are processed
-    # P1 Continuity: Ensure the log ALWAYS starts with a user message (Genesis Fix)
+    # ATOMIC FLUSH
     if agent_state.is_stream_empty():
         agent_state.append_stream_message({"role": "user", "content": "."})
 
+    # Log Assistant turn (Unmodified prefix)
     agent_state.append_stream_message(message.model_dump(exclude_unset=True))
+    
+    # Log Tool responses
     for response_msg in tool_responses:
         agent_state.append_stream_message(response_msg)
+
+    # P9 Cache Stability: Persistent HUDs are added as a SEPARATE turn in the log
+    # This prevents the previous tool/assistant content from being changed next turn.
+    if persistent_hud:
+        agent_state.append_stream_message({"role": "user", "content": persistent_hud})
+
+    # Process signals
+    if any("SYSTEM_SIGNAL_RESTART" in str(r["content"]) for r in tool_responses):
+        sys.exit(0)
+    if any("SYSTEM_SIGNAL_HIBERNATE" in str(r["content"]) for r in tool_responses):
+        hibernating = True
+
+    post_loop_state = agent_state.load_state()
+    post_loop_state["error_streak"] = error_streak
+    agent_state.save_state(post_loop_state)
+    return context_switch_triggered, hibernating
 
     # Now process signals that would terminate the loop
     if any("SYSTEM_SIGNAL_RESTART" in str(r["content"]) for r in tool_responses):
@@ -366,16 +379,19 @@ def main() -> None:
 
             if message.tool_calls:
                 # Atomic Logging: _route_tool_calls will handle logging both assistant + tool responses
-                context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue, persist_hud=persistent_hud)
+                context_switch, hibernating = _route_tool_calls(message, task_desc, state, queue, persistent_hud=persistent_hud)
 
                 if context_switch or hibernating:
                     continue
             else:
                 # No tools - log current assistant turn immediately
+                # P9 Optimization: We NEVER modify this message after logging
                 content = message.model_dump(exclude_unset=True)
-                if persistent_hud:
-                    content["content"] = str(content.get("content") or "") + f"\n\n{persistent_hud}"
                 agent_state.append_stream_message(content)
+
+                if persistent_hud:
+                    # Persistent HUD/Interrupt is added as its own turn to preserve the Assistant prefix
+                    agent_state.append_stream_message({"role": "user", "content": persistent_hud})
 
                 time.sleep(0.5)
 

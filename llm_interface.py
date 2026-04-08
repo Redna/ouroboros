@@ -51,62 +51,29 @@ def redact_secrets(text: str) -> str:
     return re.sub(r"\d{8,10}:[a-zA-Z0-9_-]{35}", "[REDACTED_TOKEN]", text)
 
 def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = constants.RETAIN_FULL_LAST_N) -> List[Dict[str, Any]]:
+    """
+    P9: Absolute Prefix Stability. 
+    To maintain 100% KV cache hits, we NEVER modify historical messages.
+    Shedding is now handled either proactively at logging time or 
+    globally during a fold_context event.
+    """
     processed = []
-    cutoff_idx = len(messages) - retain_full_last_n
-    
-    # Agency-First: Thinking/Reasoning shedding for older turns (n-3)
-    thinking_cutoff_idx = len(messages) - 3
-    
+
     for i, msg in enumerate(messages):
         new_msg = msg.copy()
         role = new_msg.get("role")
-        
-        # Strip Thinking from older assistant turns (Finding 10)
-        # OR if it's the absolute last message (Assistant Prefill) to avoid 400 errors (Finding: Prefill incompatibility)
-        if role == "assistant":
-            if i < thinking_cutoff_idx or i == len(messages) - 1:
-                if "thinking" in new_msg:
-                    new_msg.pop("thinking")
-                if "reasoning_content" in new_msg:
-                    new_msg.pop("reasoning_content")
 
+        # WP: Prefix-safe prefill fix.
+        # We ONLY remove reasoning from the absolute last message IF it is an assistant role,
+        # as llamacpp cannot handle a prompt ending in reasoning_content when expecting a continuation.
+        # This is a transient fix for the current turn only.
+        if i == len(messages) - 1 and role == "assistant":
+            if "thinking" in new_msg:
+                new_msg.pop("thinking")
+            if "reasoning_content" in new_msg:
+                new_msg.pop("reasoning_content")
 
-        if i == 0 or i >= cutoff_idx:
-            processed.append(new_msg)
-            continue
-            
-        content_str = str(new_msg.get("content", ""))
-        
-        # Robust XML parsing for historical telemetry (Finding 14)
-        if "<ouroboros_hud>" in content_str:
-            def replace_hud(match):
-                telemetry_block = match.group(1)
-                lines = telemetry_block.splitlines()
-                # Extract Physiology Heartbeat
-                heartbeat = next((l for l in lines if "[HUD" in l), "[HEARTBEAT: Metrics Archived]")
-                return f"[SYSTEM LOG: Historical Telemetry Archived: {heartbeat}]"
-                
-            new_msg["content"] = re.sub(r"<ouroboros_hud>(.*?)</ouroboros_hud>", replace_hud, content_str, flags=re.DOTALL)
-            content_str = new_msg["content"]
-
-        if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
-            new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(content_str)} chars).]\nPreview: {content_str[:500]}..."
-            
-        elif role == "assistant" and new_msg.get("tool_calls"):
-            trimmed_calls = []
-            for tc in new_msg["tool_calls"]:
-                new_tc = tc.copy()
-                try:
-                    args = json.loads(new_tc.get("function", {}).get("arguments", "{}"))
-                    for key in ["content", "patch", "text", "code"]:
-                        if key in args and isinstance(args[key], str) and len(args[key]) > constants.TOOL_ARG_TRIM_CHARS:
-                            args[key] = f"(... {len(args[key])} characters of {key} archived ...)"
-                    new_tc["function"]["arguments"] = json.dumps(args)
-                except Exception:
-                    pass
-                trimmed_calls.append(new_tc)
-            new_msg["tool_calls"] = trimmed_calls
-            
         processed.append(new_msg)
-        
+
     return processed
+
