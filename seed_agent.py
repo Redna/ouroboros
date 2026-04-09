@@ -476,8 +476,23 @@ def main() -> None:
             time.sleep(2)
 
         except Exception as e:
+            try:
+                constants.CRASH_LOG_PATH.write_text(str(e), encoding="utf-8")
+            except Exception: pass
+
+            # P5: Fail Fast on structural/fatal errors.
             fatal_types = (AttributeError, ImportError, NameError, SyntaxError, TypeError)
-            if isinstance(e, fatal_types): sys.exit(1)
+
+            # Is it a structural Python error OR a fatal HTTP exception (not just a result string)?
+            is_http_fatal = ("400" in str(e) or "500" in str(e)) and not any(kw in str(e).lower() for kw in ["telegram", "searxng", "bash"])
+
+            if isinstance(e, fatal_types) or is_http_fatal:
+                print(f"\033[91m[FATAL]: {type(e).__name__}: {e}. Exiting for watchdog recovery.\033[0m")
+                # WP: Print traceback for fatal errors to help Creator debug
+                traceback.print_exc()
+                sys.exit(1)
+
+            print(f"[ERROR]: {e}. Recovering in 2s...")
             time.sleep(2)
 
 if __name__ == "__main__":
