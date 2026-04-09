@@ -8,41 +8,37 @@ from openai import OpenAI
 import constants
 import agent_state
 
-client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=600.0)
+client = OpenAI(base_url=constants.API_BASE, api_key="sk-not-required", timeout=1800.0)
 
-def call_llm(messages, tools=None, requested_model=None, temperature=0.8, top_p=0.95, presence_penalty=1.0, think=True):
-    active_model = requested_model if requested_model else constants.DEFAULT_MODEL
+def call_llm(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, tool_choice: Any = None, temperature: float = 0.7, top_p: float = 0.95, frequency_penalty: float = 0.0, think: bool = False):
+    """
+    Standard Ouroboros LLM interface.
+    """
+    model = constants.MODEL
     
-    # WP: Message Normalization (Finding: llamacpp 400s on consecutive system messages)
-    normalized_messages = []
-    for msg in messages:
-        if normalized_messages and normalized_messages[-1]["role"] == "system" and msg["role"] == "system":
-            normalized_messages[-1]["content"] += f"\n\n{msg['content']}"
-        else:
-            normalized_messages.append(msg)
+    # Apply prefix-stable shedding
+    payload_messages = shed_heavy_payloads(messages)
     
-    # Force the agent to use its agency if tools are available
-    tool_choice = "required" if tools else None
+    body = {
+        "model": model,
+        "messages": payload_messages,
+        "temperature": temperature,
+        "top_p": top_p,
+        "frequency_penalty": frequency_penalty,
+        "stream": False
+    }
     
-    try:
-        response = client.chat.completions.create(
-            model=active_model,
-            messages=normalized_messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            temperature=temperature,
-            top_p=top_p,
-            presence_penalty=presence_penalty,
-            extra_body={"cache_prompt": True, "top_k": 20}
-        )
-        agent_state._session["is_first_call"] = False
-        return response
-    except Exception as e:
-        if agent_state._session.get("is_first_call", True):
-            print(f"FATAL: constants.DEFAULT_MODEL is unreachable. Shutting down. Error: {e}")
-            import sys
-            sys.exit(1)
-        raise e
+    if tools:
+        body["tools"] = tools
+        if tool_choice:
+            body["tool_choice"] = tool_choice
+
+    # Backend-specific thinking/reasoning parameters
+    if think:
+        body["extra_body"] = {"thinking": True}
+
+    response = client.chat.completions.create(**body)
+    return response
 
 def redact_secrets(text: str) -> str:
     if not text: return text
@@ -50,30 +46,63 @@ def redact_secrets(text: str) -> str:
     if constants.GITHUB_TOKEN: text = text.replace(constants.GITHUB_TOKEN, "[REDACTED]")
     return re.sub(r"\d{8,10}:[a-zA-Z0-9_-]{35}", "[REDACTED_TOKEN]", text)
 
-def shed_heavy_payloads(messages: List[Dict[str, Any]], retain_full_last_n: int = constants.RETAIN_FULL_LAST_N) -> List[Dict[str, Any]]:
+def shed_heavy_payloads(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    P9: Absolute Prefix Stability. 
-    To maintain 100% KV cache hits, we NEVER modify historical messages.
-    Shedding is now handled either proactively at logging time or 
-    globally during a fold_context event.
+    P9: Prefix-safe shedding logic.
+    We shorten the tool response but leave the HUD and interruptions exactly as they are.
+    Historical messages are processed only once they pass the HD window (N-3).
     """
     processed = []
-
+    
     for i, msg in enumerate(messages):
         new_msg = msg.copy()
         role = new_msg.get("role")
+        content_str = str(new_msg.get("content", ""))
 
-        # WP: Prefix-safe prefill fix.
-        # We ONLY remove reasoning from the absolute last message IF it is an assistant role,
-        # as llamacpp cannot handle a prompt ending in reasoning_content when expecting a continuation.
-        # This is a transient fix for the current turn only.
+        # WP: Prefix-safe prefill fix for the current turn
         if i == len(messages) - 1 and role == "assistant":
-            if "thinking" in new_msg:
-                new_msg.pop("thinking")
-            if "reasoning_content" in new_msg:
-                new_msg.pop("reasoning_content")
+            if "thinking" in new_msg: new_msg.pop("thinking")
+            if "reasoning_content" in new_msg: new_msg.pop("reasoning_content")
+            processed.append(new_msg)
+            continue
+
+        # Don't touch the High-Definition window (last 3 turns)
+        if i >= len(messages) - 3:
+            processed.append(new_msg)
+            continue
+
+        # Shed old messages: Truncate Tool/Assistant but preserve the HUD tail
+        if role in ["tool", "assistant"]:
+            # Extract HUD/Interruption blocks if present
+            hud_match = re.search(r"(<ouroboros_hud>.*?</ouroboros_hud>)", content_str, flags=re.DOTALL)
+            interrupt_match = re.search(r"(<system_interrupt>.*?</system_interrupt>)", content_str, flags=re.DOTALL)
+            
+            hud_tail = (hud_match.group(1) if hud_match else "")
+            interrupt_tail = (interrupt_match.group(1) if interrupt_match else "")
+            
+            # 1. Archive Reasoning/Thinking
+            if "thinking" in new_msg: new_msg.pop("thinking")
+            if "reasoning_content" in new_msg: new_msg.pop("reasoning_content")
+
+            # 2. Truncate heavy tool arguments in assistant calls
+            if role == "assistant" and new_msg.get("tool_calls"):
+                for tc in new_msg["tool_calls"]:
+                    try:
+                        args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                        for key in ["content", "patch", "text", "code"]:
+                            if key in args and isinstance(args[key], str) and len(args[key]) > constants.TOOL_ARG_TRIM_CHARS:
+                                args[key] = f"(... {len(args[key])} characters of {key} archived ...)"
+                        tc["function"]["arguments"] = json.dumps(args)
+                    except Exception: pass
+
+            # 3. Truncate Tool Output while keeping the HUD
+            if role == "tool" and len(content_str) > constants.TOOL_OUTPUT_TRIM_CHARS:
+                # Truncate only the "Head" (the actual tool result)
+                clean_head = re.sub(r"<ouroboros_hud>.*?</ouroboros_hud>", "", content_str, flags=re.DOTALL)
+                clean_head = re.sub(r"<system_interrupt>.*?</system_interrupt>", "", clean_head, flags=re.DOTALL).strip()
+                
+                new_msg["content"] = f"[SYSTEM LOG: Historical output truncated ({len(clean_head)} chars).]\nPreview: {clean_head[:500]}...\n\n{hud_tail}\n\n{interrupt_tail}".strip()
 
         processed.append(new_msg)
-
+        
     return processed
-
