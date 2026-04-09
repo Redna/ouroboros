@@ -133,9 +133,14 @@ def _build_api_messages(
     api_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     raw_messages = agent_state.load_stream_messages()
-    normalized = raw_messages
+    # P1 Integrity: Work on a copy to avoid corrupting the in-memory session cache
+    # if the LLM call fails and needs to be retried.
+    normalized = list(raw_messages)
 
-    if normalized and normalized[-1]["role"] == "assistant":
+    # P1 Integrity: Recursively pop ALL trailing assistant messages.
+    # Backends like llamacpp/OpenAI reject payloads with consecutive assistant messages 
+    # or assistant messages at the absolute end when expecting a new turn.
+    while normalized and normalized[-1]["role"] == "assistant":
         normalized.pop()
 
     # Apply volatile enrichment ONLY to the in-memory payload (not log)
