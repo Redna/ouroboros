@@ -46,8 +46,11 @@ def build_dynamic_telemetry_message(state: Dict[str, Any], queue: List[Dict[str,
     effective_notices = notices if notices is not None else agent_state.get_pending_system_notices()
     
     if exclude_meta and effective_notices:
-        # Filter out meta-instructions like the Autonomic Reflex warning to avoid context pollution
-        effective_notices = [n for n in effective_notices if "[SYSTEM AUTONOMIC REFLEX]" not in n and "[CRITICAL]: Context Exhaustion" not in n]
+        # Filter out all meta-instructions (System/Critical) to avoid context pollution
+        effective_notices = [
+            n for n in effective_notices 
+            if not any(marker in n for marker in ["[SYSTEM", "[CRITICAL]"])
+        ]
 
     interrupt_block = ""
     if effective_notices:
@@ -318,6 +321,37 @@ def _determine_metacognition_params(state: Dict[str, Any], task_desc: str) -> Tu
     
     return sys_temp, sys_think
 
+
+def _detect_cognitive_loop(messages: List[Dict[str, Any]], window: int = 6) -> Tuple[bool, Optional[str]]:
+    """
+    Analyzes the recent message stream for repetitive tool call patterns.
+    Returns (is_looping, warning_message).
+    """
+    if len(messages) < window:
+        return False, None
+
+    recent_calls = []
+    for msg in messages[-window:]:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                name = fn.get("name", "")
+                args = fn.get("arguments", "")
+                recent_calls.append((name, args))
+
+    if not recent_calls:
+        return False, None
+
+    if len(recent_calls) >= 2 and recent_calls[-1] == recent_calls[-2]:
+        return True, "Immediate Repetition: You just called the same tool with identical arguments."
+
+    if len(recent_calls) >= 4:
+        half = len(recent_calls) // 2
+        if recent_calls[-half:] == recent_calls[-2*half:-half]:
+            return True, f"Cyclic Pattern: You are repeating a sequence of {half} tool calls."
+
+    return False, None
+
 def main() -> None:
     agent_state.initialize_memory()
     print(f"Awaking Native ReAct Mode (JSONL). Model: {constants.MODEL} | Thinking: {'ON' if constants.ENABLE_THINKING else 'OFF'}")
@@ -392,6 +426,18 @@ def main() -> None:
             
             if system_notices:
                 agent_state.clear_pending_system_notices()
+
+            # LOOP DETECTION: Check if we are stuck in a tool-call cycle before calling LLM
+            is_looping, loop_warn = _detect_cognitive_loop(api_messages)
+            if is_looping:
+                # Inject warning as a system interrupt to force reflection/folding
+                agent_state.queue_system_notice(f"[CRITICAL]: Cognitive Loop Detected! {loop_warn}")
+                # Force a fold to clear the cycle and reset reasoning
+                state["force_fold"] = True
+                agent_state.save_state(state)
+                print(f"[Loop Detector] {loop_warn}. Forcing context fold.")
+                continue
+
 
             # 2. Call LLM
             response = llm_interface.call_llm(api_messages, active_tool_specs, None, sys_temp, sys_top_p, 1.0, sys_think)

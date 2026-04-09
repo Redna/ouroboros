@@ -883,9 +883,14 @@ def reflect(args: dict) -> str:
 
 
 @registry.tool(
-    description="Signal the watchdog to restart the agent process. Use this AFTER committing your changes via bash_command('git commit'). The git pre-commit hook enforces mypy and pytest automatically — if those fail, the commit (and therefore this restart) will be blocked.",
+    description="Signal the watchdog to restart the agent process. Use this AFTER committing your changes. Restarts are only permitted if the repository is clean (no uncommitted changes).",
     parameters={"type": "object", "properties": {}},
     bucket="system_control"
 )
 def request_restart(args):
+    # P1 Continuity: Ensure the agent doesn't restart with uncommitted debris
+    rc, stdout, stderr = _run_git_command(["status", "--porcelain"])
+    if rc == 0 and stdout.strip():
+        return f"SYSTEM REJECTED: You have uncommitted changes. Commit or revert them before requesting a restart.\nChanges:\n{stdout.strip()}"
+    
     return "SYSTEM_SIGNAL_RESTART"
